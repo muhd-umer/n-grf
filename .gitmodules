@@ -1,9 +1,0 @@
-[submodule "reference/NeRF2"]
-	path = reference/NeRF2
-	url = https://github.com/XPengZhao/NeRF2
-[submodule "reference/WRF-GS"]
-	path = reference/WRF-GS
-	url = https://github.com/wenchaozheng/WRF-GS
-[submodule "reference/NeWRF"]
-	path = reference/NeWRF
-	url = https://github.com/LuHaofan/NeWRF
