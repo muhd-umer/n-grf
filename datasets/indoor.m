@@ -58,7 +58,7 @@ method = "sbr"; % "image" | "sbr"
 if method == "image"
     max_refs = 2;
 else
-    max_refs = 10;
+    max_refs = 3;
 end
 
 pm = propagationModel("raytracing", ...
