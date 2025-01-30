@@ -21,14 +21,14 @@ env_dims = [
 
 % point cloud generation params
 pc_params = struct();
-pc_params.edge_density = 0.6;
-pc_params.surface_density = 5.3;
-pc_params.volume_density = 2.4;
+pc_params.edge_density = 1.6;
+pc_params.surface_density = 12.3;
+pc_params.volume_density = 3.4;
 pc_params.boundary_density = 62;
 pc_params.random_points = 786;
-pc_params.noise_std = 0.01;
-pc_params.edge_reduction = 256;
-pc_params.surface_reduction = 4;
+pc_params.noise_std = 0.005;
+pc_params.edge_reduction = 32;
+pc_params.surface_reduction = 1.22;
 
 % generate point cloud
 point_cloud = generate_conference_pc(vertices, faces, pc_params, env_dims, true);
