@@ -1,4 +1,4 @@
-%% Environment setup
+%% environment setup
 close all force; clear; clc;
 addpath('point_clouds');
 
@@ -33,7 +33,7 @@ pc_params.surface_reduction = 1.22;
 % generate point cloud
 point_cloud = generate_conference_pc(vertices, faces, pc_params, env_dims, true);
 
-%% System config
+%% system config
 fc = 5.8e9;
 lambda = physconst("lightspeed") / fc;
 num_tx_ant = 16;
@@ -53,7 +53,7 @@ AP = txsite("cartesian", ...
     "TransmitterFrequency", fc, ...
     "TransmitterPower", 0.05); % 50mW transmit power
 
-%% User setup
+%% user setup
 distribution = "random"; % "uniform" | "random"
 numUsers = 500; % Number of users to simulate
 userSeparation = 0.5; % Minimum separation in meters (for uniform)
