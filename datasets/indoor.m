@@ -1,6 +1,6 @@
 %% Environment setup
 close all force; clear; clc;
-addpath('points_clouds');
+addpath('point_clouds');
 
 mapFileName = "models/conference.stl";
 [stl_data, ~] = stlread(mapFileName);
