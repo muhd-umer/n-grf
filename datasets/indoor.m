@@ -1,17 +1,37 @@
-%% Environment Setup
+%% Environment setup
 close all force; clear; clc;
+addpath('points_clouds');
 
 mapFileName = "models/conference.stl";
+[stl_data, ~] = stlread(mapFileName);
 viewer = siteviewer("SceneModel", mapFileName, "Transparency", 0.25);
 
-[vertex, face] = stlread(mapFileName);
+% environment dimensions setup
+vertices = stl_data.Points;
+faces = stl_data.ConnectivityList;
+
 xy_offset = 0.1;
 z_offset = 0.1;
+min_z = max(0, min(vertices(:, 3)));
 env_dims = [
-            [min(vertex.Points(:, 1)) + xy_offset, max(vertex.Points(:, 1)) - xy_offset];
-            [min(vertex.Points(:, 2)) + xy_offset, max(vertex.Points(:, 2)) - xy_offset];
-            [min(vertex.Points(:, 3)), max(vertex.Points(:, 3)) - z_offset]
+            [min(vertices(:, 1)) + xy_offset, max(vertices(:, 1)) - xy_offset];
+            [min(vertices(:, 2)) + xy_offset, max(vertices(:, 2)) - xy_offset];
+            [min_z, max(vertices(:, 3)) - z_offset]
             ];
+
+% point cloud generation params
+pc_params = struct();
+pc_params.edge_density = 0.6;
+pc_params.surface_density = 5.3;
+pc_params.volume_density = 2.4;
+pc_params.boundary_density = 62;
+pc_params.random_points = 786;
+pc_params.noise_std = 0.01;
+pc_params.edge_reduction = 256;
+pc_params.surface_reduction = 4;
+
+% generate point cloud
+point_cloud = generate_conference_pc(vertices, faces, pc_params, env_dims, true);
 
 %% System config
 fc = 5.8e9;
@@ -35,7 +55,7 @@ AP = txsite("cartesian", ...
 
 %% User setup
 distribution = "random"; % "uniform" | "random"
-numUsers = 1000; % Number of users to simulate
+numUsers = 500; % Number of users to simulate
 userSeparation = 0.5; % Minimum separation in meters (for uniform)
 
 % seed
@@ -99,6 +119,7 @@ AoD_all = cell(numUsers, 1);
 AoA_all = cell(numUsers, 1);
 
 for userIdx = 1:numUsers
+
     if ~isempty(rays{userIdx})
         [H(userIdx, :, :, :), AoD_all{userIdx}, AoA_all{userIdx}] = ...
             generate_csi(rays{userIdx}, fc, cfg, num_tx_ant, num_rx_ant, method);
@@ -107,6 +128,7 @@ for userIdx = 1:numUsers
     if mod(userIdx, floor(numUsers / 5)) == 0
         disp(['Running ... ', num2str(round(100 * userIdx / numUsers)), '%']);
     end
+
 end
 
 %% ray marching and per-ray information (for NeWRF comparison)
@@ -147,6 +169,8 @@ dataset.config.ofdm = cfg;
 
 dataset.environment.map_file = mapFileName;
 dataset.environment.dimensions = env_dims;
+dataset.environment.point_cloud = point_cloud;
+dataset.environment.pc_params = pc_params;
 
 dataset.nodes.ap = struct('position', AP.AntennaPosition', ...
     'array', txArray);
