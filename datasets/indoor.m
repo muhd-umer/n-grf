@@ -21,14 +21,14 @@ env_dims = [
 
 % point cloud generation params
 pc_params = struct();
-pc_params.edge_density = 1.6;
-pc_params.surface_density = 12.3;
-pc_params.volume_density = 3.4;
-pc_params.boundary_density = 62;
-pc_params.random_points = 786;
-pc_params.noise_std = 0.005;
-pc_params.edge_reduction = 32;
-pc_params.surface_reduction = 1.22;
+pc_params.edge_density = 2.1;
+pc_params.surface_density = 1.6;
+pc_params.volume_density = 0;
+pc_params.boundary_density = 87.3;
+pc_params.random_points = 0;
+pc_params.noise_std = 0;
+pc_params.edge_reduction = 1;
+pc_params.surface_reduction = 1;
 
 % generate point cloud
 point_cloud = generate_conference_pc(vertices, faces, pc_params, env_dims, true);
@@ -55,7 +55,7 @@ AP = txsite("cartesian", ...
 
 %% user setup
 distribution = "random"; % "uniform" | "random"
-numUsers = 500; % Number of users to simulate
+numUsers = 50; % Number of users to simulate
 userSeparation = 0.5; % Minimum separation in meters (for uniform)
 
 % seed

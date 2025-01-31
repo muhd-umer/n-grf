@@ -1,15 +1,50 @@
-%% Environment Setup
+%% environment setup
 close all force; clear; clc;
+addpath('point_clouds');
 
-data_dir = "models/intersection_and_buildings/";
-mapFileName = fullfile(data_dir, "IntersectionAndBuildings.glb");
-viewer = siteviewer("SceneModel", mapFileName, "ShowEdges", false, "ShowOrigin", false);
+mapFileName = "models/intersection_and_buildings.stl";
+[stl_data, ~] = stlread(mapFileName);
+viewer = siteviewer("SceneModel", mapFileName, "Transparency", 1);
+
+% environment dimensions setup
+vertices = stl_data.Points;
+faces = stl_data.ConnectivityList;
 
 xy_offset = 0.1;
 z_offset = 0.1;
-env_dims = [-50.0040, 50.3000;
-            -39.9300, 41.1347;
-            -5.8326, 28.0001];
+min_z = max(0, min(vertices(:, 3)));
+env_dims = [
+            [min(vertices(:, 1)) + xy_offset, max(vertices(:, 1)) - xy_offset];
+            [min(vertices(:, 2)) + xy_offset, max(vertices(:, 2)) - xy_offset];
+            [min_z, max(vertices(:, 3)) - z_offset]
+            ];
+
+% point cloud generation params
+pc_params = struct();
+pc_params.edge_density = 0.43;
+pc_params.surface_density = 0.06;
+pc_params.volume_density = 0;
+pc_params.boundary_density = 0;
+pc_params.random_points = 0;
+pc_params.noise_std = 0;
+pc_params.edge_reduction = 1;
+pc_params.surface_reduction = 1;
+
+% generate point cloud
+point_cloud = generate_conference_pc(vertices, faces, pc_params, env_dims, true);
+
+% %% Environment Setup
+% close all force; clear; clc;
+% 
+% data_dir = "models/intersection_and_buildings/";
+% mapFileName = fullfile(data_dir, "IntersectionAndBuildings.glb");
+% viewer = siteviewer("SceneModel", mapFileName, "ShowEdges", false, "ShowOrigin", false);
+% 
+% xy_offset = 0.1;
+% z_offset = 0.1;
+% env_dims = [-50.0040, 50.3000;
+%             -39.9300, 41.1347;
+%             -5.8326, 28.0001];
 
 %% System config
 fc = 5.8e9;
@@ -33,7 +68,7 @@ AP = txsite("cartesian", ...
 
 %% User setup
 distribution = "random"; % "uniform" | "random"
-numUsers = 10; % Number of users to simulate
+numUsers = 1000; % Number of users to simulate
 userSeparation = 0.5; % Minimum separation in meters (for uniform)
 
 % seed
@@ -51,7 +86,7 @@ show(AP, "ShowAntennaHeight", false)
 show(Users, "ShowAntennaHeight", false)
 
 %% RT simulation
-method = "image"; % "image" | "sbr"
+method = "sbr"; % "image" | "sbr"
 
 if method == "image"
     max_refs = 2;
@@ -62,15 +97,14 @@ end
 pm = propagationModel("raytracing", ...
     "Method", method, ...
     "CoordinateSystem", "cartesian", ...
-    "SurfaceMaterial", "wood", ...
+    "SurfaceMaterial", "auto", ...
     "MaxNumReflections", max_refs, ...
     "UseGPU", "on");
 
 rays = raytrace(AP, Users, pm, "Map", mapFileName);
 
 %% plot rays
-for userIdx = 1:(numUsers / 10) % plot only 10 % of the users
-
+for userIdx = 1:(numUsers) % plot only 10 % of the users
     if ~isempty(rays{userIdx})
         plot(rays{userIdx}, "Colormap", jet, "ColorLimits", [50, 95])
         pause(0.05)
