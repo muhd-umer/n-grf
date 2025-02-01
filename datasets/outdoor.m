@@ -40,12 +40,16 @@ point_cloud = generate_conference_pc(vertices, faces, pc_params, env_dims, true)
 %% System config
 fc = 28e9;
 lambda = physconst("lightspeed") / fc;
-num_tx_ant = 8*12;
+num_tx_ant = 8 * 12;
 num_rx_ant = 2;
 
 % OFDM parameters
-cfg = wlanNonHTConfig;
-cfg.ChannelBandwidth = 'CBW20'; % 20 MHz bandwidth
+carrier = nrCarrierConfig;
+carrier.SubcarrierSpacing = 120;
+carrier.NSizeGrid = 66;
+carrier.NStartGrid = 0;
+carrier.CyclicPrefix = "normal";
+cfg = carrier;
 
 txArray = arrayConfig("Size", [8 12], "ElementSpacing", lambda / 2);
 rxArray = arrayConfig("Size", [1 num_rx_ant], "ElementSpacing", lambda / 2);
@@ -58,7 +62,7 @@ AP = txsite("cartesian", ...
     "TransmitterPower", 10);
 
 %% user setup
-numUsers = 10;
+numUsers = 100;
 
 % seed
 S = RandStream("mt19937ar", "Seed", 5489);
@@ -66,11 +70,12 @@ RandStream.setGlobalStream(S);
 
 user_params.check_building_collision = true;
 user_params.check_user_collision = true;
-user_params.separation_distance = 0.5;
+user_params.separation_distance = 2;
 [Users, actual_users] = create_users(env_dims, numUsers, rxArray, user_params, []);
 
 if actual_users < numUsers
-    error('Failed to create all requested users. Only created %d out of %d users.', actual_users, numUsers);
+    error('Failed to create all requested users. Only created %d out of %d users.', ...
+        actual_users, numUsers);
 end
 
 %% visualize
@@ -113,11 +118,11 @@ for userIdx = 1:numUsers
 end
 
 %% CSI collection
-ofdmInfo = wlanNonHTOFDMInfo('L-LTF', cfg.ChannelBandwidth);
-numSubcarriers = length(ofdmInfo.ActiveFrequencyIndices);
+numSubcarriers = cfg.NSizeGrid * 12;
+sc_spacing = cfg.SubcarrierSpacing * 1e3;
 
-sc_spacing = wlanSampleRate(cfg.ChannelBandwidth) / ofdmInfo.FFTLength;
-freqs = fc + ofdmInfo.ActiveFrequencyIndices * sc_spacing;
+activeFreqIndices = (-numSubcarriers / 2:numSubcarriers / 2 - 1);
+freqs = fc + activeFreqIndices * sc_spacing;
 
 H = zeros(numUsers, num_tx_ant, num_rx_ant, numSubcarriers);
 AoD_all = cell(numUsers, 1);
@@ -127,7 +132,7 @@ for userIdx = 1:numUsers
 
     if ~isempty(rays{userIdx})
         [H(userIdx, :, :, :), AoD_all{userIdx}, AoA_all{userIdx}] = ...
-            generate_csi(rays{userIdx}, fc, cfg, num_tx_ant, num_rx_ant, method);
+            generate_csi(rays{userIdx}, fc, cfg, num_tx_ant, num_rx_ant, method, 'outdoor');
     end
 
     if mod(userIdx, floor(numUsers / 5)) == 0
