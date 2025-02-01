@@ -2,11 +2,15 @@
 close all force; clear; clc;
 addpath('point_clouds');
 
-mapFileName = "models/intersection_and_buildings.stl";
-[stl_data, ~] = stlread(mapFileName);
-viewer = siteviewer("SceneModel", mapFileName, "Transparency", 1);
+% load both file formats
+stl_file = "models/intersection_and_buildings.stl";
+mapFileName = "models/intersection_and_buildings/IntersectionAndBuildings.glb";
+[stl_data, ~] = stlread(stl_file);
 
-% environment dimensions setup
+% use glb for visualization
+viewer = siteviewer("SceneModel", mapFileName, "ShowEdges", false, "ShowOrigin", false);
+
+% environment dimensions setup from stl
 vertices = stl_data.Points;
 faces = stl_data.ConnectivityList;
 
@@ -33,30 +37,17 @@ pc_params.surface_reduction = 1;
 % generate point cloud
 point_cloud = generate_conference_pc(vertices, faces, pc_params, env_dims, true);
 
-% %% Environment Setup
-% close all force; clear; clc;
-% 
-% data_dir = "models/intersection_and_buildings/";
-% mapFileName = fullfile(data_dir, "IntersectionAndBuildings.glb");
-% viewer = siteviewer("SceneModel", mapFileName, "ShowEdges", false, "ShowOrigin", false);
-% 
-% xy_offset = 0.1;
-% z_offset = 0.1;
-% env_dims = [-50.0040, 50.3000;
-%             -39.9300, 41.1347;
-%             -5.8326, 28.0001];
-
 %% System config
-fc = 5.8e9;
+fc = 28e9;
 lambda = physconst("lightspeed") / fc;
-num_tx_ant = 16;
+num_tx_ant = 8*12;
 num_rx_ant = 2;
 
 % OFDM parameters
 cfg = wlanNonHTConfig;
 cfg.ChannelBandwidth = 'CBW20'; % 20 MHz bandwidth
 
-txArray = arrayConfig("Size", [num_tx_ant / 4 num_tx_ant / 4], "ElementSpacing", lambda / 2);
+txArray = arrayConfig("Size", [8 12], "ElementSpacing", lambda / 2);
 rxArray = arrayConfig("Size", [1 num_rx_ant], "ElementSpacing", lambda / 2);
 
 %% AP setup
@@ -64,21 +55,22 @@ AP = txsite("cartesian", ...
     "Antenna", txArray, ...
     "AntennaPosition", [20; 38; 20], ...
     "TransmitterFrequency", fc, ...
-    "TransmitterPower", 0.1); % 100mW transmit power
+    "TransmitterPower", 10);
 
-%% User setup
-distribution = "random"; % "uniform" | "random"
-numUsers = 750; % Number of users to simulate
-userSeparation = 0.5; % Minimum separation in meters (for uniform)
+%% user setup
+numUsers = 10;
 
 % seed
 S = RandStream("mt19937ar", "Seed", 5489);
 RandStream.setGlobalStream(S);
 
-if distribution == "uniform"
-    Users = create_users_with_collision_check(env_dims, userSeparation, rxArray, "uniform", stl_data, AP.AntennaPosition(3));
-else
-    Users = create_users_with_collision_check(env_dims, numUsers, rxArray, "random", stl_data, AP.AntennaPosition(3));
+user_params.check_building_collision = true;
+user_params.check_user_collision = true;
+user_params.separation_distance = 0.5;
+[Users, actual_users] = create_users(env_dims, numUsers, rxArray, user_params, []);
+
+if actual_users < numUsers
+    error('Failed to create all requested users. Only created %d out of %d users.', actual_users, numUsers);
 end
 
 %% visualize
@@ -97,15 +89,17 @@ end
 pm = propagationModel("raytracing", ...
     "Method", method, ...
     "CoordinateSystem", "cartesian", ...
-    "SurfaceMaterial", "concrete", ...
-    "MaxNumReflections", max_refs);
+    "MaxNumDiffractions", 1, ...
+    "MaxNumReflections", max_refs, ...
+    "UseGPU", "on");
 
 rays = raytrace(AP, Users, pm, "Map", mapFileName);
 
 %% plot rays
 for userIdx = 1:(numUsers) % plot only 10 % of the users
+
     if ~isempty(rays{userIdx})
-        plot(rays{userIdx}, "Colormap", jet, "ColorLimits", [50, 95])
+        plot(rays{userIdx}, "Colormap", jet)
         pause(0.05)
     end
 
@@ -173,13 +167,14 @@ dataset.config.tx_antennas = num_tx_ant;
 dataset.config.rx_antennas = num_rx_ant;
 dataset.config.frequency = fc;
 dataset.config.wavelength = lambda;
-dataset.config.distribution = distribution;
 dataset.config.num_users = numUsers;
 dataset.config.method = method;
 dataset.config.ofdm = cfg;
 
 dataset.environment.map_file = mapFileName;
 dataset.environment.dimensions = env_dims;
+dataset.environment.point_cloud = point_cloud;
+dataset.environment.pc_params = pc_params;
 
 dataset.nodes.ap = struct('position', AP.AntennaPosition', ...
     'array', txArray);
@@ -195,12 +190,11 @@ dataset.channel.ray_interactions = ray_interactions;
 dataset.channel.ray_coefficients = ray_coefficients;
 dataset.channel.frequencies = freqs;
 
-filename = sprintf('%s/%s_%dx%d_%s%du_%.1fghz_%sRT.mat', ...
+filename = sprintf('%s/%s_%dx%d_%du_%.1fghz_%sRT.mat', ...
     output_dir, ...
     mapname, ...
     num_tx_ant, ...
     num_rx_ant, ...
-    distribution, ...
     numUsers, ...
     fc / 1e9, ...
     method);
