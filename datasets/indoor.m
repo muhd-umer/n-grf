@@ -34,14 +34,14 @@ pc_params.surface_reduction = 1;
 point_cloud = generate_conference_pc(vertices, faces, pc_params, env_dims, true);
 
 %% system config
-fc = 5.8e9;
+fc = 5e9;
 lambda = physconst("lightspeed") / fc;
 num_tx_ant = 16;
 num_rx_ant = 2;
 
 % OFDM parameters
 cfg = wlanNonHTConfig;
-cfg.ChannelBandwidth = 'CBW20'; % 20 MHz bandwidth
+cfg.ChannelBandwidth = 'CBW80';
 
 txArray = arrayConfig("Size", [num_tx_ant / 4 num_tx_ant / 4], "ElementSpacing", lambda / 2);
 rxArray = arrayConfig("Size", [1 num_rx_ant], "ElementSpacing", lambda / 2);
@@ -124,7 +124,7 @@ for userIdx = 1:numUsers
 
     if ~isempty(rays{userIdx})
         [H(userIdx, :, :, :), AoD_all{userIdx}, AoA_all{userIdx}] = ...
-            generate_csi(rays{userIdx}, fc, cfg, num_tx_ant, num_rx_ant, method);
+            generate_csi(rays{userIdx}, fc, cfg, num_tx_ant, num_rx_ant, method, 'indoor');
     end
 
     if mod(userIdx, floor(numUsers / 5)) == 0
