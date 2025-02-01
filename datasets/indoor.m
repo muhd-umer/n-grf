@@ -51,21 +51,22 @@ AP = txsite("cartesian", ...
     "Antenna", txArray, ...
     "AntennaPosition", [-1.5; 0.0; 2.1], ... % Positioned near ceiling
     "TransmitterFrequency", fc, ...
-    "TransmitterPower", 0.05); % 50mW transmit power
+    "TransmitterPower", 0.05);
 
 %% user setup
-distribution = "random"; % "uniform" | "random"
-numUsers = 50; % Number of users to simulate
-userSeparation = 0.5; % Minimum separation in meters (for uniform)
+numUsers = 400;
 
 % seed
 S = RandStream("mt19937ar", "Seed", 5489);
 RandStream.setGlobalStream(S);
 
-if distribution == "uniform"
-    Users = create_users(env_dims, userSeparation, rxArray, "uniform");
-else
-    Users = create_users(env_dims, numUsers, rxArray, "random");
+user_params = struct();
+user_params.check_building_collision = false;
+user_params.check_user_collision = true;
+[Users, actual_users] = create_users(env_dims, numUsers, rxArray, user_params, []);
+
+if actual_users < numUsers
+    error('Failed to create all requested users. Only created %d out of %d users.', actual_users, numUsers);
 end
 
 %% visualize
@@ -85,6 +86,7 @@ pm = propagationModel("raytracing", ...
     "Method", method, ...
     "CoordinateSystem", "cartesian", ...
     "SurfaceMaterial", "wood", ...
+    "TerrainMaterial", "wood", ...
     "MaxNumReflections", max_refs, ...
     "UseGPU", "on");
 
@@ -94,7 +96,7 @@ rays = raytrace(AP, Users, pm, "Map", mapFileName);
 for userIdx = 1:(numUsers / 10) % plot only 10 % of the users
 
     if ~isempty(rays{userIdx})
-        plot(rays{userIdx}, "Colormap", jet, "ColorLimits", [50, 95])
+        plot(rays{userIdx}, "Colormap", jet)
         pause(0.05)
     end
 
@@ -162,7 +164,6 @@ dataset.config.tx_antennas = num_tx_ant;
 dataset.config.rx_antennas = num_rx_ant;
 dataset.config.frequency = fc;
 dataset.config.wavelength = lambda;
-dataset.config.distribution = distribution;
 dataset.config.num_users = numUsers;
 dataset.config.method = method;
 dataset.config.ofdm = cfg;
@@ -186,12 +187,11 @@ dataset.channel.ray_interactions = ray_interactions;
 dataset.channel.ray_coefficients = ray_coefficients;
 dataset.channel.frequencies = freqs;
 
-filename = sprintf('%s/%s_%dx%d_%s%du_%.1fghz_%sRT.mat', ...
+filename = sprintf('%s/%s_%dx%d_%du_%.1fghz_%sRT.mat', ...
     output_dir, ...
     mapname, ...
     num_tx_ant, ...
     num_rx_ant, ...
-    distribution, ...
     numUsers, ...
     fc / 1e9, ...
     method);
