@@ -62,13 +62,13 @@ rxArray = arrayConfig("Size", [1 num_rx_ant], "ElementSpacing", lambda / 2);
 %% AP setup
 AP = txsite("cartesian", ...
     "Antenna", txArray, ...
-    "AntennaPosition", [18; 38; 20], ...
+    "AntennaPosition", [20; 38; 20], ...
     "TransmitterFrequency", fc, ...
     "TransmitterPower", 0.1); % 100mW transmit power
 
 %% User setup
 distribution = "random"; % "uniform" | "random"
-numUsers = 1000; % Number of users to simulate
+numUsers = 750; % Number of users to simulate
 userSeparation = 0.5; % Minimum separation in meters (for uniform)
 
 % seed
@@ -76,9 +76,9 @@ S = RandStream("mt19937ar", "Seed", 5489);
 RandStream.setGlobalStream(S);
 
 if distribution == "uniform"
-    Users = create_users(env_dims, userSeparation, rxArray, "uniform");
+    Users = create_users_with_collision_check(env_dims, userSeparation, rxArray, "uniform", stl_data, AP.AntennaPosition(3));
 else
-    Users = create_users(env_dims, numUsers, rxArray, "random");
+    Users = create_users_with_collision_check(env_dims, numUsers, rxArray, "random", stl_data, AP.AntennaPosition(3));
 end
 
 %% visualize
@@ -97,9 +97,8 @@ end
 pm = propagationModel("raytracing", ...
     "Method", method, ...
     "CoordinateSystem", "cartesian", ...
-    "SurfaceMaterial", "auto", ...
-    "MaxNumReflections", max_refs, ...
-    "UseGPU", "on");
+    "SurfaceMaterial", "concrete", ...
+    "MaxNumReflections", max_refs);
 
 rays = raytrace(AP, Users, pm, "Map", mapFileName);
 
