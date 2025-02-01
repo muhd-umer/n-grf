@@ -1,4 +1,4 @@
-function [H, AoD, AoA] = generate_csi(rays, fc, cfg, num_tx_ant, num_rx_ant, method)
+function [H, AoD, AoA] = generate_csi(rays, fc, cfg, num_tx_ant, num_rx_ant, method, scenario)
 
     if scenario == "indoor"
         ofdmInfo = wlanNonHTOFDMInfo('L-LTF', cfg.ChannelBandwidth);
@@ -6,7 +6,6 @@ function [H, AoD, AoA] = generate_csi(rays, fc, cfg, num_tx_ant, num_rx_ant, met
         freqs = fc + ofdmInfo.ActiveFrequencyIndices * sc_spacing;
         numSubcarriers = length(ofdmInfo.ActiveFrequencyIndices);
     elseif scenario == "outdoor"
-        ofdmInfo = nrOFDMInfo(cfg);
         sc_spacing = cfg.SubcarrierSpacing * 1e3;
         numSubcarriers = cfg.NSizeGrid * 12;
         activeFreqIndices = (-numSubcarriers / 2:numSubcarriers / 2 - 1);
@@ -15,7 +14,7 @@ function [H, AoD, AoA] = generate_csi(rays, fc, cfg, num_tx_ant, num_rx_ant, met
         error('Invalid scenario: use "indoor" or "outdoor"');
     end
 
-    H = zeros(num_tx_ant, num_rx_ant, length(freqs));
+    H = zeros(num_tx_ant, num_rx_ant, numSubcarriers);
     numRays = length(rays);
     AoD = zeros(2, numRays);
     AoA = zeros(2, numRays);
