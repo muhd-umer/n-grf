@@ -1,21 +1,21 @@
-function all_points = generate_conference_pc(vertices, faces, params, env_dims, visualize)
-    %GENERATE_CONFERENCE_PC Generate point cloud for conference room environment
-    %   POINTS = GENERATE_CONFERENCE_PC(VERTICES, FACES, PARAMS, ENV_DIMS, VISUALIZE)
-    %   generates a point cloud for a conference room environment using various
+function all_points = generate_pc(vertices, faces, params, env_dims, visualize)
+    %GENERATE_PC Generate point clouds for a given environment
+    %   POINTS = GENERATE_PC(VERTICES, FACES, PARAMS, ENV_DIMS, VISUALIZE)
+    %   generates a point cloud for a GIVEN environment using various
     %   sampling strategies.
     %
     %   Inputs:
     %       VERTICES    - Nx3 matrix of vertex coordinates from STL
     %       FACES      - Mx3 matrix of face indices from STL
     %       PARAMS     - Structure containing point generation parameters:
-    %           .edge_density      - Points per edge unit length
-    %           .surface_density   - Points per triangle unit area
-    %           .volume_density    - Points per unit volume
-    %           .boundary_density  - Points per boundary surface area
-    %           .random_points     - Additional random points in volume
-    %           .noise_std        - Standard deviation for point perturbation
-    %           .edge_reduction    - Factor to reduce edge points
-    %           .surface_reduction - Factor to reduce surface points
+    %           .edge_density      - Points per edge unit length (default: 0)
+    %           .surface_density   - Points per triangle unit area (default: 0)
+    %           .volume_density    - Points per unit volume (default: 0)
+    %           .boundary_density  - Points per boundary surface area (default: 0)
+    %           .random_points     - Additional random points in volume (default: 0)
+    %           .noise_std        - Standard deviation for point perturbation (default: 0)
+    %           .edge_reduction    - Factor to reduce edge points (default: 1)
+    %           .surface_reduction - Factor to reduce surface points (default: 1)
     %       ENV_DIMS   - 3x2 matrix of environment dimensions [min_x max_x;
     %                                                        min_y max_y;
     %                                                        min_z max_z]
@@ -26,6 +26,26 @@ function all_points = generate_conference_pc(vertices, faces, params, env_dims, 
     %                   boundary, and volume points
     %
     %   See also STLREAD, POINTCLOUD, PCSHOW
+
+    % set default values if not provided
+    default_params = struct('edge_density', 0, ...
+        'surface_density', 0, ...
+        'volume_density', 0, ...
+        'boundary_density', 0, ...
+        'random_points', 0, ...
+        'noise_std', 0, ...
+        'edge_reduction', 1, ...
+        'surface_reduction', 1);
+
+    % merge provided params with defaults
+    if ~isfield(params, 'edge_density'), params.edge_density = default_params.edge_density; end
+    if ~isfield(params, 'surface_density'), params.surface_density = default_params.surface_density; end
+    if ~isfield(params, 'volume_density'), params.volume_density = default_params.volume_density; end
+    if ~isfield(params, 'boundary_density'), params.boundary_density = default_params.boundary_density; end
+    if ~isfield(params, 'random_points'), params.random_points = default_params.random_points; end
+    if ~isfield(params, 'noise_std'), params.noise_std = default_params.noise_std; end
+    if ~isfield(params, 'edge_reduction'), params.edge_reduction = default_params.edge_reduction; end
+    if ~isfield(params, 'surface_reduction'), params.surface_reduction = default_params.surface_reduction; end
 
     if nargin < 5
         visualize = false;
