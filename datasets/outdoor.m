@@ -62,7 +62,7 @@ AP = txsite("cartesian", ...
     "TransmitterPower", 10);
 
 %% user setup
-approx_target_users = 983;
+approx_target_users = 3146;
 
 % seed
 S = RandStream("mt19937ar", "Seed", 17);
@@ -70,7 +70,7 @@ RandStream.setGlobalStream(S);
 
 user_params.check_building_collision = true;
 user_params.check_user_collision = true;
-user_params.separation_distance = 2;
+user_params.separation_distance = 1;
 [Users, actual_users] = create_users(env_dims, approx_target_users, rxArray, user_params, []);
 
 if actual_users < approx_target_users
@@ -211,4 +211,4 @@ filename = sprintf('%s/iab_%dx%d_%du_%.1fghz_%sRT.mat', ...
     fc / 1e9, ...
     method);
 
-save(filename, 'dataset');
+save(filename, 'dataset', '-v7.3');
