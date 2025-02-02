@@ -1,6 +1,5 @@
 %% environment setup
 close all force; clear; clc;
-addpath('point_clouds');
 
 mapFileName = "models/conference.stl";
 [stl_data, ~] = stlread(mapFileName);
@@ -31,7 +30,10 @@ pc_params.edge_reduction = 1;
 pc_params.surface_reduction = 1;
 
 % generate point cloud
-point_cloud = generate_conference_pc(vertices, faces, pc_params, env_dims, true);
+point_cloud = generate_pc(vertices, faces, pc_params, env_dims, true);
+
+%% visualization config
+plot_rays = false;
 
 %% system config
 fc = 5e9;
@@ -54,24 +56,20 @@ AP = txsite("cartesian", ...
     "TransmitterPower", 0.05);
 
 %% user setup
-numUsers = 400;
+approx_target_users = 418;
 
 % seed
-S = RandStream("mt19937ar", "Seed", 5489);
+S = RandStream("mt19937ar", "Seed", 17);
 RandStream.setGlobalStream(S);
 
 user_params = struct();
 user_params.check_building_collision = false;
 user_params.check_user_collision = true;
-[Users, actual_users] = create_users(env_dims, numUsers, rxArray, user_params, []);
+[Users, actual_users] = create_users(env_dims, approx_target_users, rxArray, user_params, []);
 
-if actual_users < numUsers
-    error('Failed to create all requested users. Only created %d out of %d users.', actual_users, numUsers);
+if actual_users < approx_target_users
+    error('Failed to create all requested users. Only created %d out of %d users.', actual_users, approx_target_users);
 end
-
-%% visualize
-show(AP, "ShowAntennaHeight", false)
-show(Users, "ShowAntennaHeight", false)
 
 %% RT simulation
 method = "sbr"; % "image" | "sbr"
@@ -92,20 +90,32 @@ pm = propagationModel("raytracing", ...
 
 rays = raytrace(AP, Users, pm, "Map", mapFileName);
 
-%% plot rays
-for userIdx = 1:(numUsers / 10) % plot only 10 % of the users
+% Filter users to keep only those with valid rays
+valid_user_mask = ~cellfun(@isempty, rays);
+Users = Users(valid_user_mask);
+rays = rays(valid_user_mask);
+num_users = sum(valid_user_mask);
 
-    if ~isempty(rays{userIdx})
+if num_users < approx_target_users
+    warning('Only %d out of %d users had valid rays, discarding the rest.', ...
+        num_users, approx_target_users);
+end
+
+%% visualize
+show(AP, "ShowAntennaHeight", false)
+show(Users, "ShowAntennaHeight", false)
+
+if plot_rays
+    for userIdx = 1:(num_users / 20) % ~20 % rays
         plot(rays{userIdx}, "Colormap", jet)
         pause(0.05)
     end
-
 end
 
 %% extract positions
-rx_positions = zeros(3, numUsers);
+rx_positions = zeros(3, num_users);
 
-for userIdx = 1:numUsers
+for userIdx = 1:num_users
     rx_positions(:, userIdx) = Users(userIdx).AntennaPosition;
 end
 
@@ -116,36 +126,36 @@ numSubcarriers = length(ofdmInfo.ActiveFrequencyIndices);
 sc_spacing = wlanSampleRate(cfg.ChannelBandwidth) / ofdmInfo.FFTLength;
 freqs = fc + ofdmInfo.ActiveFrequencyIndices * sc_spacing;
 
-H = zeros(numUsers, num_tx_ant, num_rx_ant, numSubcarriers);
-AoD_all = cell(numUsers, 1);
-AoA_all = cell(numUsers, 1);
+H = zeros(num_users, num_tx_ant, num_rx_ant, numSubcarriers);
+AoD_all = cell(num_users, 1);
+AoA_all = cell(num_users, 1);
 
-for userIdx = 1:numUsers
+for userIdx = 1:num_users
+    [H(userIdx, :, :, :), AoD_all{userIdx}, AoA_all{userIdx}] = ...
+        generate_csi(rays{userIdx}, fc, cfg, num_tx_ant, num_rx_ant, method, 'indoor');
+end
 
-    if ~isempty(rays{userIdx})
-        [H(userIdx, :, :, :), AoD_all{userIdx}, AoA_all{userIdx}] = ...
-            generate_csi(rays{userIdx}, fc, cfg, num_tx_ant, num_rx_ant, method, 'indoor');
-    end
-
-    if mod(userIdx, floor(numUsers / 5)) == 0
-        disp(['Running ... ', num2str(round(100 * userIdx / numUsers)), '%']);
-    end
-
+% check for null values in channel matrix
+if any(isnan(H(:)))
+    warning('Channel matrix contains NaN values!');
 end
 
 %% ray marching and per-ray information (for NeWRF comparison)
-ray_steps = cell(numUsers, 1);
-ray_points = cell(numUsers, 1);
-ray_interactions = cell(numUsers, 1);
-ray_coefficients = cell(numUsers, 1);
+ray_steps = cell(num_users, 1);
+ray_points = cell(num_users, 1);
+ray_interactions = cell(num_users, 1);
+ray_coefficients = cell(num_users, 1);
 
-for userIdx = 1:numUsers
+for userIdx = 1:num_users
+    [ray_steps{userIdx}, ray_points{userIdx}] = ray_marching(rays{userIdx});
+    [ray_interactions{userIdx}, ray_coefficients{userIdx}] = get_ray_chan(rays{userIdx}, freqs, method);
+end
 
-    if ~isempty(rays{userIdx})
-        [ray_steps{userIdx}, ray_points{userIdx}] = ray_marching(rays{userIdx});
-        [ray_interactions{userIdx}, ray_coefficients{userIdx}] = get_ray_chan(rays{userIdx}, freqs, method);
-    end
-
+% check for null values in ray marching results
+if any(cellfun(@(x) any(cellfun(@(y) any(isnan(y(:))), x)), ray_steps)) || ...
+        any(cellfun(@(x) any(cellfun(@(y) any(isnan(y(:))), x)), ray_points)) || ...
+        any(cellfun(@(x) any(isnan(x(:))), ray_coefficients))
+    warning('Ray marching results contain NaN values!');
 end
 
 %% save
@@ -164,7 +174,7 @@ dataset.config.tx_antennas = num_tx_ant;
 dataset.config.rx_antennas = num_rx_ant;
 dataset.config.frequency = fc;
 dataset.config.wavelength = lambda;
-dataset.config.num_users = numUsers;
+dataset.config.num_users = num_users;
 dataset.config.method = method;
 dataset.config.ofdm = cfg;
 
@@ -187,12 +197,11 @@ dataset.channel.ray_interactions = ray_interactions;
 dataset.channel.ray_coefficients = ray_coefficients;
 dataset.channel.frequencies = freqs;
 
-filename = sprintf('%s/%s_%dx%d_%du_%.1fghz_%sRT.mat', ...
+filename = sprintf('%s/conf_%dx%d_%du_%.1fghz_%sRT.mat', ...
     output_dir, ...
-    mapname, ...
     num_tx_ant, ...
     num_rx_ant, ...
-    numUsers, ...
+    num_users, ...
     fc / 1e9, ...
     method);
 
