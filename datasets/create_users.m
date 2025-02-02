@@ -43,7 +43,7 @@ function [Users, num_created] = create_users(env_dims, num_users, rx_array, user
 
     Users(num_users) = rxsite;
     valid_users = 0;
-    max_attempts = num_users * 100; % arbitrary limit to avoid infinite loop
+    max_attempts = num_users * 50;
     attempts = 0;
 
     % store valid positions for faster collision checking
