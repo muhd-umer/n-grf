@@ -32,8 +32,9 @@ pc_params.surface_reduction = 1;
 % generate point cloud
 point_cloud = generate_pc(vertices, faces, pc_params, env_dims, true);
 
-%% visualization config
+%% extra config
 plot_rays = false;
+use_dbscan = true;
 
 %% system config
 fc = 5e9;
