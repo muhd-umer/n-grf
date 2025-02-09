@@ -40,8 +40,8 @@ pc_params.dbscan_minpts = 5;         % DBSCAN minimum points for core point
 point_cloud = generate_pc(vertices, faces, pc_params, env_dims, plot_rays);
 
 %% extra config
-plot_rays = true;
-use_dbscan = false;
+plot_rays = false;
+use_dbscan = true;
 
 %% system config
 fc = 5e9;
