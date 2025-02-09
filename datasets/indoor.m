@@ -1,6 +1,10 @@
 %% environment setup
 close all force; clear; clc;
 
+%% extra config
+plot_rays = true;
+use_dbscan = false;  % Moved this up before it's used
+
 mapFileName = "models/conference.stl";
 [stl_data, ~] = stlread(mapFileName);
 viewer = siteviewer("SceneModel", mapFileName, "Transparency", 0.25);
@@ -28,12 +32,16 @@ pc_params.random_points = 0;
 pc_params.noise_std = 0;
 pc_params.edge_reduction = 1;
 pc_params.surface_reduction = 1;
+pc_params.use_dbscan = use_dbscan;  % Now use_dbscan is defined before this line
+pc_params.dbscan_epsilon = 0.2;      % DBSCAN clustering distance threshold
+pc_params.dbscan_minpts = 5;         % DBSCAN minimum points for core point
 
 % generate point cloud
-point_cloud = generate_pc(vertices, faces, pc_params, env_dims, true);
+point_cloud = generate_pc(vertices, faces, pc_params, env_dims, plot_rays);
 
-%% visualization config
-plot_rays = false;
+%% extra config
+plot_rays = true;
+use_dbscan = false;
 
 %% system config
 fc = 5e9;
@@ -83,10 +91,9 @@ end
 pm = propagationModel("raytracing", ...
     "Method", method, ...
     "CoordinateSystem", "cartesian", ...
-    "SurfaceMaterial", "wood", ...
-    "TerrainMaterial", "wood", ...
-    "MaxNumReflections", max_refs, ...
-    "UseGPU", "on");
+    "SurfaceMaterial", "custom", ...
+    "TerrainMaterial", "brick", ...
+    "MaxNumReflections", max_refs);
 
 rays = raytrace(AP, Users, pm, "Map", mapFileName);
 
