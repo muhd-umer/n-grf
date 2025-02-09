@@ -33,12 +33,12 @@ pc_params.noise_std = 0;
 pc_params.edge_reduction = 1;
 pc_params.surface_reduction = 1;
 
-% generate point cloud
-point_cloud = generate_pc(vertices, faces, pc_params, env_dims, true);
-
 %% extra config
 plot_rays = false;
-use_dbscan = true;
+visualize = true;
+
+% generate point cloud
+point_cloud = generate_pc(vertices, faces, pc_params, env_dims, visualize);
 
 %% System config
 fc = 6e9;

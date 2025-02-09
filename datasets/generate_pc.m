@@ -16,6 +16,9 @@ function all_points = generate_pc(vertices, faces, params, env_dims, visualize)
     %           .noise_std        - Standard deviation for point perturbation (default: 0)
     %           .edge_reduction    - Factor to reduce edge points (default: 1)
     %           .surface_reduction - Factor to reduce surface points (default: 1)
+    %           .use_dbscan        - Boolean to enable DBSCAN clustering (default: false)
+    %           .dbscan_epsilon    - DBSCAN epsilon parameter (default: 0.2)
+    %           .dbscan_minpts     - DBSCAN minimum points parameter (default: 5)
     %       ENV_DIMS   - 3x2 matrix of environment dimensions [min_x max_x;
     %                                                        min_y max_y;
     %                                                        min_z max_z]
@@ -35,7 +38,10 @@ function all_points = generate_pc(vertices, faces, params, env_dims, visualize)
         'random_points', 0, ...
         'noise_std', 0, ...
         'edge_reduction', 1, ...
-        'surface_reduction', 1);
+        'surface_reduction', 1, ...
+        'use_dbscan', false, ...
+        'dbscan_epsilon', 0.2, ...
+        'dbscan_minpts', 5);
 
     % merge provided params with defaults
     if ~isfield(params, 'edge_density'), params.edge_density = default_params.edge_density; end
@@ -46,6 +52,9 @@ function all_points = generate_pc(vertices, faces, params, env_dims, visualize)
     if ~isfield(params, 'noise_std'), params.noise_std = default_params.noise_std; end
     if ~isfield(params, 'edge_reduction'), params.edge_reduction = default_params.edge_reduction; end
     if ~isfield(params, 'surface_reduction'), params.surface_reduction = default_params.surface_reduction; end
+    if ~isfield(params, 'use_dbscan'), params.use_dbscan = default_params.use_dbscan; end
+    if ~isfield(params, 'dbscan_epsilon'), params.dbscan_epsilon = default_params.dbscan_epsilon; end
+    if ~isfield(params, 'dbscan_minpts'), params.dbscan_minpts = default_params.dbscan_minpts; end
 
     if nargin < 5
         visualize = false;
@@ -170,11 +179,41 @@ function all_points = generate_pc(vertices, faces, params, env_dims, visualize)
     % combine all points
     all_points = [edge_points; surface_points; boundary_points; volume_points];
 
+    if params.use_dbscan
+
+        try
+            idx = dbscan(all_points, params.dbscan_epsilon, params.dbscan_minpts);
+            valid_points = idx ~= -1;
+            all_points = all_points(valid_points, :);
+            clusters = unique(idx(idx ~= -1));
+
+            if visualize
+                fprintf('DBSCAN Statistics:\n');
+                fprintf('Original points: %d\n', size(idx, 1));
+                fprintf('Points after clustering: %d\n', sum(valid_points));
+                fprintf('Number of clusters: %d\n', length(clusters));
+                fprintf('Noise points removed: %d\n', sum(idx == -1));
+            end
+
+        catch e
+            warning('DBSCAN clustering failed: %s\nProceeding with unclustered points.', e.message);
+        end
+
+    end
+
     if visualize
-        pt_cloud = pointCloud(all_points);
         figure;
-        pcshow(pt_cloud);
-        title(sprintf('total points: %d', size(all_points, 1)));
+
+        if params.use_dbscan
+            pt_cloud = pointCloud(all_points);
+            pcshow(pt_cloud);
+            title(sprintf('total points w/ DBSCAN: %d)', size(all_points, 1)));
+        else
+            pt_cloud = pointCloud(all_points);
+            pcshow(pt_cloud);
+            title(sprintf('total points %d)', size(all_points, 1)));
+        end
+
         xlabel('x'); ylabel('y'); zlabel('z');
         grid on;
     end
