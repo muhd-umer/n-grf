@@ -182,18 +182,13 @@ dataset.config.rx_antennas = num_rx_ant;
 dataset.config.frequency = fc;
 dataset.config.wavelength = lambda;
 dataset.config.num_users = num_users;
-dataset.config.method = method;
-dataset.config.ofdm = cfg;
 
-dataset.environment.map_file = mapFileName;
 dataset.environment.dimensions = env_dims;
 dataset.environment.point_cloud = point_cloud;
 dataset.environment.pc_params = pc_params;
 
-dataset.nodes.ap = struct('position', AP.AntennaPosition', ...
-    'array', txArray);
-dataset.nodes.users = struct('positions', rx_positions, ...
-    'array', rxArray);
+dataset.nodes.ap_position = AP.AntennaPosition';
+dataset.nodes.users_positions = rx_positions;
 
 dataset.channel.H = H;
 dataset.channel.AoD = AoD_all;
