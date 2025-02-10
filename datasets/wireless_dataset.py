@@ -64,11 +64,14 @@ class WirelessDataset(Dataset):
         # handle complex channel matrix
         H = torch.from_numpy(
             data["channel"]["H"]
-        )  # shape: [num_users, num_tx, num_rx, num_sc]
-        mid_subcarrier = H.shape[-1] // 2
-        H_mid = H[..., mid_subcarrier]  # take middle subcarrier
+        )  # shape: [num_users, tx_ant, rx_ant, num_sc]
 
-        self.channel_matrix = torch.stack([H_mid.real, H_mid.imag], dim=-1).float()
+        if len(H.shape) == 3:  # single subcarrier
+            self.channel_matrix = torch.stack([H.real, H.imag], dim=-1).float()
+        else:  # multiple subcarriers case
+            mid_subcarrier = H.shape[-1] // 2
+            H_mid = H[..., mid_subcarrier]
+            self.channel_matrix = torch.stack([H_mid.real, H_mid.imag], dim=-1).float()
 
         self.tx_position = torch.from_numpy(data["nodes"]["ap_position"]).float()
         self.rx_positions = torch.from_numpy(data["nodes"]["users_positions"].T).float()
@@ -78,7 +81,6 @@ class WirelessDataset(Dataset):
 
         self.aod = process_angle_data(data["channel"]["AoD"])
         self.aoa = process_angle_data(data["channel"]["AoA"])
-
         self.env_dims = torch.from_numpy(data["environment"]["dimensions"]).float()
 
         self._store_config(data["config"])
