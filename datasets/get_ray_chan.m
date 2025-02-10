@@ -29,7 +29,5 @@ function [interaction_points, ray_coeffs] = get_ray_chan(rays, freqs, method)
 
             ray_coeffs(j, i) = 10 ^ (-path_loss / 20) * exp(-1j * phase);
         end
-
     end
-
 end

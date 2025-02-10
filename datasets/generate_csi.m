@@ -42,11 +42,7 @@ function [H, AoD, AoA] = generate_csi(rays, fc, cfg, num_tx_ant, num_rx_ant, met
                 for tx = 1:num_tx_ant
                     H(tx, rx, scIdx) = H(tx, rx, scIdx) + h;
                 end
-
             end
-
         end
-
     end
-
 end
