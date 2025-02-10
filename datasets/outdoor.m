@@ -167,10 +167,7 @@ end
 
 %% save
 output_dir = "outputs";
-
-if ~exist(output_dir, 'dir')
-    mkdir(output_dir);
-end
+mkdir(output_dir);
 
 [~, mapname] = fileparts(mapFileName);
 
