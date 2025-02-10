@@ -1,0 +1,122 @@
+# datasets/wireless_dataset.py
+
+from pathlib import Path
+from typing import Optional, Tuple
+
+import mat73
+import numpy as np
+import torch
+from torch.utils.data import Dataset, random_split
+
+
+class WirelessDataset(Dataset):
+    """A dataset class for wireless channel data.
+
+    This dataset handles loading and processing of wireless channel data
+    including point clouds, transmitter/receiver positions, and channel
+    matrices.
+
+    Args:
+        data_path (str): Path to the .mat dataset file
+        num_pc (int, optional): Number of point cloud points to randomly sample
+        train (bool, optional): If True, returns training set, else test set
+        train_ratio (float, optional): Ratio of data to use for training (default: 0.8)
+        seed (int, optional): Random seed for train/test split and point cloud sampling
+    """
+
+    def __init__(
+        self,
+        data_path: str,
+        num_pc: Optional[int] = None,
+        train: bool = True,
+        train_ratio: float = 0.8,
+        seed: Optional[int] = None,
+    ):
+        super().__init__()
+
+        self.data_path = Path(data_path)
+        self.num_pc = num_pc
+        self.seed = seed if seed is not None else 42
+
+        # set seeds for reproducibility
+        torch.manual_seed(self.seed)
+        np.random.seed(self.seed)
+
+        # load mat73 file
+        data = mat73.loadmat(str(self.data_path))["dataset"]
+        self._process_data(data)
+
+        # perform train/test split
+        total_size = len(self.rx_positions)
+        train_size = int(total_size * train_ratio)
+        test_size = total_size - train_size
+
+        generator = torch.Generator().manual_seed(self.seed)
+        train_dataset, test_dataset = random_split(
+            range(total_size), [train_size, test_size], generator=generator
+        )
+
+        self.indices = train_dataset if train else test_dataset
+
+    def _process_data(self, data):
+        self.point_cloud = torch.from_numpy(data["environment"]["point_cloud"]).float()
+
+        # handle complex channel matrix
+        H = torch.from_numpy(
+            data["channel"]["H"]
+        )  # shape: [num_users, num_tx, num_rx, num_sc]
+        mid_subcarrier = H.shape[-1] // 2
+        H_mid = H[..., mid_subcarrier]  # take middle subcarrier
+
+        self.channel_matrix = torch.stack([H_mid.real, H_mid.imag], dim=-1).float()
+
+        self.tx_position = torch.from_numpy(data["nodes"]["ap_position"]).float()
+        self.rx_positions = torch.from_numpy(data["nodes"]["users_positions"].T).float()
+
+        def process_angle_data(angle_list):
+            return [torch.from_numpy(np.array(d)).float() for d in angle_list]
+
+        self.aod = process_angle_data(data["channel"]["AoD"])
+        self.aoa = process_angle_data(data["channel"]["AoA"])
+
+        self.env_dims = torch.from_numpy(data["environment"]["dimensions"]).float()
+
+        self._store_config(data["config"])
+        self._store_channel_info(data["channel"])
+
+    def _store_config(self, config):
+        self.num_tx_ant = int(config["tx_antennas"])
+        self.num_rx_ant = int(config["rx_antennas"])
+        self.frequency = float(config["frequency"])
+        self.wavelength = float(config["wavelength"])
+        self.num_users = int(config["num_users"])
+
+    def _store_channel_info(self, channel):
+        self.frequencies = channel["frequencies"]
+        self.ray_steps = channel["ray_steps"]
+        self.ray_points = channel["ray_points"]
+        self.ray_interactions = channel["ray_interactions"]
+        self.ray_coefficients = channel["ray_coefficients"]
+
+    def __len__(self):
+        return len(self.indices)
+
+    def __getitem__(self, idx):
+        actual_idx = self.indices[idx]
+
+        if self.num_pc is not None and self.num_pc < len(self.point_cloud):
+            rng = np.random.RandomState(self.seed + idx)
+            pc_indices = rng.choice(len(self.point_cloud), self.num_pc, replace=False)
+            point_cloud = self.point_cloud[pc_indices]
+        else:
+            point_cloud = self.point_cloud
+
+        return {
+            "point_cloud": point_cloud,
+            "tx_position": self.tx_position,
+            "rx_position": self.rx_positions[actual_idx],
+            "channel_matrix": self.channel_matrix[actual_idx],
+            "aod": self.aod[actual_idx],
+            "aoa": self.aoa[actual_idx],
+            "env_dims": self.env_dims,
+        }
