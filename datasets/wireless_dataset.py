@@ -84,7 +84,8 @@ class WirelessDataset(Dataset):
         def process_angle_data(angle_list):
             return [torch.from_numpy(np.array(d)).float() for d in angle_list]
 
-        self.aod = process_angle_data(data["channel"]["AoD"])
+        # authors: AoD is unneeded as it is primarily related to the txsite
+        # self.aod = process_angle_data(data["channel"]["AoD"])
         self.aoa = process_angle_data(data["channel"]["AoA"])
         self.env_dims = torch.from_numpy(data["environment"]["dimensions"]).float()
 
@@ -123,7 +124,7 @@ class WirelessDataset(Dataset):
             "tx_position": self.tx_position,
             "rx_position": self.rx_positions[actual_idx],
             "channel_matrix": self.channel_matrix[actual_idx],
-            "aod": self.aod[actual_idx],
+            # "aod": self.aod[actual_idx],
             "aoa": self.aoa[actual_idx],
             "env_dims": self.env_dims,
         }
