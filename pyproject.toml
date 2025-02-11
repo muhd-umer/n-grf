@@ -5,9 +5,11 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "diff-gaussian-rasterization",
     "ipykernel>=6.29.5",
     "pymatreader>=1.0.0",
     "setuptools>=75.8.0",
+    "simple-knn",
     "torch>=2.6.0",
     "torchvision>=0.21.0",
 ]
@@ -15,6 +17,8 @@ dependencies = [
 [tool.uv.sources]
 torch = { index = "pytorch-cu124", marker = "sys_platform == 'linux'" }
 torchvision = { index = "pytorch-cu124", marker = "sys_platform == 'linux'" }
+diff-gaussian-rasterization = { path = "submodules/diff-gaussian-rasterization" }
+simple-knn = { path = "submodules/simple-knn" }
 
 [[tool.uv.index]]
 name = "pytorch-cu124"
