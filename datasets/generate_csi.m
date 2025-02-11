@@ -1,15 +1,44 @@
-function [H, AoD, AoA] = generate_csi(rays, fc, cfg, num_tx_ant, num_rx_ant, method, scenario)
+function [H, AoD, AoA] = generate_csi(rays, fc, cfg, num_tx_ant, num_rx_ant, method, scenario, use_single_sc, sc_idx)
+
+    if nargin < 8
+        use_single_sc = false;
+    end
 
     if scenario == "indoor"
         ofdmInfo = wlanNonHTOFDMInfo('L-LTF', cfg.ChannelBandwidth);
+        activeIndices = ofdmInfo.ActiveFrequencyIndices;
         sc_spacing = wlanSampleRate(cfg.ChannelBandwidth) / ofdmInfo.FFTLength;
-        freqs = fc + ofdmInfo.ActiveFrequencyIndices * sc_spacing;
-        numSubcarriers = length(ofdmInfo.ActiveFrequencyIndices);
+
+        if use_single_sc
+
+            if nargin < 9 || isempty(sc_idx)
+                sc_idx = ceil(length(activeIndices) / 2);
+            end
+
+            freqs = fc + activeIndices(sc_idx) * sc_spacing;
+            numSubcarriers = 1;
+        else
+            freqs = fc + activeIndices * sc_spacing;
+            numSubcarriers = length(activeIndices);
+        end
+
     elseif scenario == "outdoor"
         sc_spacing = cfg.SubcarrierSpacing * 1e3;
         numSubcarriers = cfg.NSizeGrid * 12;
-        activeFreqIndices = (-numSubcarriers / 2:numSubcarriers / 2 - 1);
-        freqs = fc + activeFreqIndices * sc_spacing;
+        activeIndices = (-numSubcarriers / 2:numSubcarriers / 2 - 1);
+
+        if use_single_sc
+
+            if nargin < 9 || isempty(sc_idx)
+                sc_idx = ceil(length(activeIndices) / 2);
+            end
+
+            freqs = fc + activeIndices(sc_idx) * sc_spacing;
+            numSubcarriers = 1;
+        else
+            freqs = fc + activeIndices * sc_spacing;
+        end
+
     else
         error('Invalid scenario: use "indoor" or "outdoor"');
     end

@@ -1,13 +1,16 @@
 %% environment setup
 close all force; clear; clc;
+plot_rays = false;
+visualize = false;
 
 % load both file formats
 stl_file = "models/intersection_and_buildings.stl";
 mapFileName = "models/intersection_and_buildings/IntersectionAndBuildings.glb";
 [stl_data, ~] = stlread(stl_file);
 
-% use glb for visualization
-viewer = siteviewer("SceneModel", mapFileName, "ShowEdges", false, "ShowOrigin", false);
+if visualize
+    viewer = siteviewer("SceneModel", mapFileName, "ShowEdges", false, "ShowOrigin", false);
+end
 
 % environment dimensions setup from stl
 vertices = stl_data.Points;
@@ -33,11 +36,7 @@ pc_params.noise_std = 0;
 pc_params.edge_reduction = 1;
 pc_params.surface_reduction = 1;
 
-%% extra config
-plot_rays = false;
-visualize = true;
-
-% generate point cloud
+%% generate point cloud
 point_cloud = generate_pc(vertices, faces, pc_params, env_dims, visualize);
 
 %% System config
@@ -51,6 +50,10 @@ carrier = nrCarrierConfig;
 carrier.SubcarrierSpacing = 15;
 carrier.NSizeGrid = 52;
 cfg = carrier;
+
+% extra config
+use_single_sc = true;
+sc_idx = [];
 
 txArray = arrayConfig("Size", [8 12], "ElementSpacing", lambda / 2);
 rxArray = arrayConfig("Size", [1 num_rx_ant], "ElementSpacing", lambda / 2);
@@ -109,13 +112,15 @@ if num_users < approx_target_users
 end
 
 %% visualize
-show(AP, "ShowAntennaHeight", false)
-show(Users, "ShowAntennaHeight", false)
+if visualize
+    show(AP, "ShowAntennaHeight", false)
+    show(Users, "ShowAntennaHeight", false)
 
-if plot_rays
-    for userIdx = 1:(num_users / 20) % ~20 % rays
-        plot(rays{userIdx}, "Colormap", jet)
-        pause(0.05)
+    if plot_rays
+        for userIdx = 1:(num_users / 20) % ~20 % rays
+            plot(rays{userIdx}, "Colormap", jet)
+            pause(0.05)
+        end
     end
 end
 
@@ -127,11 +132,22 @@ for userIdx = 1:num_users
 end
 
 %% CSI collection
-numSubcarriers = cfg.NSizeGrid * 12;
-sc_spacing = cfg.SubcarrierSpacing * 1e3;
-
-activeFreqIndices = (-numSubcarriers / 2:numSubcarriers / 2 - 1);
-freqs = fc + activeFreqIndices * sc_spacing;
+if use_single_sc
+    numSubcarriers = 1;
+    sc_spacing = cfg.SubcarrierSpacing * 1e3;
+    total_scs = cfg.NSizeGrid * 12;
+    activeFreqIndices = (-total_scs / 2:total_scs / 2 - 1);
+    
+    if isempty(sc_idx)
+        sc_idx = ceil(length(activeFreqIndices) / 2);
+    end
+    freqs = fc + activeFreqIndices(sc_idx) * sc_spacing;
+else
+    numSubcarriers = cfg.NSizeGrid * 12;
+    sc_spacing = cfg.SubcarrierSpacing * 1e3;
+    activeFreqIndices = (-numSubcarriers / 2:numSubcarriers / 2 - 1);
+    freqs = fc + activeFreqIndices * sc_spacing;
+end
 
 H = zeros(num_users, num_tx_ant, num_rx_ant, numSubcarriers);
 AoD_all = cell(num_users, 1);
@@ -139,7 +155,7 @@ AoA_all = cell(num_users, 1);
 
 for userIdx = 1:num_users
     [H(userIdx, :, :, :), AoD_all{userIdx}, AoA_all{userIdx}] = ...
-        generate_csi(rays{userIdx}, fc, cfg, num_tx_ant, num_rx_ant, method, 'outdoor');
+        generate_csi(rays{userIdx}, fc, cfg, num_tx_ant, num_rx_ant, method, 'outdoor', use_single_sc, sc_idx);
 end
 
 % check for null values in channel matrix
@@ -196,12 +212,18 @@ dataset.channel.ray_interactions = ray_interactions;
 dataset.channel.ray_coefficients = ray_coefficients;
 dataset.channel.frequencies = freqs;
 
-filename = sprintf('%s/iab_%dx%d_%du_%.1fghz_%sRT.mat', ...
+sc_str = '';
+if use_single_sc
+    sc_str = sprintf('_sc%d', sc_idx);
+end
+
+filename = sprintf('%s/iab_%dx%d_%du_%.1fghz_%sRT%s.mat', ...
     output_dir, ...
     num_tx_ant, ...
     num_rx_ant, ...
     num_users, ...
     fc / 1e9, ...
-    method);
+    method, ...
+    sc_str);
 
 save(filename, 'dataset', '-v7.3');

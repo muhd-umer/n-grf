@@ -1,9 +1,14 @@
 %% environment setup
 close all force; clear; clc;
+plot_rays = false;
+visualize = false;
 
 mapFileName = "models/conference.stl";
 [stl_data, ~] = stlread(mapFileName);
-viewer = siteviewer("SceneModel", mapFileName, "Transparency", 0.25);
+
+if visualize
+    viewer = siteviewer("SceneModel", mapFileName, "Transparency", 0.25);
+end
 
 % environment dimensions setup
 vertices = stl_data.Points;
@@ -29,11 +34,7 @@ pc_params.noise_std = 0;
 pc_params.edge_reduction = 1;
 pc_params.surface_reduction = 1;
 
-%% extra config
-plot_rays = false;
-visualize = true;
-
-% generate point cloud
+%% generate point cloud
 point_cloud = generate_pc(vertices, faces, pc_params, env_dims, visualize);
 
 %% system config
@@ -45,6 +46,10 @@ num_rx_ant = 2;
 % OFDM parameters
 cfg = wlanNonHTConfig;
 cfg.ChannelBandwidth = 'CBW80';
+
+% extra config
+use_single_sc = true;
+sc_idx = [];
 
 txArray = arrayConfig("Size", [num_tx_ant / 4 num_tx_ant / 4], "ElementSpacing", lambda / 2);
 rxArray = arrayConfig("Size", [1 num_rx_ant], "ElementSpacing", lambda / 2);
@@ -91,7 +96,7 @@ pm = propagationModel("raytracing", ...
 
 rays = raytrace(AP, Users, pm, "Map", mapFileName);
 
-% Filter users to keep only those with valid rays
+% filter users to keep only those with valid rays
 valid_user_mask = ~cellfun(@isempty, rays);
 Users = Users(valid_user_mask);
 rays = rays(valid_user_mask);
@@ -103,13 +108,15 @@ if num_users < approx_target_users
 end
 
 %% visualize
-show(AP, "ShowAntennaHeight", false)
-show(Users, "ShowAntennaHeight", false)
+if visualize
+    show(AP, "ShowAntennaHeight", false)
+    show(Users, "ShowAntennaHeight", false)
 
-if plot_rays
-    for userIdx = 1:(num_users / 20) % ~20 % rays
-        plot(rays{userIdx}, "Colormap", jet)
-        pause(0.05)
+    if plot_rays
+        for userIdx = 1:(num_users / 20) % ~20 % rays
+            plot(rays{userIdx}, "Colormap", jet)
+            pause(0.05)
+        end
     end
 end
 
@@ -122,10 +129,20 @@ end
 
 %% CSI collection
 ofdmInfo = wlanNonHTOFDMInfo('L-LTF', cfg.ChannelBandwidth);
-numSubcarriers = length(ofdmInfo.ActiveFrequencyIndices);
+activeIndices = ofdmInfo.ActiveFrequencyIndices;
 
-sc_spacing = wlanSampleRate(cfg.ChannelBandwidth) / ofdmInfo.FFTLength;
-freqs = fc + ofdmInfo.ActiveFrequencyIndices * sc_spacing;
+if use_single_sc
+    if isempty(sc_idx)
+        sc_idx = ceil(length(activeIndices) / 2);
+    end
+    numSubcarriers = 1;
+    sc_spacing = wlanSampleRate(cfg.ChannelBandwidth) / ofdmInfo.FFTLength;
+    freqs = fc + activeIndices(sc_idx) * sc_spacing;
+else
+    numSubcarriers = length(activeIndices);
+    sc_spacing = wlanSampleRate(cfg.ChannelBandwidth) / ofdmInfo.FFTLength;
+    freqs = fc + activeIndices * sc_spacing;
+end
 
 H = zeros(num_users, num_tx_ant, num_rx_ant, numSubcarriers);
 AoD_all = cell(num_users, 1);
@@ -133,7 +150,7 @@ AoA_all = cell(num_users, 1);
 
 for userIdx = 1:num_users
     [H(userIdx, :, :, :), AoD_all{userIdx}, AoA_all{userIdx}] = ...
-        generate_csi(rays{userIdx}, fc, cfg, num_tx_ant, num_rx_ant, method, 'indoor');
+        generate_csi(rays{userIdx}, fc, cfg, num_tx_ant, num_rx_ant, method, 'indoor', use_single_sc, sc_idx);
 end
 
 % check for null values in channel matrix
@@ -190,12 +207,18 @@ dataset.channel.ray_interactions = ray_interactions;
 dataset.channel.ray_coefficients = ray_coefficients;
 dataset.channel.frequencies = freqs;
 
-filename = sprintf('%s/conf_%dx%d_%du_%.1fghz_%sRT.mat', ...
+sc_str = '';
+if use_single_sc
+    sc_str = sprintf('_sc%d', sc_idx);
+end
+
+filename = sprintf('%s/conf_%dx%d_%du_%.1fghz_%sRT%s.mat', ...
     output_dir, ...
     num_tx_ant, ...
     num_rx_ant, ...
     num_users, ...
     fc / 1e9, ...
-    method);
+    method, ...
+    sc_str);
 
 save(filename, 'dataset', '-v7.3');
