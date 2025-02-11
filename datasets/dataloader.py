@@ -23,7 +23,7 @@ def collate_wireless_batch(batch: list) -> Dict[str, Any]:
     for key in keys:
         if key in ["aod", "aoa"]:
             collated[key] = [item[key] for item in batch]
-        elif key in ["tx_position", "env_dims"]:
+        elif key in ["tx_position", "env_dims", "point_cloud"]:
             collated[key] = batch[0][key]
         else:
             collated[key] = torch.stack([item[key] for item in batch])
@@ -32,13 +32,14 @@ def collate_wireless_batch(batch: list) -> Dict[str, Any]:
 
 def get_wireless_dataloader(
     data_path: str,
-    batch_size: int = 32,
-    num_workers: int = 4,
+    batch_size: int = 16,
+    num_workers: int = 0,
     shuffle: bool = True,
     num_pc: Optional[int] = None,
     train: bool = True,
     train_ratio: float = 0.8,
     seed: Optional[int] = None,
+    drop_last: bool = False,
 ) -> DataLoader:
     """Create a DataLoader for the wireless dataset.
 
@@ -51,6 +52,7 @@ def get_wireless_dataloader(
         train (bool): Whether to load training or test set
         train_ratio (float): Ratio of data to use for training
         seed (int, optional): Random seed for train/test split
+        drop_last (bool): Whether to drop the last incomplete batch
 
     Returns:
         DataLoader: The configured data loader
@@ -70,4 +72,5 @@ def get_wireless_dataloader(
         num_workers=num_workers,
         collate_fn=collate_wireless_batch,
         pin_memory=True,
+        drop_last=drop_last,
     )

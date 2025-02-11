@@ -3,9 +3,9 @@
 from pathlib import Path
 from typing import Optional, Tuple
 
-import mat73
 import numpy as np
 import torch
+from pymatreader import read_mat
 from torch.utils.data import Dataset, random_split
 
 
@@ -43,7 +43,7 @@ class WirelessDataset(Dataset):
         np.random.seed(self.seed)
 
         # load mat73 file
-        data = mat73.loadmat(str(self.data_path))["dataset"]
+        data = read_mat(str(self.data_path))["dataset"]
         self._process_data(data)
 
         # perform train/test split
@@ -64,14 +64,19 @@ class WirelessDataset(Dataset):
         # handle complex channel matrix
         H = torch.from_numpy(
             data["channel"]["H"]
-        )  # shape: [num_users, tx_ant, rx_ant, num_sc]
+        )  # shape: [num_users, tx_ant, rx_ant, num_sc] if multiple subcarriers
+        # [num_users, tx_ant, rx_ant] if single subcarrier
 
         if len(H.shape) == 3:  # single subcarrier
             self.channel_matrix = torch.stack([H.real, H.imag], dim=-1).float()
-        else:  # multiple subcarriers case
+        elif len(H.shape) == 4:  # multiple subcarriers case
             mid_subcarrier = H.shape[-1] // 2
             H_mid = H[..., mid_subcarrier]
             self.channel_matrix = torch.stack([H_mid.real, H_mid.imag], dim=-1).float()
+        else:
+            raise ValueError(
+                f"Invalid channel matrix shape. Expected 3 or 4, got {len(H.shape)}"
+            )
 
         self.tx_position = torch.from_numpy(data["nodes"]["ap_position"]).float()
         self.rx_positions = torch.from_numpy(data["nodes"]["users_positions"].T).float()
