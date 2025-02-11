@@ -1,7 +1,6 @@
 *Zone.Identifier
 *:Zone.Identifier
 .vscode/
-submodules/simple-knn/
 
 # matlab
 *.mat
