@@ -40,7 +40,7 @@ point_cloud = generate_pc(vertices, faces, pc_params, env_dims, visualize);
 %% system config
 fc = 5e9;
 lambda = physconst("lightspeed") / fc;
-num_tx_ant = 16;
+num_tx_ant = 4 * 4;
 num_rx_ant = 2;
 
 % OFDM parameters
@@ -48,10 +48,10 @@ cfg = wlanNonHTConfig;
 cfg.ChannelBandwidth = 'CBW80';
 
 % extra config
-use_single_sc = true;
+use_single_sc = false;
 sc_idx = [];
 
-txArray = arrayConfig("Size", [num_tx_ant / 4 num_tx_ant / 4], "ElementSpacing", lambda / 2);
+txArray = arrayConfig("Size", [4 4], "ElementSpacing", lambda);
 rxArray = arrayConfig("Size", [1 num_rx_ant], "ElementSpacing", lambda / 2);
 
 %% AP setup
@@ -79,12 +79,7 @@ end
 
 %% RT simulation
 method = "sbr"; % "image" | "sbr"
-
-if method == "image"
-    max_refs = 2;
-else
-    max_refs = 3;
-end
+max_refs = 2;
 
 pm = propagationModel("raytracing", ...
     "Method", method, ...

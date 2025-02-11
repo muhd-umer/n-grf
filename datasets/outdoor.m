@@ -42,7 +42,7 @@ point_cloud = generate_pc(vertices, faces, pc_params, env_dims, visualize);
 %% System config
 fc = 6e9;
 lambda = physconst("lightspeed") / fc;
-num_tx_ant = 8 * 12;
+num_tx_ant = 8 * 8;
 num_rx_ant = 2;
 
 % OFDM parameters
@@ -55,7 +55,7 @@ cfg = carrier;
 use_single_sc = true;
 sc_idx = [];
 
-txArray = arrayConfig("Size", [8 12], "ElementSpacing", lambda / 2);
+txArray = arrayConfig("Size", [8 8], "ElementSpacing", lambda);
 rxArray = arrayConfig("Size", [1 num_rx_ant], "ElementSpacing", lambda / 2);
 
 %% AP setup
@@ -66,7 +66,7 @@ AP = txsite("cartesian", ...
     "TransmitterPower", 10);
 
 %% user setup
-approx_target_users = 3146;
+approx_target_users = 3147;
 
 % seed
 S = RandStream("mt19937ar", "Seed", 17);
@@ -84,12 +84,7 @@ end
 
 %% RT simulation
 method = "sbr"; % "image" | "sbr"
-
-if method == "image"
-    max_refs = 2;
-else
-    max_refs = 4;
-end
+max_refs = 2;
 
 pm = propagationModel("raytracing", ...
     "Method", method, ...
