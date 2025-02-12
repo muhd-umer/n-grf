@@ -21,6 +21,6 @@ _Note: Current name is temporary and subject to change_
     ```bash
     git submodule update --init --recursive
 
-    uv pip install -e submodules/simple-knn/ --config-settings editable_mode="compat"
-    uv pip install -e submodules/diff-gaussian-rasterization/ --config-settings editable_mode="compat"
+    uv add --editable submodules/simple-knn/ --config-settings editable_mode="compat"
+    uv add --editable submodules/diff-gaussian-rasterization/ --config-settings editable_mode="compat"
     ```
