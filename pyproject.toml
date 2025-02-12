@@ -1,0 +1,22 @@
+[project]
+name = "ard-r2f"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "ipykernel>=6.29.5",
+    "pymatreader>=1.0.0",
+    "setuptools>=75.8.0",
+    "torch>=2.6.0",
+    "torchvision>=0.21.0",
+]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu124", marker = "sys_platform == 'linux'" }
+torchvision = { index = "pytorch-cu124", marker = "sys_platform == 'linux'" }
+
+[[tool.uv.index]]
+name = "pytorch-cu124"
+url = "https://download.pytorch.org/whl/cu124"
+explicit = true

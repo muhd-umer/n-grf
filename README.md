@@ -6,29 +6,21 @@ _Note: Current name is temporary and subject to change_
 
 # Installation
 
-Create a virtual environment using `mamba`:
+- Create a virtual environment using `uv`. If you don't have `uv` installed, follow the instructions [here](https://docs.astral.sh/uv/getting-started/installation/).
+    ```bash
+    uv venv
+    source .venv/bin/activate
+    ```
 
-```bash
-mamba env create -n ard-r2f python=3.12
-```
+- Install the dependencies:
+    ```bash
+    uv sync
+    ```
 
-Activate the environment:
+- Install required submodules:
+    ```bash
+    git submodule update --init --recursive
 
-```bash
-mamba activate ard-r2f
-```
-
-Install the dependencies:
-
-```bash
-pip install -r requirements.txt
-```
-
-Install submodules:
-
-```bash
-git submodule update --init --recursive
-
-pip install -e submodules/simple-knn/
-pip install -e submodules/diff-gaussian-rasterization/
-```
+    uv pip install -e submodules/simple-knn/ --config-settings editable_mode="compat"
+    uv pip install -e submodules/diff-gaussian-rasterization/ --config-settings editable_mode="compat"
+    ```
