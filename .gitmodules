@@ -1,7 +1,8 @@
 [submodule "submodules/simple-knn"]
 	path = submodules/simple-knn
 	url = https://github.com/muhd-umer/simple-knn.git
+	branch = main
 [submodule "submodules/diff-gaussian-rasterization"]
 	path = submodules/diff-gaussian-rasterization
-	url = https://github.com/muhd-umer/diff-gaussian-rasterization.git
-	branch = 3dgs_accel
+	url = https://github.com/muhd-umer/diff-gaussian-rasterization
+	branch = main
