@@ -98,11 +98,11 @@ def eval_sh(degree: int, sh: torch.Tensor, dirs: torch.Tensor) -> torch.Tensor:
     return result
 
 
-def RGB2SH(rgb: torch.Tensor) -> torch.Tensor:
+def rgb_to_sh(rgb: torch.Tensor) -> torch.Tensor:
     """Convert RGB to spherical harmonics coefficients"""
     return (rgb - 0.5) / C0
 
 
-def SH2RGB(sh: torch.Tensor) -> torch.Tensor:
+def sh_to_rgb(sh: torch.Tensor) -> torch.Tensor:
     """Convert spherical harmonics coefficients to RGB"""
     return sh * C0 + 0.5
