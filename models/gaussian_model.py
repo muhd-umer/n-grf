@@ -5,10 +5,14 @@ from typing import Optional
 
 import torch
 import torch.nn as nn
-from simple_knn._C import distCUDA2
+from simple_knn._C import distCUDA2  # type: ignore
 
 from utils.sh_utils import rgb_to_sh
-from utils.transform_utils import build_rotation, inverse_sigmoid
+from utils.transform_utils import (
+    build_scaling_rotation,
+    inverse_sigmoid,
+    strip_symmetric,
+)
 
 
 @dataclass
@@ -69,6 +73,35 @@ class GaussianModel(nn.Module):
 
         # optional predicted normals
         self._normals = torch.empty(0) if self.config.use_pred_normals else None
+
+        self.setup_functions()
+
+    def setup_functions(self):
+        """Setup activation and transformation functions used by the model."""
+
+        def build_covariance_from_scaling_rotation(scaling, scaling_modifier, rotation):
+            """Build covariance matrix from scaling and rotation.
+
+            Args:
+                scaling: Scale factors per Gaussian
+                scaling_modifier: Global scale modifier
+                rotation: Rotation quaternions per Gaussian
+
+            Returns:
+                Covariance matrices in symmetric form
+            """
+            L = build_scaling_rotation(scaling_modifier * scaling, rotation)
+            actual_covariance = L @ L.transpose(1, 2)
+            symm = strip_symmetric(actual_covariance)
+            return symm
+
+        # setup activation functions
+        self.scaling_activation = torch.exp
+        self.scaling_inverse_activation = torch.log
+        self.opacity_activation = torch.sigmoid
+        self.inverse_opacity_activation = inverse_sigmoid
+        self.rotation_activation = torch.nn.functional.normalize
+        self.covariance_activation = build_covariance_from_scaling_rotation
 
     def init_from_pc(self, points: torch.Tensor, colors: Optional[torch.Tensor] = None):
         """Initialize Gaussian properties from point cloud.
@@ -132,12 +165,12 @@ class GaussianModel(nn.Module):
     @property
     def get_scaling(self):
         """Get scaling factors with activation applied."""
-        return torch.exp(self._scaling)
+        return self.scaling_activation(self._scaling)
 
     @property
     def get_rotation(self):
         """Get rotations with normalization applied."""
-        return torch.nn.functional.normalize(self._rotation)
+        return self.rotation_activation(self._rotation)
 
     @property
     def get_xyz(self):
@@ -147,18 +180,42 @@ class GaussianModel(nn.Module):
     @property
     def get_opacity(self):
         """Get opacity values with sigmoid activation."""
-        return torch.sigmoid(self._opacity)
+        return self.opacity_activation(self._opacity)
+
+    @property
+    def get_features(self):
+        """Get combined spherical harmonic features."""
+        return torch.cat((self._features_dc, self._features_rest), dim=1)
+
+    @property
+    def get_features_dc(self):
+        """Get DC component of spherical harmonic features."""
+        return self._features_dc
+
+    @property
+    def get_features_rest(self):
+        """Get higher order spherical harmonic features."""
+        return self._features_rest
 
     @property
     def get_normals(self):
         """Get predicted normals if enabled."""
         if not self.config.use_pred_normals:
             raise ValueError("Predicted normals not enabled in config")
-        return torch.nn.functional.normalize(self._normals)
+        return self.rotation_activation(self._normals)
 
     def get_covariance(self, scaling_modifier: float = 1.0):
-        """Not implemented yet."""
-        raise NotImplementedError
+        """Compute covariance matrices for each Gaussian.
+
+        Args:
+            scaling_modifier: Global scaling factor modifier
+
+        Returns:
+            Covariance matrices in symmetric form
+        """
+        return self.covariance_activation(
+            self.get_scaling, scaling_modifier, self._rotation
+        )
 
     def training_setup(self, *args, **kwargs):
         """Not implemented yet."""
