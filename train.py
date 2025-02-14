@@ -68,17 +68,6 @@ def parse_args():
         help="Enable TensorBoard logging",
     )
     parser.add_argument(
-        "--visualize",
-        action="store_true",
-        help="Enable 3D visualization during training",
-    )
-    parser.add_argument(
-        "--vis_freq",
-        type=int,
-        default=1000,
-        help="Visualization frequency in iterations",
-    )
-    parser.add_argument(
         "--stl_path",
         type=str,
         default="datasets/models/conference.stl",
