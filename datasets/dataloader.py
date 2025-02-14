@@ -14,17 +14,14 @@ def collate_wireless_batch(batch: list) -> Dict[str, Any]:
         batch (list): List of dataset items to be collated
 
     Returns:
-        Dict[str, Any]: Collated batch with stacked tensors for variable data,
-                        and constant keys kept as a single element.
+        Dict[str, Any]: Collated batch with stacked tensors
     """
     keys = batch[0].keys()
     collated = {}
 
     for key in keys:
-        if key in ["aod", "aoa"]:
+        if key == "aoa":
             collated[key] = [item[key] for item in batch]
-        elif key in ["tx_position", "env_dims", "point_cloud"]:
-            collated[key] = batch[0][key]
         else:
             collated[key] = torch.stack([item[key] for item in batch])
     return collated

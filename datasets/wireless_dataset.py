@@ -112,19 +112,40 @@ class WirelessDataset(Dataset):
     def __getitem__(self, idx):
         actual_idx = self.indices[idx]
 
-        if self.num_pc is not None and self.num_pc < len(self.point_cloud):
-            rng = np.random.RandomState(self.seed + idx)
-            pc_indices = rng.choice(len(self.point_cloud), self.num_pc, replace=False)
-            point_cloud = self.point_cloud[pc_indices]
-        else:
-            point_cloud = self.point_cloud
-
         return {
-            "point_cloud": point_cloud,
-            "tx_position": self.tx_position,
             "rx_position": self.rx_positions[actual_idx],
             "channel_matrix": self.channel_matrix[actual_idx],
             # "aod": self.aod[actual_idx],
             "aoa": self.aoa[actual_idx],
-            "env_dims": self.env_dims,
         }
+
+    def get_tx_position(self) -> torch.Tensor:
+        """Get transmitter position."""
+        if not hasattr(self, "tx_position"):
+            raise RuntimeError("Dataset not initialized - tx_position not available")
+        return self.tx_position
+
+    def get_env_dims(self) -> torch.Tensor:
+        """Get environment dimensions."""
+        if not hasattr(self, "env_dims"):
+            raise RuntimeError("Dataset not initialized - env_dims not available")
+        return self.env_dims
+
+    def get_point_cloud(
+        self, num_points: Optional[int] = None, seed: Optional[int] = None
+    ) -> torch.Tensor:
+        """Get point cloud, optionally sampled.
+
+        Args:
+            num_points: Number of points to sample. If None, returns full point cloud
+            seed: Random seed for sampling. If None, uses dataset seed
+        """
+        if not hasattr(self, "point_cloud"):
+            raise RuntimeError("Dataset not initialized - point cloud not available")
+
+        if num_points is None or num_points >= len(self.point_cloud):
+            return self.point_cloud
+
+        rng = np.random.RandomState(seed if seed is not None else self.seed)
+        pc_indices = rng.choice(len(self.point_cloud), num_points, replace=False)
+        return self.point_cloud[pc_indices]

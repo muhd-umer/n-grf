@@ -99,9 +99,13 @@ def train(args, logger, writer):
     dataloader = get_wireless_dataloader(
         args.data_path,
         batch_size=args.batch_size,
-        num_pc=args.num_points,
         drop_last=True,
     )
+
+    # get static environment data
+    point_cloud = dataloader.dataset.get_point_cloud(args.num_points)
+    tx_position = dataloader.dataset.get_tx_position()
+    env_dims = dataloader.dataset.get_env_dims()
 
     logger.info("Initializing model...")
     model_config = GaussianModelConfig(
@@ -111,11 +115,8 @@ def train(args, logger, writer):
     )
     model = GaussianModel(model_config).to(args.device)
 
-    # get initial point cloud and initialize model
-    batch = next(iter(dataloader))
-    point_cloud = batch["point_cloud"].to(args.device)
-    model.init_from_pc(point_cloud)
-
+    # initialize model with point cloud
+    model.init_from_pc(point_cloud.to(args.device))
     logger.info(f"Initialized model with {len(point_cloud)} Gaussians")
 
     # training loop
