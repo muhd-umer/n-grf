@@ -21,6 +21,6 @@ _Note: Current name is temporary and subject to change_
     ```bash
     git submodule update --init --recursive
 
-    uv add --editable submodules/simple-knn/ --config-settings editable_mode="compat"
-    uv add --editable submodules/diff-gaussian-rasterization/ --config-settings editable_mode="compat"
+    uv add --editable "simple-knn @ ./submodules/simple-knn"
+    uv add --editable "diff-gaussian-rasterization @ ./submodules/diff-gaussian-rasterization"
     ```
