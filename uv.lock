@@ -36,7 +36,7 @@ requires-dist = [
     { name = "ipykernel", specifier = ">=6.29.5" },
     { name = "pymatreader", specifier = ">=1.0.0" },
     { name = "setuptools", specifier = ">=75.8.0" },
-    { name = "simple-knn", editable = "submodules/simple-knn" },
+    { name = "simple-knn", directory = "submodules/simple-knn" },
     { name = "torch", marker = "sys_platform != 'linux'", specifier = ">=2.6.0" },
     { name = "torch", marker = "sys_platform == 'linux'", specifier = ">=2.6.0", index = "https://download.pytorch.org/whl/cu124" },
     { name = "torchvision", marker = "sys_platform != 'linux'", specifier = ">=0.21.0" },
@@ -786,7 +786,7 @@ wheels = [
 [[package]]
 name = "simple-knn"
 version = "0.1.0"
-source = { editable = "submodules/simple-knn" }
+source = { directory = "submodules/simple-knn" }
 
 [[package]]
 name = "six"
