@@ -10,6 +10,7 @@ dependencies = [
     "pymatreader>=1.0.0",
     "setuptools>=75.8.0",
     "simple-knn",
+    "tensorboard>=2.19.0",
     "torch>=2.6.0",
     "torchvision>=0.21.0",
 ]
