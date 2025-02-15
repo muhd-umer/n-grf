@@ -10,15 +10,19 @@ dependencies = [
     "pymatreader>=1.0.0",
     "setuptools>=75.8.0",
     "simple-knn",
+    "tensorboard>=2.19.0",
     "torch>=2.6.0",
     "torchvision>=0.21.0",
 ]
+
+[tool.uv]
+config-settings = { editable_mode = "compat" }
 
 [tool.uv.sources]
 torch = { index = "pytorch-cu124", marker = "sys_platform == 'linux'" }
 torchvision = { index = "pytorch-cu124", marker = "sys_platform == 'linux'" }
 diff-gaussian-rasterization = { path = "submodules/diff-gaussian-rasterization", editable = true }
-simple-knn = { path = "submodules/simple-knn", editable = true }
+simple-knn = { path = "submodules/simple-knn" }
 
 [[tool.uv.index]]
 name = "pytorch-cu124"

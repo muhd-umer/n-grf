@@ -1,6 +1,7 @@
 # utils/train_utils.py
 
 import logging
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -52,10 +53,12 @@ def setup_logging(log_dir: Path) -> logging.Logger:
         Configured logger instance
     """
     log_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_file = log_dir / f"train_{timestamp}.log"
 
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        handlers=[logging.FileHandler(log_dir / "train.log"), logging.StreamHandler()],
+        handlers=[logging.FileHandler(log_file), logging.StreamHandler()],
     )
     return logging.getLogger(__name__)
