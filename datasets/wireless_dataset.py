@@ -13,9 +13,9 @@ from torch.utils.data import Dataset, random_split
 class WirelessDataset(Dataset):
     """A dataset class for wireless channel data.
 
-    This dataset handles loading and processing of wireless channel data
-    including point clouds, transmitter/receiver positions, and channel
-    matrices.
+    This dataset handles loading and processing of wireless channel data from
+    .mat files, including point cloud, channel matrix, path loss, angles of
+    arrival, receiver positions, and other relevant information.
 
     Args:
         data_path (str): Path to the .mat dataset file
@@ -101,6 +101,7 @@ class WirelessDataset(Dataset):
 
         self.tx_position = torch.from_numpy(data["nodes"]["ap_position"]).float()
         self.rx_positions = torch.from_numpy(data["nodes"]["users_positions"].T).float()
+        self.path_loss = torch.from_numpy(data["channel"]["path_loss"]).float()
 
         def process_angle_data(angle_list):
             return [torch.from_numpy(np.array(d)).float() for d in angle_list]
@@ -126,19 +127,6 @@ class WirelessDataset(Dataset):
         self.ray_points = channel["ray_points"]
         self.ray_interactions = channel["ray_interactions"]
         self.ray_coefficients = channel["ray_coefficients"]
-
-    def __len__(self):
-        return len(self.indices)
-
-    def __getitem__(self, idx):
-        actual_idx = self.indices[idx]
-
-        return {
-            "rx_position": self.rx_positions[actual_idx],
-            "channel_matrix": self.channel_matrix[actual_idx],
-            # "aod": self.aod[actual_idx],
-            "aoa": self.aoa[actual_idx],
-        }
 
     def get_tx_position(self) -> torch.Tensor:
         """Get transmitter position."""
@@ -182,3 +170,17 @@ class WirelessDataset(Dataset):
     def current_subcarrier_idx(self) -> Optional[int]:
         """Return the currently selected subcarrier index."""
         return self.subcarrier_idx
+
+    def __len__(self):
+        return len(self.indices)
+
+    def __getitem__(self, idx):
+        current_idx = self.indices[idx]
+
+        return {
+            "rx_position": self.rx_positions[current_idx],
+            "channel_matrix": self.channel_matrix[current_idx],
+            # "aod": self.aod[current_idx],
+            "aoa": self.aoa[current_idx],
+            "path_loss": self.path_loss[current_idx],
+        }
