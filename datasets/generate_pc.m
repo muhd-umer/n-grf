@@ -1,34 +1,40 @@
 function all_points = generate_pc(vertices, faces, params, env_dims, visualize)
-    %GENERATE_PC Generate point clouds for a given environment
-    %   POINTS = GENERATE_PC(VERTICES, FACES, PARAMS, ENV_DIMS, VISUALIZE)
-    %   generates a point cloud for a GIVEN environment using various
-    %   sampling strategies.
+    % GENERATE_PC Generate point clouds for a given environment
     %
-    %   Inputs:
-    %       VERTICES    - Nx3 matrix of vertex coordinates from STL
-    %       FACES      - Mx3 matrix of face indices from STL
-    %       PARAMS     - Structure containing point generation parameters:
-    %           .edge_density      - Points per edge unit length (default: 0)
-    %           .surface_density   - Points per triangle unit area (default: 0)
-    %           .volume_density    - Points per unit volume (default: 0)
-    %           .boundary_density  - Points per boundary surface area (default: 0)
-    %           .random_points     - Additional random points in volume (default: 0)
-    %           .noise_std        - Standard deviation for point perturbation (default: 0)
-    %           .edge_reduction    - Factor to reduce edge points (default: 1)
-    %           .surface_reduction - Factor to reduce surface points (default: 1)
-    %           .use_dbscan        - Boolean to enable DBSCAN clustering (default: false)
-    %           .dbscan_epsilon    - DBSCAN epsilon parameter (default: 0.2)
-    %           .dbscan_minpts     - DBSCAN minimum points parameter (default: 5)
-    %       ENV_DIMS   - 3x2 matrix of environment dimensions [min_x max_x;
-    %                                                        min_y max_y;
-    %                                                        min_z max_z]
-    %       VISUALIZE  - (Optional) Boolean to display point cloud, default false
+    % Description:
+    %   Generates a point cloud representation of an environment using multiple
+    %   sampling strategies including edge, surface, volume, and boundary points.
+    %   Supports optional DBSCAN clustering and visualization.
     %
-    %   Output:
-    %       ALL_POINTS - Px3 matrix of generated points combining edge, surface,
-    %                   boundary, and volume points
+    % Inputs:
+    %   vertices  - [N×3] Matrix of vertex coordinates from STL
+    %   faces    - [M×3] Matrix of face indices from STL
+    %   params   - Structure with the following optional fields:
+    %     .edge_density      - Points per edge unit length (default: 0)
+    %     .surface_density   - Points per triangle unit area (default: 0)
+    %     .volume_density    - Points per unit volume (default: 0)
+    %     .boundary_density  - Points per boundary surface area (default: 0)
+    %     .random_points     - Additional random points in volume (default: 0)
+    %     .noise_std        - Standard deviation for perturbation (default: 0)
+    %     .edge_reduction    - Factor to reduce edge points (default: 1)
+    %     .surface_reduction - Factor to reduce surface points (default: 1)
+    %     .use_dbscan       - Enable DBSCAN clustering (default: false)
+    %     .dbscan_epsilon   - DBSCAN epsilon parameter (default: 0.2)
+    %     .dbscan_minpts    - DBSCAN minimum points (default: 5)
+    %   env_dims - [3×2] Matrix of environment bounds [min_x max_x;
+    %                                                 min_y max_y;
+    %                                                 min_z max_z]
+    %   visualize - (Optional) Boolean to enable visualization (default: false)
     %
-    %   See also STLREAD, POINTCLOUD, PCSHOW
+    % Output:
+    %   all_points - [P×3] Matrix of generated point cloud coordinates
+    %
+    % Example:
+    %   [v, f] = stlread('building.stl');
+    %   params.edge_density = 1;
+    %   params.surface_density = 0.5;
+    %   env_dims = [-10 10; -10 10; 0 20];
+    %   points = generate_pc(v, f, params, env_dims, true);
 
     % set default values if not provided
     default_params = struct('edge_density', 0, ...
