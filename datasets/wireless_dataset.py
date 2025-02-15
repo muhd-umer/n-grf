@@ -1,5 +1,6 @@
 # datasets/wireless_dataset.py
 
+import re
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -22,6 +23,7 @@ class WirelessDataset(Dataset):
         train (bool, optional): If True, returns training set, else test set
         train_ratio (float, optional): Ratio of data to use for training (default: 0.8)
         seed (int, optional): Random seed for train/test split and point cloud sampling
+        subcarrier_idx (int, optional): Index of the subcarrier to use (default: None)
     """
 
     def __init__(
@@ -31,12 +33,23 @@ class WirelessDataset(Dataset):
         train: bool = True,
         train_ratio: float = 0.8,
         seed: Optional[int] = None,
+        subcarrier_idx: Optional[int] = None,
     ):
         super().__init__()
 
         self.data_path = Path(data_path)
         self.num_pc = num_pc
         self.seed = seed if seed is not None else 42
+
+        if subcarrier_idx is None:
+            filename = self.data_path.stem
+            sc_match = re.search(r"_sc(\d+)", filename)
+            if sc_match:
+                self.subcarrier_idx = int(sc_match.group(1))
+            else:
+                self.subcarrier_idx = None
+        else:
+            self.subcarrier_idx = subcarrier_idx
 
         # set seeds for reproducibility
         torch.manual_seed(self.seed)
@@ -70,9 +83,17 @@ class WirelessDataset(Dataset):
         if len(H.shape) == 3:  # single subcarrier
             self.channel_matrix = torch.stack([H.real, H.imag], dim=-1).float()
         elif len(H.shape) == 4:  # multiple subcarriers case
-            mid_subcarrier = H.shape[-1] // 2
-            H_mid = H[..., mid_subcarrier]
-            self.channel_matrix = torch.stack([H_mid.real, H_mid.imag], dim=-1).float()
+            if self.subcarrier_idx is None:
+                self.subcarrier_idx = H.shape[-1] // 2
+            elif self.subcarrier_idx >= H.shape[-1]:
+                raise ValueError(
+                    f"Subcarrier index {self.subcarrier_idx} out of range [0, {H.shape[-1]-1}]"
+                )
+
+            H_selected = H[..., self.subcarrier_idx]
+            self.channel_matrix = torch.stack(
+                [H_selected.real, H_selected.imag], dim=-1
+            ).float()
         else:
             raise ValueError(
                 f"Invalid channel matrix shape. Expected 3 or 4, got {len(H.shape)}"
@@ -84,7 +105,7 @@ class WirelessDataset(Dataset):
         def process_angle_data(angle_list):
             return [torch.from_numpy(np.array(d)).float() for d in angle_list]
 
-        # authors: AoD is unneeded as it is primarily related to the txsite
+        # NOTE: AoD is unneeded as it is primarily related to the txsite
         # self.aod = process_angle_data(data["channel"]["AoD"])
         self.aoa = process_angle_data(data["channel"]["AoA"])
         self.env_dims = torch.from_numpy(data["environment"]["dimensions"]).float()
@@ -149,3 +170,15 @@ class WirelessDataset(Dataset):
         rng = np.random.RandomState(seed if seed is not None else self.seed)
         pc_indices = rng.choice(len(self.point_cloud), num_points, replace=False)
         return self.point_cloud[pc_indices]
+
+    @property
+    def num_subcarriers(self) -> Optional[int]:
+        """Return the number of subcarriers in the dataset if multi-carrier, None otherwise."""
+        if hasattr(self, "frequencies"):
+            return len(self.frequencies) if self.frequencies is not None else None
+        return None
+
+    @property
+    def current_subcarrier_idx(self) -> Optional[int]:
+        """Return the currently selected subcarrier index."""
+        return self.subcarrier_idx

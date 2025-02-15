@@ -37,6 +37,7 @@ def get_wireless_dataloader(
     train_ratio: float = 0.8,
     seed: Optional[int] = None,
     drop_last: bool = False,
+    subcarrier_idx: Optional[int] = None,
 ) -> DataLoader:
     """Create a DataLoader for the wireless dataset.
 
@@ -50,6 +51,8 @@ def get_wireless_dataloader(
         train_ratio (float): Ratio of data to use for training
         seed (int, optional): Random seed for train/test split
         drop_last (bool): Whether to drop the last incomplete batch
+        subcarrier_idx (int, optional): Index of subcarrier to use for multi-carrier data.
+            If None, uses middle subcarrier or extracts from filename for single-carrier.
 
     Returns:
         DataLoader: The configured data loader
@@ -60,6 +63,7 @@ def get_wireless_dataloader(
         train=train,
         train_ratio=train_ratio,
         seed=seed,
+        subcarrier_idx=subcarrier_idx,
     )
 
     return DataLoader(
