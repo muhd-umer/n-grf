@@ -42,8 +42,6 @@ point_cloud = generate_pc(vertices, faces, pc_params, env_dims, visualize);
 %% System config
 fc = 6e9;
 lambda = physconst("lightspeed") / fc;
-num_tx_ant = 8 * 8;
-num_rx_ant = 2;
 
 % OFDM parameters
 carrier = nrCarrierConfig;
@@ -55,8 +53,11 @@ cfg = carrier;
 use_single_sc = true;
 sc_idx = [];
 
-txArray = arrayConfig("Size", [8 8], "ElementSpacing", lambda);
-rxArray = arrayConfig("Size", [1 num_rx_ant], "ElementSpacing", lambda / 2);
+txArray = phased.URA("Size", [8 8], "ElementSpacing", lambda / 2);
+rxArray = phased.ULA("NumElements", 2, "ElementSpacing", lambda / 2);
+
+num_tx_ant = prod(txArray.Size);
+num_rx_ant = rxArray.NumElements;
 
 %% AP setup
 AP = txsite("cartesian", ...
@@ -151,7 +152,7 @@ path_loss = zeros(num_users, 1);
 
 for userIdx = 1:num_users
     [H(userIdx, :, :, :), AoD_all{userIdx}, AoA_all{userIdx}] = ...
-        generate_csi(rays{userIdx}, fc, cfg, num_tx_ant, num_rx_ant, method, 'outdoor', use_single_sc, sc_idx);
+        generate_csi(rays{userIdx}, fc, cfg, txArray, rxArray, method, 'outdoor', use_single_sc, sc_idx);
     path_loss(userIdx) = mean([rays{userIdx}.PathLoss]);
 end
 

@@ -1,8 +1,32 @@
-function [H, AoD, AoA] = generate_csi(rays, fc, cfg, num_tx_ant, num_rx_ant, method, scenario, use_single_sc, sc_idx)
+function [H, AoD, AoA] = generate_csi(rays, fc, cfg, txArray, rxArray, method, scenario, use_single_sc, sc_idx)
+    % GENERATE_CSI Generate MIMO channel matrix using array steering vectors.
+    %
+    % This function computes a MIMO channel matrix H such that each TX-RX
+    % pair receives a weighted contribution based on the ray's complex gain
+    % and the spatial response of the arrays at the transmitter and receiver.
+    %
+    % Inputs:
+    %   rays        - structure array containing ray information
+    %   fc          - carrier frequency (Hz)
+    %   cfg         - WLAN configuration (used for OFDM parameters)
+    %   txArray     - phased.URA object for transmit array
+    %   rxArray     - phased.ULA object for receive array
+    %   method      - channel computation method ("sbr" or alternative)
+    %   scenario    - "indoor" or "outdoor"
+    %   use_single_sc - boolean flag for single subcarrier processing
+    %   sc_idx      - (optional) subcarrier index to use when use_single_sc is true
+    %
+    % Outputs:
+    %   H   - Channel matrix of size (num_tx_ant, num_rx_ant, numSubcarriers)
+    %   AoD - Matrix containing angles of departure (2 x numRays)
+    %   AoA - Matrix containing angles of arrival (2 x numRays)
 
     if nargin < 8
         use_single_sc = false;
     end
+
+    num_tx_ant = prod(txArray.Size);
+    num_rx_ant = rxArray.NumElements;
 
     if scenario == "indoor"
         ofdmInfo = wlanNonHTOFDMInfo('L-LTF', cfg.ChannelBandwidth);
@@ -53,6 +77,10 @@ function [H, AoD, AoA] = generate_csi(rays, fc, cfg, num_tx_ant, num_rx_ant, met
         AoD(:, rayIdx) = ray.AngleOfDeparture;
         AoA(:, rayIdx) = ray.AngleOfArrival;
 
+        % compute steering vectors
+        lambda = physconst("lightspeed") / fc;
+        [a_tx, a_rx] = steering_vec(ray.AngleOfDeparture, txArray, rxArray, lambda);
+
         for scIdx = 1:length(freqs)
             f = freqs(scIdx);
 
@@ -65,13 +93,7 @@ function [H, AoD, AoA] = generate_csi(rays, fc, cfg, num_tx_ant, num_rx_ant, met
             end
 
             h = 10 ^ (-pl / 20) * exp(-1j * phase);
-
-            for rx = 1:num_rx_ant
-
-                for tx = 1:num_tx_ant
-                    H(tx, rx, scIdx) = H(tx, rx, scIdx) + h;
-                end
-            end
+            H(:, :, scIdx) = H(:, :, scIdx) + h * (a_tx * a_rx.');
         end
     end
 end
