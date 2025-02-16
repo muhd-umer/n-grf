@@ -24,8 +24,8 @@ _Note: Current name is temporary and subject to change_
     uv sync
     ```
 
-- If installation of submodules fails, install them manually as (remove the `--editable` flag if not needed):
+- If installation of submodules fails, install them manually as (add the `--editable` flag as needed):
     ```bash
-    uv add --editable "simple-knn @ ./submodules/simple-knn"
-    uv add --editable "diff-gaussian-rasterization @ ./submodules/diff-gaussian-rasterization"
+    uv add "simple-knn @ ./submodules/simple-knn"
+    uv add "diff-gaussian-rasterization @ ./submodules/diff-gaussian-rasterization"
     ```

@@ -1,30 +1,32 @@
 function [Users, num_created] = create_users(env_dims, num_users, rx_array, user_params, stl_data)
-    %CREATE_USERS Generate user positions in a 3D environment
-    %   [USERS, NUM_CREATED] = CREATE_USERS(ENV_DIMS, NUM_USERS, RX_ARRAY, USER_PARAMS, STL_DATA)
-    %   creates user receiver sites within specified environmental dimensions.
+    % CREATE_USERS Generate user positions in a 3D environment
     %
-    %   Inputs:
-    %       ENV_DIMS - 2x2 matrix defining environment bounds [xmin xmax; ymin ymax]
-    %       NUM_USERS - Number of users to generate
-    %       RX_ARRAY - Antenna array configuration for receivers
-    %       USER_PARAMS - Structure with optional parameters:
-    %           .check_building_collision (logical) - Enable building collision detection
-    %           .check_user_collision (logical) - Enable user separation checks
-    %           .separation_distance (double) - Minimum distance between users
-    %       STL_DATA - STL mesh data for building collision detection (optional)
+    % Description:
+    %   Creates user receiver sites within specified environmental dimensions
+    %   with optional collision detection for buildings and other users.
     %
-    %   Outputs:
-    %       USERS - Array of rxsite objects representing user positions
-    %       NUM_CREATED - Actual number of users created (may be less than NUM_USERS)
+    % Inputs:
+    %   env_dims    - [2×2] Matrix defining environment bounds [xmin xmax;
+    %                                                          ymin ymax]
+    %   num_users   - Number of users to generate
+    %   rx_array    - Antenna array configuration for receivers
+    %   user_params - Structure with the following optional fields:
+    %     .check_building_collision - Enable building collision (default: false)
+    %     .check_user_collision    - Enable user separation (default: true)
+    %     .separation_distance     - Minimum distance between users (auto)
+    %   stl_data    - STL mesh data for building collision detection (optional)
     %
-    %   Example:
-    %       env_dims = [-10 10; -10 10];
-    %       num_users = 10;
-    %       rx_array = phased.ULA;
-    %       user_params.check_building_collision = true;
-    %       user_params.check_user_collision = true;
-    %       user_params.separation_distance = 2;
-    %       [users, created] = create_users(env_dims, num_users, rx_array, user_params, []);
+    % Outputs:
+    %   Users       - Array of rxsite objects representing user positions
+    %   num_created - Actual number of users created (may be less than requested)
+    %
+    % Example:
+    %   env_dims = [-10 10; -10 10];
+    %   num_users = 10;
+    %   rx_array = phased.ULA('NumElements', 4);
+    %   params.check_building_collision = true;
+    %   params.separation_distance = 2;
+    %   [users, created] = create_users(env_dims, num_users, rx_array, params);
 
     % default parameters if not provided
     if ~isfield(user_params, 'check_building_collision')

@@ -14,17 +14,14 @@ def collate_wireless_batch(batch: list) -> Dict[str, Any]:
         batch (list): List of dataset items to be collated
 
     Returns:
-        Dict[str, Any]: Collated batch with stacked tensors for variable data,
-                        and constant keys kept as a single element.
+        Dict[str, Any]: Collated batch with stacked tensors
     """
     keys = batch[0].keys()
     collated = {}
 
     for key in keys:
-        if key in ["aod", "aoa"]:
+        if key == "aoa":
             collated[key] = [item[key] for item in batch]
-        elif key in ["tx_position", "env_dims", "point_cloud"]:
-            collated[key] = batch[0][key]
         else:
             collated[key] = torch.stack([item[key] for item in batch])
     return collated
@@ -40,6 +37,7 @@ def get_wireless_dataloader(
     train_ratio: float = 0.8,
     seed: Optional[int] = None,
     drop_last: bool = False,
+    subcarrier_idx: Optional[int] = None,
 ) -> DataLoader:
     """Create a DataLoader for the wireless dataset.
 
@@ -53,6 +51,8 @@ def get_wireless_dataloader(
         train_ratio (float): Ratio of data to use for training
         seed (int, optional): Random seed for train/test split
         drop_last (bool): Whether to drop the last incomplete batch
+        subcarrier_idx (int, optional): Index of subcarrier to use for multi-carrier data.
+            If None, uses middle subcarrier or extracts from filename for single-carrier.
 
     Returns:
         DataLoader: The configured data loader
@@ -63,6 +63,7 @@ def get_wireless_dataloader(
         train=train,
         train_ratio=train_ratio,
         seed=seed,
+        subcarrier_idx=subcarrier_idx,
     )
 
     return DataLoader(
