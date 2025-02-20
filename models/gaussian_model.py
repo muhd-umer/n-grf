@@ -216,11 +216,3 @@ class GaussianModel(nn.Module):
         return self.covariance_activation(
             self.get_scaling, scaling_modifier, self._rotation
         )
-
-    def training_setup(self, *args, **kwargs):
-        """Not implemented yet."""
-        raise NotImplementedError
-
-    def update_learning_rate(self, *args, **kwargs):
-        """Not implemented yet."""
-        raise NotImplementedError
