@@ -29,7 +29,7 @@ def collate_wireless_batch(batch: list) -> Dict[str, Any]:
 
 def get_wireless_dataloader(
     data_path: str,
-    batch_size: int = 16,
+    batch_size: int = 1,
     num_workers: int = 0,
     shuffle: bool = True,
     num_pc: Optional[int] = None,

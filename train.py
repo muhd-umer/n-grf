@@ -23,9 +23,6 @@ def parse_args():
         "--data_path", type=str, required=True, help="Path to dataset file"
     )
     parser.add_argument(
-        "--batch_size", type=int, default=16, help="Batch size for training"
-    )
-    parser.add_argument(
         "--num_points",
         type=int,
         default=16378,
