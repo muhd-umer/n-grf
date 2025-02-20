@@ -1,4 +1,5 @@
 # utils/sh_utils.py
+# Copyright 2021. All rights reserved by The PlenOctrees Authors.
 
 from typing import List, Tuple
 
