@@ -103,18 +103,15 @@ class GaussianModel(nn.Module):
         self.rotation_activation = torch.nn.functional.normalize
         self.covariance_activation = build_covariance_from_scaling_rotation
 
-    def init_from_pc(self, points: torch.Tensor, colors: Optional[torch.Tensor] = None):
+    def init_from_pc(self, points: torch.Tensor):
         """Initialize Gaussian properties from point cloud.
 
         Args:
             points: Point cloud tensor of shape [N, 3]
-            colors: Optional color tensor of shape [N, 3]. If not provided,
-                   random colors will be used.
         """
         num_points = points.shape[0]
         device = points.device
 
-        # initialize positions from points
         self._xyz = nn.Parameter(points.to(device))
 
         # compute scales based on point cloud density
@@ -122,25 +119,14 @@ class GaussianModel(nn.Module):
         scales = torch.log(torch.sqrt(dist2))[..., None].repeat(1, 3)
         self._scaling = nn.Parameter(scales.to(device))
 
-        # initialize rotations as identity quaternions
         rots = torch.zeros((num_points, 4), device=device)
         rots[:, 0] = 1
         self._rotation = nn.Parameter(rots)
 
-        # initialize colors/features
-        if colors is None:
-            colors = torch.rand((num_points, 3), device=device)
-        colors = rgb_to_sh(colors.to(device))  # convert to SH basis
-
-        # spherical harmonic features
+        # sh features
         features = torch.zeros(
             (num_points, 3, (self.max_sh_degree + 1) ** 2), device=device
         ).float()
-
-        # set dc components from colors
-        features[:, :3, 0] = colors
-        # higher order components start at 0
-        features[:, 3:, 1:] = 0.0
 
         self._features_dc = nn.Parameter(
             features[:, :, 0:1].transpose(1, 2).contiguous()
