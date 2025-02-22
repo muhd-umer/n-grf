@@ -17,14 +17,22 @@ class EncoderConfig:
     num_layers: int = 8
     skip_layers: Tuple[int, ...] = (4,)
     input_pos_multires: int = 10
-    path_encode_dim: int = 32  # Dimension for path feature encoding
+    path_encode_dim: int = 32
 
-    # Only degree 0 or 1 supported for SH
+    # only degree 0 or 1 supported for SH
     sh_degree: int = 1
 
-    # Dataset specific
-    num_tx_ant: int = 16  # For indoor scenario
-    num_rx_ant: int = 2  # For indoor scenario
+    # scenario type
+    is_indoor: bool = True
+    is_outdoor: bool = not is_indoor
+
+    @property
+    def num_tx_ant(self) -> int:
+        return 16 if self.is_indoor else 64
+
+    @property
+    def num_rx_ant(self) -> int:
+        return 2
 
 
 class PathFeatureEncoder(nn.Module):
