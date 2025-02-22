@@ -8,6 +8,7 @@ import torch
 from torch.utils.tensorboard import SummaryWriter
 
 from datasets.dataloader import get_wireless_dataloader
+from models import EncoderConfig, WirelessEncoder, get_embedder
 from models.gaussian_model import GaussianModel, GaussianModelConfig
 from utils.general_utils import set_random_seed
 from utils.train_utils import setup_logging
@@ -31,7 +32,10 @@ def parse_args():
 
     # model params
     parser.add_argument(
-        "--sh_degree", type=int, default=3, help="Maximum degree of spherical harmonics"
+        "--sh_degree",
+        type=int,
+        default=1,
+        help="Maximum degree of spherical harmonics (only 0 or 1 supported)",
     )
     parser.add_argument(
         "--use_pred_normals",
