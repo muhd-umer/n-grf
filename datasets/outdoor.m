@@ -149,11 +149,13 @@ H = zeros(num_users, num_tx_ant, num_rx_ant, numSubcarriers);
 AoD_all = cell(num_users, 1);
 AoA_all = cell(num_users, 1);
 path_loss = zeros(num_users, 1);
+path_loss_per_ray = cell(num_users, 1);
 
 for userIdx = 1:num_users
     [H(userIdx, :, :, :), AoD_all{userIdx}, AoA_all{userIdx}] = ...
-        generate_csi(rays{userIdx}, fc, cfg, txArray, rxArray, method, 'outdoor', use_single_sc, sc_idx);
+        generate_csi(rays{userIdx}, fc, cfg, txArray, rxArray, method, 'indoor', use_single_sc, sc_idx);
     path_loss(userIdx) = mean([rays{userIdx}.PathLoss]);
+    path_loss_per_ray{userIdx} = [rays{userIdx}.PathLoss];
 end
 
 % check for null values in channel matrix
@@ -206,6 +208,7 @@ dataset.channel.H = H;
 % dataset.channel.AoD = AoD_all;
 dataset.channel.AoA = AoA_all;
 dataset.channel.path_loss = path_loss;
+dataset.channel.path_loss_per_ray = path_loss_per_ray;
 dataset.channel.ray_steps = ray_steps;
 dataset.channel.ray_points = ray_points;
 dataset.channel.ray_interactions = ray_interactions;
@@ -213,6 +216,7 @@ dataset.channel.ray_coefficients = ray_coefficients;
 dataset.channel.frequencies = freqs;
 
 sc_str = '';
+
 if use_single_sc
     sc_str = sprintf('_sc%d', sc_idx);
 end
