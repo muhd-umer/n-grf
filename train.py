@@ -2,6 +2,7 @@
 
 import argparse
 import logging
+import time
 from pathlib import Path
 
 import torch
@@ -99,7 +100,6 @@ def train(args, logger, writer):
     logger.info("Initializing dataloader...")
     dataloader = get_wireless_dataloader(
         args.data_path,
-        batch_size=args.batch_size,
         drop_last=True,
     )
 
@@ -119,6 +119,13 @@ def train(args, logger, writer):
     # initialize model with point cloud
     model.init_from_pc(point_cloud.to(args.device))
     logger.info(f"Initialized model with {len(point_cloud)} Gaussians")
+
+    # log time
+    start_time = time.time()
+    cov3d = model.get_covariance()
+    end_time = time.time()
+
+    logger.info(f"Covariance computation time: {end_time - start_time:.4f} seconds")
 
     # training loop
     logger.info("Starting training...")
