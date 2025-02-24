@@ -29,7 +29,6 @@ class WirelessDataset(Dataset):
     def __init__(
         self,
         data_path: str,
-        num_pc: Optional[int] = None,
         train: bool = True,
         train_ratio: float = 0.8,
         seed: Optional[int] = None,
@@ -38,7 +37,6 @@ class WirelessDataset(Dataset):
         super().__init__()
 
         self.data_path = Path(data_path)
-        self.num_pc = num_pc
         self.seed = seed if seed is not None else 42
 
         if subcarrier_idx is None:
@@ -102,6 +100,13 @@ class WirelessDataset(Dataset):
         self.tx_position = torch.from_numpy(data["nodes"]["ap_position"]).float()
         self.rx_positions = torch.from_numpy(data["nodes"]["users_positions"].T).float()
         self.path_loss = torch.from_numpy(data["channel"]["path_loss"]).float()
+
+        def process_pl_per_ray(pl_list):
+            return [torch.from_numpy(np.array(d)).float() for d in pl_list]
+
+        self.path_loss_per_ray = process_pl_per_ray(
+            data["channel"]["path_loss_per_ray"]
+        )
 
         def process_angle_data(angle_list):
             return [torch.from_numpy(np.array(d)).float() for d in angle_list]
@@ -182,5 +187,6 @@ class WirelessDataset(Dataset):
             "channel_matrix": self.channel_matrix[current_idx],
             # "aod": self.aod[current_idx],
             "aoa": self.aoa[current_idx],
+            "path_loss_per_ray": self.path_loss_per_ray[current_idx],
             "path_loss": self.path_loss[current_idx],
         }

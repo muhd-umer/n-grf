@@ -149,11 +149,13 @@ H = zeros(num_users, num_tx_ant, num_rx_ant, numSubcarriers);
 AoD_all = cell(num_users, 1);
 AoA_all = cell(num_users, 1);
 path_loss = zeros(num_users, 1);
+path_loss_per_ray = cell(num_users, 1);
 
 for userIdx = 1:num_users
     [H(userIdx, :, :, :), AoD_all{userIdx}, AoA_all{userIdx}] = ...
         generate_csi(rays{userIdx}, fc, cfg, txArray, rxArray, method, 'outdoor', use_single_sc, sc_idx);
     path_loss(userIdx) = mean([rays{userIdx}.PathLoss]);
+    path_loss_per_ray{userIdx} = [rays{userIdx}.PathLoss];
 end
 
 % check for null values in channel matrix
@@ -204,8 +206,13 @@ dataset.nodes.users_positions = rx_positions;
 dataset.channel.H = H;
 % NOTE: AoD is unneeded as it is primarily related to the txsite
 % dataset.channel.AoD = AoD_all;
-dataset.channel.AoA = AoA_all;
 dataset.channel.path_loss = path_loss;
+
+% truncate data (max 30 paths)
+[AoA_trunc, path_loss_per_ray_trunc] = truncate_data(AoA_all, path_loss_per_ray, 30);
+dataset.channel.AoA = AoA_trunc;
+dataset.channel.path_loss_per_ray = path_loss_per_ray_trunc;
+
 dataset.channel.ray_steps = ray_steps;
 dataset.channel.ray_points = ray_points;
 dataset.channel.ray_interactions = ray_interactions;
@@ -213,6 +220,7 @@ dataset.channel.ray_coefficients = ray_coefficients;
 dataset.channel.frequencies = freqs;
 
 sc_str = '';
+
 if use_single_sc
     sc_str = sprintf('_sc%d', sc_idx);
 end
@@ -227,3 +235,25 @@ filename = sprintf('%s/iab_%dx%d_%du_%.1fghz_%sRT%s.mat', ...
     sc_str);
 
 save(filename, 'dataset', '-v7.3');
+
+function [AoA_trunc, path_loss_trunc] = truncate_data(AoA, path_loss, max_paths)
+    num_users = length(AoA);
+    AoA_trunc = cell(num_users, 1);
+    path_loss_trunc = cell(num_users, 1);
+    
+    for i = 1:num_users
+        if ~isempty(AoA{i})
+            % sort paths by path loss
+            [sorted_pl, sort_idx] = sort(path_loss{i});
+            sorted_AoA = AoA{i}(:, sort_idx);
+            
+            % take top max_paths with lowest path loss
+            num_paths = min(length(sorted_pl), max_paths);
+            AoA_trunc{i} = sorted_AoA(:, 1:num_paths);
+            path_loss_trunc{i} = sorted_pl(1:num_paths);
+        else
+            AoA_trunc{i} = [];
+            path_loss_trunc{i} = [];
+        end
+    end
+end
