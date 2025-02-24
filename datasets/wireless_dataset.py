@@ -103,6 +103,13 @@ class WirelessDataset(Dataset):
         self.rx_positions = torch.from_numpy(data["nodes"]["users_positions"].T).float()
         self.path_loss = torch.from_numpy(data["channel"]["path_loss"]).float()
 
+        def process_pl_per_ray(pl_list):
+            return [torch.from_numpy(np.array(d)).float() for d in pl_list]
+
+        self.path_loss_per_ray = process_pl_per_ray(
+            data["channel"]["path_loss_per_ray"]
+        )
+
         def process_angle_data(angle_list):
             return [torch.from_numpy(np.array(d)).float() for d in angle_list]
 
@@ -182,5 +189,6 @@ class WirelessDataset(Dataset):
             "channel_matrix": self.channel_matrix[current_idx],
             # "aod": self.aod[current_idx],
             "aoa": self.aoa[current_idx],
+            "path_loss_per_ray": self.path_loss_per_ray[current_idx],
             "path_loss": self.path_loss[current_idx],
         }
