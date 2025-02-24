@@ -29,7 +29,6 @@ class WirelessDataset(Dataset):
     def __init__(
         self,
         data_path: str,
-        num_pc: Optional[int] = None,
         train: bool = True,
         train_ratio: float = 0.8,
         seed: Optional[int] = None,
@@ -38,7 +37,6 @@ class WirelessDataset(Dataset):
         super().__init__()
 
         self.data_path = Path(data_path)
-        self.num_pc = num_pc
         self.seed = seed if seed is not None else 42
 
         if subcarrier_idx is None:

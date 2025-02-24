@@ -32,7 +32,6 @@ def get_wireless_dataloader(
     batch_size: int = 1,
     num_workers: int = 0,
     shuffle: bool = True,
-    num_pc: Optional[int] = None,
     train: bool = True,
     train_ratio: float = 0.8,
     seed: Optional[int] = None,
@@ -46,7 +45,6 @@ def get_wireless_dataloader(
         batch_size (int): Number of samples per batch
         num_workers (int): Number of workers for data loading
         shuffle (bool): Whether to shuffle the data
-        num_pc (int, optional): Number of point cloud points to sample
         train (bool): Whether to load training or test set
         train_ratio (float): Ratio of data to use for training
         seed (int, optional): Random seed for train/test split
@@ -59,7 +57,6 @@ def get_wireless_dataloader(
     """
     dataset = WirelessDataset(
         data_path,
-        num_pc=num_pc,
         train=train,
         train_ratio=train_ratio,
         seed=seed,
