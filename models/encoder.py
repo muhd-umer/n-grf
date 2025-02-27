@@ -203,14 +203,14 @@ class WirelessEncoder(nn.Module):
         self.layers.append(nn.Linear(input_dim, config.hidden_size))
 
         for i in range(config.num_layers - 1):
-            # Fix: Change from i to i+1 to align layers with correct skip connections
             if i + 1 in config.skip_layers:
                 layer_input_dim = config.hidden_size + input_dim
             else:
                 layer_input_dim = config.hidden_size
             self.layers.append(nn.Linear(layer_input_dim, config.hidden_size))
 
-        out_dim = 3 * (config.sh_degree + 1) ** 2  # 3 channels, (d+1)^2 SH coeffs
+        # modified output dimension to be 3 (channels) instead of 3 * (d+1)^2
+        out_dim = 3
         self.signal_amp_head = nn.Linear(config.hidden_size, out_dim)
         self.signal_phase_head = nn.Linear(config.hidden_size, out_dim)
         self.attenuation_head = nn.Linear(config.hidden_size, out_dim)
@@ -238,10 +238,10 @@ class WirelessEncoder(nn.Module):
 
         Returns:
             Dictionary with SH features for:
-            > signal_amplitude: Signal amplitude features (N, 3, (d+1)^2)
-            > signal_phase: Signal phase features (N, 3, (d+1)^2)
-            > attenuation: Attenuation features (N, 3, (d+1)^2)
-            > phase_rotation: Phase rotation features (N, 3, (d+1)^2)
+            > signal_amplitude: Signal amplitude features (N, 3, 1)
+            > signal_phase: Signal phase features (N, 3, 1)
+            > attenuation: Attenuation features (N, 3, 1)
+            > phase_rotation: Phase rotation features (N, 3, 1)
         """
         points_embed = self.pos_embedder(points)
         tx_embed = self.pos_embedder(tx_pos.expand(points.shape[0], -1))
@@ -273,12 +273,11 @@ class WirelessEncoder(nn.Module):
         attenuation = self.attenuation_head(x)
         phase_rotation = self.phase_rotation_head(x)
 
-        # reshape to (N, 3, (d+1)^2)
-        sh_dim = (self.config.sh_degree + 1) ** 2
-        signal_amp = signal_amp.view(-1, 3, sh_dim)
-        signal_phase = signal_phase.view(-1, 3, sh_dim)
-        attenuation = attenuation.view(-1, 3, sh_dim)
-        phase_rotation = phase_rotation.view(-1, 3, sh_dim)
+        # reshape to (N, 3, 1); one value per channel
+        signal_amp = signal_amp.view(-1, 3, 1)
+        signal_phase = signal_phase.view(-1, 3, 1)
+        attenuation = attenuation.view(-1, 3, 1)
+        phase_rotation = phase_rotation.view(-1, 3, 1)
 
         return {
             "signal_amplitude": signal_amp,
