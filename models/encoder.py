@@ -33,18 +33,6 @@ class EncoderConfig:
     use_attention: bool = True
     max_paths: int = 10
 
-    # scenario type
-    is_indoor: bool = True
-    is_outdoor: bool = not is_indoor
-
-    @property
-    def num_tx_ant(self) -> int:
-        return 16 if self.is_indoor else 64
-
-    @property
-    def num_rx_ant(self) -> int:
-        return 2
-
 
 class PathFeatureEncoder(nn.Module):
     """Encoder for processing variable number of propagation paths.
