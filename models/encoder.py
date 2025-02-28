@@ -19,7 +19,6 @@ class EncoderConfig:
         skip_layers: List of layer indices to add skip connections
         input_pos_multires: Positional encoding resolution for positions
         path_encode_dim: Dimension for path feature encoding
-        sh_degree: Degree of spherical harmonics output (0 or 1 supported)
         use_attention: Whether to use attention for path encoding
         max_paths: Maximum number of paths to consider when using masking
         is_indoor: Whether using indoor scenario (defines antenna counts)
@@ -30,9 +29,6 @@ class EncoderConfig:
     skip_layers: Tuple[int, ...] = (4,)
     input_pos_multires: int = 10
     path_encode_dim: int = 32
-
-    # only degree 0 or 1 supported for SH
-    sh_degree: int = 1
 
     use_attention: bool = True
     max_paths: int = 10
@@ -166,8 +162,6 @@ class WirelessEncoder(nn.Module):
     Maps environment geometry and wireless properties to spherical harmonic
     features for Gaussian splatting. Designed for reconstructing complex MIMO
     channel matrices using 3D Gaussians as virtual transmitters.
-
-    Each feature has (sh_degree + 1)^2 coefficients per channel.
     """
 
     def __init__(self, config: EncoderConfig):
@@ -209,10 +203,7 @@ class WirelessEncoder(nn.Module):
                 layer_input_dim = config.hidden_size
             self.layers.append(nn.Linear(layer_input_dim, config.hidden_size))
 
-        # modified output dimension to be 3 (channels) instead of 3 * (d+1)^2
-        out_dim = 3
-        self.signal_amp_head = nn.Linear(config.hidden_size, out_dim)
-        self.signal_phase_head = nn.Linear(config.hidden_size, out_dim)
+        out_dim = 1
         self.attenuation_head = nn.Linear(config.hidden_size, out_dim)
         self.phase_rotation_head = nn.Linear(config.hidden_size, out_dim)
 
@@ -238,10 +229,10 @@ class WirelessEncoder(nn.Module):
 
         Returns:
             Dictionary with SH features for:
-            > signal_amplitude: Signal amplitude features (N, 3, 1)
-            > signal_phase: Signal phase features (N, 3, 1)
-            > attenuation: Attenuation features (N, 3, 1)
-            > phase_rotation: Phase rotation features (N, 3, 1)
+            > signal_amplitude: Signal amplitude features (N, 1)
+            > signal_phase: Signal phase features (N, 1)
+            > attenuation: Attenuation features (N, 1)
+            > phase_rotation: Phase rotation features (N, 1)
         """
         points_embed = self.pos_embedder(points)
         tx_embed = self.pos_embedder(tx_pos.expand(points.shape[0], -1))
@@ -268,20 +259,14 @@ class WirelessEncoder(nn.Module):
             x = layer(x)
             x = torch.relu(x)
 
-        signal_amp = self.signal_amp_head(x)
-        signal_phase = self.signal_phase_head(x)
         attenuation = self.attenuation_head(x)
         phase_rotation = self.phase_rotation_head(x)
 
-        # reshape to (N, 3, 1); one value per channel
-        signal_amp = signal_amp.view(-1, 3, 1)
-        signal_phase = signal_phase.view(-1, 3, 1)
-        attenuation = attenuation.view(-1, 3, 1)
-        phase_rotation = phase_rotation.view(-1, 3, 1)
+        # reshape to (N, 1); one value per channel
+        attenuation = attenuation.view(-1, 1)
+        phase_rotation = phase_rotation.view(-1, 1)
 
         return {
-            "signal_amplitude": signal_amp,
-            "signal_phase": signal_phase,
             "attenuation": attenuation,
             "phase_rotation": phase_rotation,
         }

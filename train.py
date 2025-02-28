@@ -33,12 +33,6 @@ def parse_args():
 
     # model params
     parser.add_argument(
-        "--sh_degree",
-        type=int,
-        default=1,
-        help="Maximum degree of spherical harmonics (only 0 or 1 supported)",
-    )
-    parser.add_argument(
         "--use_pred_normals",
         action="store_true",
         help="Whether to predict surface normals",
@@ -110,8 +104,6 @@ def train(args, logger, writer):
 
     logger.info("Initializing model...")
     model_config = GaussianModelConfig(
-        sh_degree=args.sh_degree,
-        max_sh_degree=args.sh_degree,
         use_pred_normals=args.use_pred_normals,
     )
     model = GaussianModel(model_config).to(args.device)

@@ -7,7 +7,6 @@ import torch
 import torch.nn as nn
 from simple_knn._C import distCUDA2  # type: ignore
 
-from utils.sh_utils import rgb_to_sh
 from utils.transform_utils import (
     build_scaling_rotation,
     inverse_sigmoid,
@@ -19,8 +18,6 @@ from utils.transform_utils import (
 class GaussianModelConfig:
     """Configuration for GaussianModel"""
 
-    sh_degree: int = 3
-    max_sh_degree: int = 3
     num_components: int = 2  # real and imaginary parts
     use_pred_normals: bool = False
 
@@ -51,10 +48,6 @@ class GaussianModel(nn.Module):
         super().__init__()
 
         self.config = config or GaussianModelConfig()
-
-        # active SH degree starts at 0 and increases during training
-        self.active_sh_degree = 0
-        self.max_sh_degree = self.config.max_sh_degree
 
         # initialize empty tensors; will be set in init_from_pc
         self._xyz = torch.empty(0)  # positions
@@ -123,17 +116,10 @@ class GaussianModel(nn.Module):
         rots[:, 0] = 1
         self._rotation = nn.Parameter(rots)
 
-        # sh features
-        features = torch.zeros(
-            (num_points, 3, (self.max_sh_degree + 1) ** 2), device=device
+        # wireless features
+        self.features = torch.zeros(
+            (num_points, 2), device=device  # 0: attenuation, 1: phase_rotation
         ).float()
-
-        self._features_dc = nn.Parameter(
-            features[:, :, 0:1].transpose(1, 2).contiguous()
-        )
-        self._features_rest = nn.Parameter(
-            features[:, :, 1:].transpose(1, 2).contiguous()
-        )
 
         # initialize opacity
         init_opacity = 0.1 * torch.ones((num_points, 1), device=device)
@@ -170,18 +156,8 @@ class GaussianModel(nn.Module):
 
     @property
     def get_features(self):
-        """Get combined spherical harmonic features."""
-        return torch.cat((self._features_dc, self._features_rest), dim=1)
-
-    @property
-    def get_features_dc(self):
-        """Get DC component of spherical harmonic features."""
-        return self._features_dc
-
-    @property
-    def get_features_rest(self):
-        """Get higher order spherical harmonic features."""
-        return self._features_rest
+        """Get wireless-related features."""
+        return self.features
 
     @property
     def get_normals(self):
