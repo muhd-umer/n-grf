@@ -1,15 +1,14 @@
 # train.py
 
 import argparse
-import logging
-import time
 from pathlib import Path
 
 import torch
 from torch.utils.tensorboard import SummaryWriter
 
 from datasets.dataloader import get_wireless_dataloader
-from models import EncoderConfig, WirelessEncoder, get_embedder
+from models import EncoderConfig
+from models.encoder import EncoderConfig
 from models.gaussian_model import GaussianModel, GaussianModelConfig
 from utils.general_utils import set_random_seed
 from utils.train_utils import setup_logging
@@ -37,6 +36,17 @@ def parse_args():
         action="store_true",
         help="Whether to predict surface normals",
     )
+    parser.add_argument(
+        "--use_attention",
+        action="store_true",
+        help="Whether to use attention for path encoding",
+    )
+    parser.add_argument(
+        "--max_paths",
+        type=int,
+        default=10,
+        help="Maximum number of paths to consider when using masking",
+    )
 
     # training params
     parser.add_argument(
@@ -63,12 +73,6 @@ def parse_args():
         action="store_true",
         help="Enable TensorBoard logging",
     )
-    parser.add_argument(
-        "--stl_path",
-        type=str,
-        default="datasets/models/conference.stl",
-        help="Path to reference STL model file",
-    )
 
     args = parser.parse_args()
     return args
@@ -91,6 +95,9 @@ def setup_experiment(args):
 
 def train(args, logger, writer):
     """Main training loop"""
+    device = torch.device(args.device)
+    logger.info(f"Using device: {device}")
+
     logger.info("Initializing dataloader...")
     dataloader = get_wireless_dataloader(
         args.data_path,
@@ -99,25 +106,39 @@ def train(args, logger, writer):
 
     # get static environment data
     point_cloud = dataloader.dataset.get_point_cloud(args.num_points)
-    tx_position = dataloader.dataset.get_tx_position()
+    tx_position = dataloader.dataset.get_tx_position().to(device)
     env_dims = dataloader.dataset.get_env_dims()
 
     logger.info("Initializing model...")
-    model_config = GaussianModelConfig(
+    model_cfg = GaussianModelConfig(
         use_pred_normals=args.use_pred_normals,
     )
-    model = GaussianModel(model_config).to(args.device)
+    encoder_cfg = EncoderConfig(
+        use_attention=args.use_attention, max_paths=args.max_paths
+    )
+    model = GaussianModel(model_cfg=model_cfg, encoder_cfg=encoder_cfg).to(device)
 
     # initialize model with point cloud
-    model.init_from_pc(point_cloud.to(args.device))
+    model.init_from_pc(point_cloud.to(device))
     logger.info(f"Initialized model with {len(point_cloud)} Gaussians")
 
-    # log time
-    start_time = time.time()
-    cov3d = model.get_covariance()
-    end_time = time.time()
+    data = next(iter(dataloader))
+    rx_position = data["rx_position"].to(device).squeeze()  # [3]
+    aoa = data["aoa"][0].to(device)  # [2, num_paths], 2 for azimuth and elevation
+    path_loss = data["path_loss"].to(device)  # [1]
+    path_loss_per_ray = data["path_loss_per_ray"][0].to(device)  # [num_paths]
 
-    logger.info(f"Covariance computation time: {end_time - start_time:.4f} seconds")
+    wireless_data = {
+        "tx_pos": tx_position,
+        "rx_pos": rx_position,
+        "path_loss": path_loss,
+        "aoa": aoa,
+        "path_loss_per_ray": path_loss_per_ray,
+    }
+
+    logger.info("Embedding wireless features...")
+    model.embed_features(wireless_data)
+    logger.info(f"Shape of features: {model.get_features.shape}")
 
     # training loop
     logger.info("Starting training...")

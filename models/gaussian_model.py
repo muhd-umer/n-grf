@@ -13,6 +13,8 @@ from utils.transform_utils import (
     strip_symmetric,
 )
 
+from .encoder import EncoderConfig, WirelessEncoder
+
 
 @dataclass
 class GaussianModelConfig:
@@ -30,32 +32,37 @@ class GaussianModel(nn.Module):
     and optimized to reconstruct wireless channels.
 
     Initialization details:
-    - `xyz`: Point positions from input point cloud
-    - `rotation`: 4D quaternions initialized as [1,0,0,0] (identity)
-    - `scaling`: Log of point-wise distances to enforce minimum scale
-    - `opacity`: Inverse sigmoid of constant value (0.1)
-    - `features_dc`: Main spherical harmonic features
-    - `features_rest`: Higher order spherical harmonics initialized to zero
-    - Colors from RGB are converted to SH coefficients
+    - xyz: Point positions from input point cloud
+    - rotation: 4D quaternions initialized as [1,0,0,0] (identity)
+    - scaling: Log of point-wise distances to enforce minimum scale
+    - opacity: Inverse sigmoid of constant value (0.1)
+    - features_dc: Main spherical harmonic features
+    - features_rest: Higher order spherical harmonics initialized to zero
     - Screen-space max radii tracking for adaptive density
     - Gradients and denominator accumulators for training
 
     Args:
-        config: Configuration for the model
+        model_cfg: Configuration for the model
+        encoder_cfg
     """
 
-    def __init__(self, config: Optional[GaussianModelConfig] = None):
+    def __init__(
+        self,
+        model_cfg: Optional[GaussianModelConfig] = None,
+        encoder_cfg: Optional[EncoderConfig] = None,
+    ):
         super().__init__()
 
-        self.config = config or GaussianModelConfig()
+        self.model_cfg = model_cfg or GaussianModelConfig()
+        self.encoder_cfg = encoder_cfg or EncoderConfig()
+        self.encoder = WirelessEncoder(self.encoder_cfg)
 
         # initialize empty tensors; will be set in init_from_pc
         self._xyz = torch.empty(0)  # positions
         self._rotation = torch.empty(0)  # rotation quaternions
         self._scaling = torch.empty(0)  # scaling factors
         self._opacity = torch.empty(0)  # opacity values
-        self._features_dc = torch.empty(0)  # dc component of SH features
-        self._features_rest = torch.empty(0)  # higher order SH features
+        self.features = torch.empty(0)  # wireless features
 
         # training state
         self.max_radii2D = torch.empty(0)  # screen-space radii for adaptive density
@@ -65,7 +72,7 @@ class GaussianModel(nn.Module):
         self.percent_dense = 0
 
         # optional predicted normals
-        self._normals = torch.empty(0) if self.config.use_pred_normals else None
+        self._normals = torch.empty(0) if self.model_cfg.use_pred_normals else None
 
         self.setup_functions()
 
@@ -131,7 +138,7 @@ class GaussianModel(nn.Module):
         self.denom = torch.zeros((num_points, 1), device=device)
 
         # initialize optional normals
-        if self.config.use_pred_normals:
+        if self.model_cfg.use_pred_normals:
             self._normals = nn.Parameter(torch.randn(num_points, 3, device=device))
 
     @property
@@ -162,7 +169,7 @@ class GaussianModel(nn.Module):
     @property
     def get_normals(self):
         """Get predicted normals if enabled."""
-        if not self.config.use_pred_normals:
+        if not self.model_cfg.use_pred_normals:
             raise ValueError("Predicted normals not enabled in config")
         return self.rotation_activation(self._normals)
 
@@ -178,3 +185,39 @@ class GaussianModel(nn.Module):
         return self.covariance_activation(
             self.get_scaling, scaling_modifier, self._rotation
         )
+
+    def embed_features(self, wireless_data: dict[str, torch.Tensor]):
+        """Embed iteration of wireless data into Gaussian features.
+
+        The wireless data should contain the following keys:
+        - tx_pos: Transmitter position (3,)
+        - rx_pos: Receiver position (3,)
+        - path_loss: Path loss values (N, 1)
+        - aoa: Angles of arrival (2, P) with azimuth and elevation for P paths
+        - path_loss_per_ray: Path loss per ray (P) for selecting important paths
+
+        Args:
+            wireless_data: Dictionary containing wireless data tensors with keys
+        """
+        # extract data
+        tx_pos = wireless_data["tx_pos"]
+        rx_pos = wireless_data["rx_pos"]
+        path_loss = wireless_data["path_loss"]
+        aoa = wireless_data["aoa"]
+        path_loss_per_ray = wireless_data["path_loss_per_ray"]
+
+        # compute features
+        enc_output = self.encoder(
+            self._xyz, tx_pos, rx_pos, path_loss, aoa, path_loss_per_ray
+        )
+
+        attenuation = enc_output["attenuation"]
+        phase_rotation = enc_output["phase_rotation"]
+
+        # update features
+        self.features = torch.cat([attenuation, phase_rotation], dim=-1)
+
+    def to(self, device):
+        """Override to() to ensure encoder also moves to the same device."""
+        self.encoder = self.encoder.to(device)
+        return super().to(device)
