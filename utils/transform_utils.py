@@ -15,7 +15,7 @@ def strip_symmetric(sym: torch.Tensor) -> torch.Tensor:
 
 def strip_lowerdiag(L: torch.Tensor) -> torch.Tensor:
     """Convert a batch of lower diagonal matrices into compact form"""
-    uncertainty = torch.zeros((L.shape[0], 6), dtype=torch.float, device="cuda")
+    uncertainty = torch.zeros((L.shape[0], 6), dtype=torch.float, device=L.device)
 
     uncertainty[:, 0] = L[:, 0, 0]
     uncertainty[:, 1] = L[:, 0, 1]
@@ -41,7 +41,7 @@ def build_rotation(r: torch.Tensor) -> torch.Tensor:
 
     q = r / norm[:, None]
 
-    R = torch.zeros((q.size(0), 3, 3), device="cuda")
+    R = torch.zeros((q.size(0), 3, 3), device=r.device)
 
     r = q[:, 0]  # real part
     x = q[:, 1]  # i
@@ -70,7 +70,7 @@ def build_scaling_rotation(s: torch.Tensor, r: torch.Tensor) -> torch.Tensor:
     Returns:
         Combined transformation matrices of shape (N, 3, 3)
     """
-    L = torch.zeros((s.shape[0], 3, 3), dtype=torch.float, device="cuda")
+    L = torch.zeros((s.shape[0], 3, 3), dtype=torch.float, device=s.device)
     R = build_rotation(r)
 
     L[:, 0, 0] = s[:, 0]
