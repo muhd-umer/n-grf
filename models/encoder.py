@@ -216,11 +216,8 @@ class WirelessEncoder(nn.Module):
             path_loss_per_ray: Path loss per ray (P) for selecting important paths
 
         Returns:
-            Dictionary with SH features for:
-            > signal_amplitude: Signal amplitude features (N, 1)
-            > signal_phase: Signal phase features (N, 1)
-            > attenuation: Attenuation features (N, 1)
-            > phase_rotation: Phase rotation features (N, 1)
+            Dictionary with SH features for signal_amplitude, signal_phase,
+            attenuation, and phase_rotation
         """
         points_embed = self.pos_embedder(points)
         tx_embed = self.pos_embedder(tx_pos.expand(points.shape[0], -1))
