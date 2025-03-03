@@ -6,6 +6,7 @@ from pathlib import Path
 import torch
 from torch.utils.tensorboard import SummaryWriter
 
+from core.transforms import project_to_channel_space
 from datasets.dataloader import get_wireless_dataloader
 from models import EncoderConfig
 from models.encoder import EncoderConfig
@@ -108,6 +109,11 @@ def train(args, logger, writer):
     point_cloud = dataloader.dataset.get_point_cloud(args.num_points)
     tx_position = dataloader.dataset.get_tx_position().to(device)
     env_dims = dataloader.dataset.get_env_dims()
+    num_tx_ant = dataloader.dataset.num_tx_ant
+    num_rx_ant = dataloader.dataset.num_rx_ant
+
+    logger.info(f"Number of TX antennas: {num_tx_ant}")
+    logger.info(f"Number of RX antennas: {num_rx_ant}")
 
     logger.info("Initializing model...")
     model_cfg = GaussianModelConfig(
@@ -139,6 +145,15 @@ def train(args, logger, writer):
     logger.info("Embedding wireless features...")
     model.embed_features(wireless_data)
     logger.info(f"Shape of features: {model.get_features.shape}")
+
+    logger.info("Projecting to channel space...")
+    proj_dict = project_to_channel_space(
+        points=model.get_xyz,
+        cov3d=model.get_covariance(),
+        receiver=rx_position,
+        num_tx=num_tx_ant,
+        num_rx=num_rx_ant,
+    )
 
     # training loop
     logger.info("Starting training...")
