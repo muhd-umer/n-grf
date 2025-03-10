@@ -79,7 +79,7 @@ class WirelessDataset(Dataset):
         # [num_users, tx_ant, rx_ant] if single subcarrier
 
         if len(H.shape) == 3:  # single subcarrier
-            self.channel_matrix = torch.stack([H.real, H.imag], dim=-1).float()
+            self.channel_matrix = H
         elif len(H.shape) == 4:  # multiple subcarriers case
             if self.subcarrier_idx is None:
                 self.subcarrier_idx = H.shape[-1] // 2
@@ -89,9 +89,7 @@ class WirelessDataset(Dataset):
                 )
 
             H_selected = H[..., self.subcarrier_idx]
-            self.channel_matrix = torch.stack(
-                [H_selected.real, H_selected.imag], dim=-1
-            ).float()
+            self.channel_matrix = H_selected
         else:
             raise ValueError(
                 f"Invalid channel matrix shape. Expected 3 or 4, got {len(H.shape)}"
