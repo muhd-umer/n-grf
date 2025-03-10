@@ -23,17 +23,23 @@ def set_random_seed(seed: Optional[int] = None) -> None:
 
 
 def save_checkpoint(
-    state_dict: Dict[str, Any], path: Union[str, Path], iteration: int
+    state_dict: Dict[str, Any],
+    path: Union[str, Path],
+    filename_or_iter: Union[str, int],
 ) -> None:
     """Save model checkpoint
 
     Args:
         state_dict: Model state to save
         path: Path to save directory
-        iteration: Current iteration number
+        filename_or_iter: Either a filename string or iteration number
     """
     path = Path(path)
     path.mkdir(parents=True, exist_ok=True)
 
-    save_path = path / f"checkpoint_{iteration:07d}.pt"
+    if isinstance(filename_or_iter, int):
+        save_path = path / f"checkpoint_{filename_or_iter:07d}.pt"
+    else:
+        save_path = path / filename_or_iter
+
     torch.save(state_dict, save_path)
