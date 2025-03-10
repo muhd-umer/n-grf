@@ -153,7 +153,7 @@ def parse_args():
         default=1,
         help="Log metrics every N iterations",
     )
-    parser.add_argument("--batch_size", type=int, default=1, help="Batch size")
+    parser.add_argument("--batch_size", type=int, default=32, help="Batch size")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--device", type=str, default="cuda", help="Device to use")
     parser.add_argument(
@@ -207,7 +207,7 @@ def evaluate(
     writer,
     iteration,
 ):
-    """Evaluate model on validation set"""
+    """Evaluate model on validation set with batch processing"""
     model.eval()
     total_loss = 0.0
     num_samples = 0
@@ -216,40 +216,45 @@ def evaluate(
 
     with torch.no_grad():
         for i, data in enumerate(dataloader):
-            rx_position = data["rx_position"].to(device).squeeze()
-            aoa = data["aoa"][0].to(device)
-            path_loss = data["path_loss"].to(device)
-            path_loss_per_ray = data["path_loss_per_ray"][0].to(device)
-            gt_channel = data["channel_matrix"].to(device).squeeze()
-            gt_channel = torch.hstack((gt_channel.real, gt_channel.imag))
+            batch_size = data["rx_position"].size(0)
+            batch_loss = 0.0
 
-            # embed wireless features
-            wireless_data = {
-                "tx_pos": tx_position,
-                "rx_pos": rx_position,
-                "path_loss": path_loss,
-                "aoa": aoa,
-                "path_loss_per_ray": path_loss_per_ray,
-            }
-            model.embed_features(wireless_data)
+            for j in range(batch_size):
+                rx_position = data["rx_position"][j].to(device)
+                aoa = data["aoa"][j].to(device)
+                path_loss = data["path_loss"][j : j + 1].to(device)
+                path_loss_per_ray = data["path_loss_per_ray"][j].to(device)
+                gt_channel = data["channel_matrix"][j].to(device)
+                gt_channel = torch.hstack((gt_channel.real, gt_channel.imag))
 
-            pred_result = rasterize(
-                points=model.get_xyz,
-                cov3d=model.get_covariance(),
-                attenuation=model.get_features[:, 0:1],
-                phase_rotation=model.get_features[:, 1:2],
-                opacity=model.get_opacity,
-                receiver=rx_position,
-                num_tx=num_tx_ant,
-                num_rx=num_rx_ant,
-                frequency=frequency,
-                return_viewspace_info=False,
-            )
-            pred_channel = pred_result["channel"]
+                wireless_data = {
+                    "tx_pos": tx_position,
+                    "rx_pos": rx_position,
+                    "path_loss": path_loss,
+                    "aoa": aoa,
+                    "path_loss_per_ray": path_loss_per_ray,
+                }
+                model.embed_features(wireless_data)
 
-            loss = nmse_loss(pred_channel, gt_channel)
-            total_loss += loss.item()
-            num_samples += 1
+                pred_result = rasterize(
+                    points=model.get_xyz,
+                    cov3d=model.get_covariance(),
+                    attenuation=model.get_features[:, 0:1],
+                    phase_rotation=model.get_features[:, 1:2],
+                    opacity=model.get_opacity,
+                    receiver=rx_position,
+                    num_tx=num_tx_ant,
+                    num_rx=num_rx_ant,
+                    frequency=frequency,
+                    return_viewspace_info=False,
+                )
+                pred_channel = pred_result["channel"]
+
+                sample_loss = nmse_loss(pred_channel, gt_channel)
+                batch_loss += sample_loss.item()
+                num_samples += 1
+
+            total_loss += batch_loss
 
     avg_loss = total_loss / max(num_samples, 1)
     logger.info(f"Evaluation NMSE Loss: {avg_loss:.6f}")
@@ -262,9 +267,7 @@ def evaluate(
 
 
 def train(args, logger, writer, log_dir):
-    """Main training loop"""
-    torch.autograd.set_detect_anomaly(True)
-
+    """Main training loop with batch processing support"""
     device = torch.device(args.device)
     logger.info(f"Using device: {device}")
 
@@ -281,7 +284,7 @@ def train(args, logger, writer, log_dir):
     val_dataloader = get_wireless_dataloader(
         args.data_path,
         train=False,
-        batch_size=1,
+        batch_size=args.batch_size,
         shuffle=False,
     )
 
@@ -298,6 +301,7 @@ def train(args, logger, writer, log_dir):
     logger.info(f"Number of RX antennas: {num_rx_ant}")
     logger.info(f"Environment extent: {scene_extent:.2f}")
     logger.info(f"Operating frequency: {frequency/1e9:.2f} GHz")
+    logger.info(f"Training with batch size: {args.batch_size}")
 
     # initialize model
     logger.info("Initializing model...")
@@ -343,58 +347,70 @@ def train(args, logger, writer, log_dir):
             train_iter = iter(train_dataloader)
             data = next(train_iter)
 
-        # extract data
-        rx_position = data["rx_position"].to(device).squeeze()
-        aoa = data["aoa"][0].to(device)
-        path_loss = data["path_loss"].to(device)
-        path_loss_per_ray = data["path_loss_per_ray"][0].to(device)
-        gt_channel = data["channel_matrix"].to(device).squeeze()
-        gt_channel = torch.hstack((gt_channel.real, gt_channel.imag))
-
-        # embed wireless features
-        wireless_data = {
-            "tx_pos": tx_position,
-            "rx_pos": rx_position,
-            "path_loss": path_loss,
-            "aoa": aoa,
-            "path_loss_per_ray": path_loss_per_ray,
-        }
-        model.embed_features(wireless_data)
-
-        render_result = rasterize(
-            points=model.get_xyz,
-            cov3d=model.get_covariance(),
-            attenuation=model.get_features[:, 0:1],
-            phase_rotation=model.get_features[:, 1:2],
-            opacity=model.get_opacity,
-            receiver=rx_position,
-            num_tx=num_tx_ant,
-            num_rx=num_rx_ant,
-            frequency=frequency,
-            return_viewspace_info=True,
-        )
-
-        pred_channel = render_result["channel"]
-        viewspace_info = render_result["viewspace_info"]
-
-        # get viewspace information for densification
-        visibility_filter = viewspace_info["visibility_filter"]
-        radii = viewspace_info["radii"]
-
-        loss = nmse_loss(pred_channel, gt_channel)
+        batch_size = data["rx_position"].size(0)
+        batch_loss = 0.0
 
         model.optimizer.zero_grad()
         model.encoder_optimizer.zero_grad()
+
+        all_visibility_filters = []
+        all_radii = []
+
+        for b in range(batch_size):
+
+            rx_position = data["rx_position"][b].to(device)
+            aoa = data["aoa"][b].to(device)
+            path_loss = data["path_loss"][b : b + 1].to(device)
+            path_loss_per_ray = data["path_loss_per_ray"][b].to(device)
+            gt_channel = data["channel_matrix"][b].to(device)
+            gt_channel = torch.hstack((gt_channel.real, gt_channel.imag))
+
+            wireless_data = {
+                "tx_pos": tx_position,
+                "rx_pos": rx_position,
+                "path_loss": path_loss,
+                "aoa": aoa,
+                "path_loss_per_ray": path_loss_per_ray,
+            }
+            model.embed_features(wireless_data)
+
+            render_result = rasterize(
+                points=model.get_xyz,
+                cov3d=model.get_covariance(),
+                attenuation=model.get_features[:, 0:1],
+                phase_rotation=model.get_features[:, 1:2],
+                opacity=model.get_opacity,
+                receiver=rx_position,
+                num_tx=num_tx_ant,
+                num_rx=num_rx_ant,
+                frequency=frequency,
+                return_viewspace_info=True,
+            )
+
+            pred_channel = render_result["channel"]
+            viewspace_info = render_result["viewspace_info"]
+
+            all_visibility_filters.append(viewspace_info["visibility_filter"])
+            all_radii.append(viewspace_info["radii"])
+
+            sample_loss = nmse_loss(pred_channel, gt_channel)
+            batch_loss += sample_loss
+
+        loss = batch_loss / batch_size
         loss.backward()
 
         if iteration < args.densify_until_iter:
-            model.max_radii2D[visibility_filter] = torch.max(
-                model.max_radii2D[visibility_filter], radii[visibility_filter]
-            )
+            for b in range(batch_size):
+                visibility_filter = all_visibility_filters[b]
+                radii = all_radii[b]
 
-            model.xyz_gradient_accum, model.denom = add_densification_stats(
-                model.xyz_gradient_accum, model.denom, visibility_filter
-            )
+                model.max_radii2D[visibility_filter] = torch.max(
+                    model.max_radii2D[visibility_filter], radii[visibility_filter]
+                )
+
+                model.xyz_gradient_accum, model.denom = add_densification_stats(
+                    model.xyz_gradient_accum, model.denom, visibility_filter
+                )
 
         model.update_learning_rate(iteration)
         model.optimizer.step()
@@ -438,13 +454,13 @@ def train(args, logger, writer, log_dir):
         if iteration % args.opacity_reset_interval == 0:
             model.reset_opacity()
 
-        # ;og progress
         iter_time = time.time() - iter_start_time
         if iteration % args.log_freq == 0:
             logger.info(
                 f"[{iteration}/{args.iterations}] "
                 f"Loss: {loss.item():.6f}, "
                 f"Time: {iter_time:.2f}s, "
+                f"Batch Size: {batch_size}, "
                 f"Gaussians: {model.get_xyz.shape[0]}"
             )
 
@@ -454,6 +470,10 @@ def train(args, logger, writer, log_dir):
                 writer.add_scalar(
                     "train/num_gaussians", model.get_xyz.shape[0], iteration
                 )
+                writer.add_scalar("train/batch_size", batch_size, iteration)
+                writer.add_scalar(
+                    "train/samples_per_second", batch_size / iter_time, iteration
+                )
 
                 for i, param_group in enumerate(model.optimizer.param_groups):
                     writer.add_scalar(
@@ -461,10 +481,9 @@ def train(args, logger, writer, log_dir):
                     )
 
             progress_bar.set_description(
-                f"Loss: {loss.item():.6f}, Gaussians: {model.get_xyz.shape[0]}"
+                f"Loss: {loss.item():.6f}, Batch: {batch_size}, Gaussians: {model.get_xyz.shape[0]}"
             )
 
-        # evaluate on validation set
         if iteration % args.eval_freq == 0:
             val_loss = evaluate(
                 model,

@@ -192,7 +192,7 @@ class GaussianModel(nn.Module):
         The wireless data should contain the following keys:
         - tx_pos: Transmitter position (3,)
         - rx_pos: Receiver position (3,)
-        - path_loss: Path loss values (N, 1)
+        - path_loss: Path loss values (N, 1) or (1, 1) for batched processing
         - aoa: Angles of arrival (2, P) with azimuth and elevation for P paths
         - path_loss_per_ray: Path loss per ray (P) for selecting important paths
 

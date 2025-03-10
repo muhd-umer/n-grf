@@ -14,7 +14,7 @@ def collate_wireless_batch(batch: list) -> Dict[str, Any]:
         batch (list): List of dataset items to be collated
 
     Returns:
-        Dict[str, Any]: Collated batch with stacked tensors
+        Collated batch with stacked tensors
     """
     keys = batch[0].keys()
     collated = {}
@@ -53,7 +53,7 @@ def get_wireless_dataloader(
             If None, uses middle subcarrier or extracts from filename for single-carrier.
 
     Returns:
-        DataLoader: The configured data loader
+        The configured data loader
     """
     dataset = WirelessDataset(
         data_path,
