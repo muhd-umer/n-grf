@@ -132,7 +132,7 @@ def parse_args():
     parser.add_argument(
         "--iterations",
         type=int,
-        default=300000,
+        default=30000,
         help="Number of training iterations",
     )
     parser.add_argument(
@@ -150,7 +150,7 @@ def parse_args():
     parser.add_argument(
         "--log_freq",
         type=int,
-        default=100,
+        default=1,
         help="Log metrics every N iterations",
     )
     parser.add_argument("--batch_size", type=int, default=1, help="Batch size")

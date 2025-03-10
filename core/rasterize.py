@@ -1,5 +1,7 @@
 # core/rasterize.py
 
+from typing import Any, Dict, Tuple
+
 import torch
 
 from utils.transform_utils import inverse_2d_covariance
@@ -53,7 +55,7 @@ def compute_channel(
     phase_rotation: torch.Tensor,
     distances: torch.Tensor,
     wavelength: float,
-) -> torch.Tensor:
+) -> Tuple[torch.Tensor, torch.Tensor]:
     """Compute wireless channel of Gaussians based on wireless physics
 
     Args:
@@ -63,8 +65,7 @@ def compute_channel(
         wavelength: Signal wavelength in meters
 
     Returns:
-        Complex tensor of shape [N, 1] with wireless channel of each
-        Gaussian
+        Tuple of tensors (real_part, imag_part) each of shape [N, 1]
     """
     PI: float = 3.14159265358979323846
     path_loss = wavelength / (4.0 * PI * distances.unsqueeze(1))
@@ -76,7 +77,7 @@ def compute_channel(
     real_part = total_attenuation * torch.cos(total_phase)
     imag_part = total_attenuation * torch.sin(total_phase)
 
-    return torch.complex(real_part, imag_part)
+    return real_part, imag_part
 
 
 @torch.jit.script
@@ -101,16 +102,30 @@ def alpha_blending(
     Returns:
         Complex channel matrix of shape [num_tx, num_rx]
     """
-    channel = torch.zeros(
-        (num_tx, num_rx), dtype=torch.complex64, device=influences.device
-    )
+    contributions_real = torch.real(contributions)
+    contributions_imag = torch.imag(contributions)
+
+    channel_real = torch.zeros((num_tx, num_rx), device=influences.device)
+    channel_imag = torch.zeros((num_tx, num_rx), device=influences.device)
+
     transmittance = torch.ones((num_tx, num_rx), device=influences.device)
 
     for idx in sort_indices:
         effective_opacity = opacity[idx] * influences[idx]
-        contribution_term = transmittance * effective_opacity * contributions[idx]
-        channel = channel + contribution_term
+
+        contribution_term_real = (
+            transmittance * effective_opacity * contributions_real[idx]
+        )
+        channel_real = channel_real + contribution_term_real
+
+        contribution_term_imag = (
+            transmittance * effective_opacity * contributions_imag[idx]
+        )
+        channel_imag = channel_imag + contribution_term_imag
+
         transmittance = transmittance * (1.0 - effective_opacity)
+
+    channel = torch.complex(channel_real, channel_imag)
 
     return channel
 
@@ -204,7 +219,9 @@ def rasterize(
         return_viewspace_info: Whether to return viewspace information for densification
 
     Returns:
-        Dictionary containing channel matrix and viewspace information (if requested)
+        Dictionary containing:
+            - channel: Channel matrix (formatted if format_output=True)
+            - viewspace_info: Dictionary with viewspace information if return_viewspace_info=True
     """
     from core.transforms import project_to_channel_space
 
@@ -220,10 +237,13 @@ def rasterize(
     distances = proj_dict["distances"]
 
     sort_indices = torch.argsort(distances)
-
-    # compute Gaussian influence on channel elements
     influences = compute_gaussian_influence(uv, cov2d, num_tx, num_rx)
-    contributions = compute_channel(attenuation, phase_rotation, distances, wavelength)
+
+    real_contributions, imag_contributions = compute_channel(
+        attenuation, phase_rotation, distances, wavelength
+    )
+
+    contributions = torch.complex(real_contributions, imag_contributions)
 
     channel = alpha_blending(
         influences, contributions, opacity, sort_indices, num_tx, num_rx
@@ -232,7 +252,7 @@ def rasterize(
     if format_output:
         channel_output = format_channel_matrix(channel)
     else:
-        raise NotImplementedError("Unformatted output not supported.")
+        channel_output = channel
 
     result = {"channel": channel_output}
 
