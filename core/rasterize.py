@@ -108,8 +108,9 @@ def alpha_blending(
 
     for idx in sort_indices:
         effective_opacity = opacity[idx] * influences[idx]
-        channel += transmittance * effective_opacity * contributions[idx]
-        transmittance *= 1.0 - effective_opacity
+        contribution_term = transmittance * effective_opacity * contributions[idx]
+        channel = channel + contribution_term
+        transmittance = transmittance * (1.0 - effective_opacity)
 
     return channel
 
@@ -132,6 +133,48 @@ def format_channel_matrix(channel: torch.Tensor) -> torch.Tensor:
     return formatted_channel
 
 
+def compute_viewspace_points(
+    points: torch.Tensor, receiver: torch.Tensor
+) -> torch.Tensor:
+    """Compute viewspace points for densification.
+
+    Args:
+        points: Gaussian centers [N, 3]
+        receiver: Receiver position [3]
+
+    Returns:
+        Viewspace points with gradient tracking [N, 3]
+    """
+    viewspace_points = points - receiver
+
+    distances = torch.norm(viewspace_points, dim=1, keepdim=True)
+    viewspace_directions = viewspace_points / torch.clamp(distances, min=1e-10)
+
+    viewspace_points_tensor = torch.cat([viewspace_directions[:, :2], distances], dim=1)
+
+    return viewspace_points_tensor
+
+
+def compute_2d_radii(cov2d: torch.Tensor) -> torch.Tensor:
+    """Compute 2D radii from covariance matrices.
+
+    Args:
+        cov2d: 2D covariance matrices [N, 2, 2]
+
+    Returns:
+        2D radii [N]
+    """
+    det = torch.det(cov2d)
+    trace = cov2d[:, 0, 0] + cov2d[:, 1, 1]
+
+    discriminant = torch.sqrt(torch.clamp(trace**2 - 4 * det, min=0))
+    max_eigenvalue = (trace + discriminant) / 2
+
+    radii = torch.sqrt(max_eigenvalue)
+
+    return radii
+
+
 def rasterize(
     points: torch.Tensor,
     cov3d: torch.Tensor,
@@ -143,7 +186,8 @@ def rasterize(
     num_rx: int,
     frequency: float = 5e9,
     format_output: bool = True,
-) -> torch.Tensor:
+    return_viewspace_info: bool = True,
+) -> dict:
     """Rasterize the channel matrix for a specific receiver position
 
     Args:
@@ -157,14 +201,14 @@ def rasterize(
         num_rx: Number of receive antennas
         frequency: Signal frequency in Hz
         format_output: Whether to format output as real/imaginary stacked parts
+        return_viewspace_info: Whether to return viewspace information for densification
 
     Returns:
-        Channel matrix (complex if format_output=False, or formatted as
-        [real|imag] if True)
+        Dictionary containing channel matrix and viewspace information (if requested)
     """
     from core.transforms import project_to_channel_space
 
-    c = 299792458.0  # Speed of light in m/s
+    c = 299792458.0
     wavelength = c / frequency
 
     proj_dict = project_to_channel_space(
@@ -186,6 +230,23 @@ def rasterize(
     )
 
     if format_output:
-        return format_channel_matrix(channel)
+        channel_output = format_channel_matrix(channel)
     else:
-        return channel
+        raise NotImplementedError("Unformatted output not supported.")
+
+    result = {"channel": channel_output}
+
+    if return_viewspace_info:
+        visibility_filter = torch.ones(
+            points.shape[0], dtype=torch.bool, device=points.device
+        )
+
+        radii = compute_2d_radii(cov2d)
+
+        result["viewspace_info"] = {
+            "visibility_filter": visibility_filter,
+            "radii": radii,
+            "distances": distances.squeeze(-1) if distances.dim() > 1 else distances,
+        }
+
+    return result
