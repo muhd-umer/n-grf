@@ -180,11 +180,27 @@ class WirelessDataset(Dataset):
     def __getitem__(self, idx):
         current_idx = self.indices[idx]
 
+        aoa = self.aoa[current_idx]
+
+        if aoa.dim() < 2:
+            aoa = (
+                aoa.view(2, -1)
+                if aoa.numel() >= 2
+                else torch.zeros(2, 0, device=aoa.device)
+            )
+
+        path_loss_per_ray = self.path_loss_per_ray[current_idx]
+
+        if path_loss_per_ray.dim() == 0:
+            path_loss_per_ray = torch.zeros(
+                aoa.shape[1], device=path_loss_per_ray.device
+            )
+
         return {
             "rx_position": self.rx_positions[current_idx],
             "channel_matrix": self.channel_matrix[current_idx],
             # "aod": self.aod[current_idx],
-            "aoa": self.aoa[current_idx],
-            "path_loss_per_ray": self.path_loss_per_ray[current_idx],
+            "aoa": aoa,
+            "path_loss_per_ray": path_loss_per_ray,
             "path_loss": self.path_loss[current_idx],
         }
