@@ -5,7 +5,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    # "diff-gaussian-rasterization",
+    "diff-gaussian-rasterization",
     "ipykernel>=6.29.5",
     "matplotlib>=3.10.0",
     "pymatreader>=1.0.0",
@@ -23,7 +23,7 @@ config-settings = { editable_mode = "compat" }
 [tool.uv.sources]
 torch = { index = "pytorch-cu124", marker = "sys_platform == 'linux'" }
 torchvision = { index = "pytorch-cu124", marker = "sys_platform == 'linux'" }
-# diff-gaussian-rasterization = { path = "submodules/diff-gaussian-rasterization", editable = true }
+diff-gaussian-rasterization = { path = "submodules/diff-gaussian-rasterization", editable = true }
 simple-knn = { path = "submodules/simple-knn" }
 
 [[tool.uv.index]]
