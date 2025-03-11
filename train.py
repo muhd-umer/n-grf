@@ -352,9 +352,6 @@ def train(args, logger, writer, log_dir):
         model.optimizer.zero_grad()
         model.encoder_optimizer.zero_grad()
 
-        all_visibility_filters = []
-        all_radii = []
-
         for b in range(batch_size):
 
             rx_position = data["rx_position"][b].to(device)
@@ -385,12 +382,7 @@ def train(args, logger, writer, log_dir):
                 frequency=frequency,
                 return_viewspace_info=True,
             )
-
             pred_channel = render_result["channel"]
-            viewspace_info = render_result["viewspace_info"]
-
-            all_visibility_filters.append(viewspace_info["visibility_filter"])
-            all_radii.append(viewspace_info["radii"])
 
             sample_loss = nmse_loss(pred_channel, gt_channel)
             batch_loss += sample_loss
