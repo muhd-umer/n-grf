@@ -11,7 +11,6 @@ import torch.nn.functional as F
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
-from core.adc import adaptive_density_control, add_densification_stats
 from core.loss import nmse_loss
 from core.rasterize import rasterize
 from datasets.dataloader import get_wireless_dataloader
@@ -399,57 +398,9 @@ def train(args, logger, writer, log_dir):
         loss = batch_loss / batch_size
         loss.backward()
 
-        if iteration < args.densify_until_iter:
-            for b in range(batch_size):
-                visibility_filter = all_visibility_filters[b]
-                radii = all_radii[b]
-
-                model.max_radii2D[visibility_filter] = torch.max(
-                    model.max_radii2D[visibility_filter], radii[visibility_filter]
-                )
-
-                model.xyz_gradient_accum, model.denom = add_densification_stats(
-                    model.xyz_gradient_accum, model.denom, visibility_filter
-                )
-
         model.update_learning_rate(iteration)
         model.optimizer.step()
         model.encoder_optimizer.step()
-
-        if (
-            iteration >= args.densify_from_iter
-            and iteration < args.densify_until_iter
-            and iteration % args.densification_interval == 0
-        ):
-            (
-                model._xyz.data,
-                model._scaling.data,
-                model._rotation.data,
-                model._opacity.data,
-                model.features,
-                model.xyz_gradient_accum,
-                model.denom,
-                model.max_radii2D,
-            ) = adaptive_density_control(
-                model.xyz_gradient_accum,
-                model.denom,
-                model.get_xyz,
-                model.get_scaling,
-                model._rotation,
-                model._opacity,
-                model.features,
-                model.max_radii2D,
-                args.densify_grad_threshold,
-                min_opacity=0.005,
-                extent=scene_extent,
-                max_screen_size=num_tx_ant / 4.0,
-                percent_dense=args.percent_dense,
-            )
-
-            if writer is not None:
-                writer.add_scalar(
-                    "train/num_gaussians", model.get_xyz.shape[0], iteration
-                )
 
         if iteration % args.opacity_reset_interval == 0:
             model.reset_opacity()
