@@ -13,11 +13,13 @@ from tqdm import tqdm
 
 from core.loss import nmse_loss
 from core.rasterize import rasterize
-from datasets.dataloader import get_wireless_dataloader
+from datasets.dataloader import get_dataloaders
 from models.encoder import EncoderConfig
 from models.gaussian_model import GaussianModel, GaussianModelConfig
 from utils.general_utils import save_checkpoint, set_random_seed
 from utils.train_utils import setup_logging
+
+torch.set_float32_matmul_precision("high")
 
 
 def parse_args():
@@ -32,7 +34,7 @@ def parse_args():
     parser.add_argument(
         "--num_points",
         type=int,
-        default=16378,
+        default=12_000,
         help="Number of points to sample from point cloud",
     )
 
@@ -58,70 +60,38 @@ def parse_args():
     parser.add_argument(
         "--position_lr_init",
         type=float,
-        default=1e-4,
+        default=0.00016,
         help="Initial position learning rate",
     )
     parser.add_argument(
         "--position_lr_final",
         type=float,
-        default=1e-6,
+        default=0.0000016,
         help="Final position learning rate",
     )
     parser.add_argument(
         "--position_lr_delay_mult", type=float, default=0.01, help="LR delay multiplier"
     )
     parser.add_argument(
-        "--rotation_lr", type=float, default=1e-4, help="Rotation learning rate"
+        "--rotation_lr", type=float, default=0.001, help="Rotation learning rate"
     )
     parser.add_argument(
-        "--scaling_lr", type=float, default=1e-4, help="Scaling learning rate"
+        "--scaling_lr", type=float, default=0.005, help="Scaling learning rate"
     )
     parser.add_argument(
-        "--opacity_lr", type=float, default=1e-3, help="Opacity learning rate"
+        "--opacity_lr", type=float, default=0.025, help="Opacity learning rate"
     )
     parser.add_argument(
-        "--encoder_lr", type=float, default=1e-4, help="Encoder learning rate"
+        "--encoder_lr", type=float, default=1e-3, help="Encoder learning rate"
     )
     parser.add_argument(
-        "--normals_lr", type=float, default=1e-4, help="Normals learning rate"
+        "--normals_lr", type=float, default=0.0025, help="Normals learning rate"
     )
     parser.add_argument(
-        "--weight_decay", type=float, default=1e-5, help="Weight decay for encoder"
+        "--weight_decay", type=float, default=1e-7, help="Weight decay for encoder"
     )
     parser.add_argument(
         "--percent_dense", type=float, default=0.01, help="Density control parameter"
-    )
-
-    # adaptive density control params
-    parser.add_argument(
-        "--densify_from_iter",
-        type=int,
-        default=500,
-        help="Start densification from iteration",
-    )
-    parser.add_argument(
-        "--densify_until_iter",
-        type=int,
-        default=15000,
-        help="Stop densification at iteration",
-    )
-    parser.add_argument(
-        "--densification_interval",
-        type=int,
-        default=100,
-        help="Apply densification every N iterations",
-    )
-    parser.add_argument(
-        "--opacity_reset_interval",
-        type=int,
-        default=3000,
-        help="Reset opacity every N iterations",
-    )
-    parser.add_argument(
-        "--densify_grad_threshold",
-        type=float,
-        default=0.0002,
-        help="Gradient threshold for densification",
     )
 
     # training params
@@ -131,19 +101,19 @@ def parse_args():
     parser.add_argument(
         "--iterations",
         type=int,
-        default=30000,
+        default=7_000,
         help="Number of training iterations",
     )
     parser.add_argument(
         "--checkpoint_freq",
         type=int,
-        default=5000,
+        default=700,
         help="Save checkpoint every N iterations",
     )
     parser.add_argument(
         "--eval_freq",
         type=int,
-        default=5000,
+        default=700,
         help="Evaluate every N iterations",
     )
     parser.add_argument(
@@ -152,7 +122,12 @@ def parse_args():
         default=1,
         help="Log metrics every N iterations",
     )
-    parser.add_argument("--batch_size", type=int, default=32, help="Batch size")
+    parser.add_argument(
+        "--opacity_reset_interval",
+        type=int,
+        default=700,
+        help="Reset opacity every N iterations",
+    )
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--device", type=str, default="cuda", help="Device to use")
     parser.add_argument(
@@ -206,7 +181,7 @@ def evaluate(
     writer,
     iteration,
 ):
-    """Evaluate model on validation set with batch processing"""
+    """Evaluate model on validation set"""
     model.eval()
     total_loss = 0.0
     num_samples = 0
@@ -215,45 +190,38 @@ def evaluate(
 
     with torch.no_grad():
         for i, data in enumerate(dataloader):
-            batch_size = data["rx_position"].size(0)
-            batch_loss = 0.0
+            rx_position = data["rx_position"].to(device).squeeze()
+            aoa = data["aoa"][0].to(device)
+            path_loss = data["path_loss"].to(device)
+            path_loss_per_ray = data["path_loss_per_ray"][0].to(device)
+            gt_channel = data["channel_matrix"].to(device).squeeze()
+            gt_channel = torch.hstack((gt_channel.real, gt_channel.imag))
 
-            for j in range(batch_size):
-                rx_position = data["rx_position"][j].to(device)
-                aoa = data["aoa"][j].to(device)
-                path_loss = data["path_loss"][j : j + 1].to(device)
-                path_loss_per_ray = data["path_loss_per_ray"][j].to(device)
-                gt_channel = data["channel_matrix"][j].to(device)
-                gt_channel = torch.hstack((gt_channel.real, gt_channel.imag))
+            # embed wireless features
+            wireless_data = {
+                "tx_pos": tx_position,
+                "rx_pos": rx_position,
+                "path_loss": path_loss,
+                "aoa": aoa,
+                "path_loss_per_ray": path_loss_per_ray,
+            }
+            model.embed_features(wireless_data)
 
-                wireless_data = {
-                    "tx_pos": tx_position,
-                    "rx_pos": rx_position,
-                    "path_loss": path_loss,
-                    "aoa": aoa,
-                    "path_loss_per_ray": path_loss_per_ray,
-                }
-                model.embed_features(wireless_data)
+            pred_channel = rasterize(
+                points=model.get_xyz,
+                cov3d=model.get_covariance(),
+                attenuation=model.get_features[:, 0:1],
+                phase_rotation=model.get_features[:, 1:2],
+                opacity=model.get_opacity,
+                receiver=rx_position,
+                num_tx=num_tx_ant,
+                num_rx=num_rx_ant,
+                frequency=frequency,
+            )
 
-                pred_result = rasterize(
-                    points=model.get_xyz,
-                    cov3d=model.get_covariance(),
-                    attenuation=model.get_features[:, 0:1],
-                    phase_rotation=model.get_features[:, 1:2],
-                    opacity=model.get_opacity,
-                    receiver=rx_position,
-                    num_tx=num_tx_ant,
-                    num_rx=num_rx_ant,
-                    frequency=frequency,
-                    return_viewspace_info=False,
-                )
-                pred_channel = pred_result["channel"]
-
-                sample_loss = nmse_loss(pred_channel, gt_channel)
-                batch_loss += sample_loss.item()
-                num_samples += 1
-
-            total_loss += batch_loss
+            loss = nmse_loss(pred_channel, gt_channel)
+            total_loss += loss.item()
+            num_samples += 1
 
     avg_loss = total_loss / max(num_samples, 1)
     logger.info(f"Evaluation NMSE Loss: {avg_loss:.6f}")
@@ -266,25 +234,16 @@ def evaluate(
 
 
 def train(args, logger, writer, log_dir):
-    """Main training loop with batch processing support"""
+    """Main training loop"""
     device = torch.device(args.device)
     logger.info(f"Using device: {device}")
 
     # set up dataloaders
     logger.info("Initializing dataloaders...")
-    train_dataloader = get_wireless_dataloader(
+    train_dataloader, val_dataloader = get_dataloaders(
         args.data_path,
-        train=True,
-        batch_size=args.batch_size,
-        shuffle=True,
+        num_workers=2,
         drop_last=True,
-    )
-
-    val_dataloader = get_wireless_dataloader(
-        args.data_path,
-        train=False,
-        batch_size=args.batch_size,
-        shuffle=False,
     )
 
     # get static environment data
@@ -300,7 +259,6 @@ def train(args, logger, writer, log_dir):
     logger.info(f"Number of RX antennas: {num_rx_ant}")
     logger.info(f"Environment extent: {scene_extent:.2f}")
     logger.info(f"Operating frequency: {frequency/1e9:.2f} GHz")
-    logger.info(f"Training with batch size: {args.batch_size}")
 
     # initialize model
     logger.info("Initializing model...")
@@ -346,48 +304,41 @@ def train(args, logger, writer, log_dir):
             train_iter = iter(train_dataloader)
             data = next(train_iter)
 
-        batch_size = data["rx_position"].size(0)
-        batch_loss = 0.0
+        # extract data
+        rx_position = data["rx_position"].to(device).squeeze()
+        aoa = data["aoa"][0].to(device)
+        path_loss = data["path_loss"].to(device)
+        path_loss_per_ray = data["path_loss_per_ray"][0].to(device)
+        gt_channel = data["channel_matrix"].to(device).squeeze()
+        gt_channel = torch.hstack((gt_channel.real, gt_channel.imag))
+
+        # embed wireless features
+        wireless_data = {
+            "tx_pos": tx_position,
+            "rx_pos": rx_position,
+            "path_loss": path_loss,
+            "aoa": aoa,
+            "path_loss_per_ray": path_loss_per_ray,
+        }
+        model.embed_features(wireless_data)
+
+        pred_channel = rasterize(
+            points=model.get_xyz,
+            cov3d=model.get_covariance(),
+            attenuation=model.get_features[:, 0:1],
+            phase_rotation=model.get_features[:, 1:2],
+            opacity=model.get_opacity,
+            receiver=rx_position,
+            num_tx=num_tx_ant,
+            num_rx=num_rx_ant,
+            frequency=frequency,
+        )
+
+        loss = nmse_loss(pred_channel, gt_channel)
 
         model.optimizer.zero_grad()
         model.encoder_optimizer.zero_grad()
 
-        for b in range(batch_size):
-
-            rx_position = data["rx_position"][b].to(device)
-            aoa = data["aoa"][b].to(device)
-            path_loss = data["path_loss"][b : b + 1].to(device)
-            path_loss_per_ray = data["path_loss_per_ray"][b].to(device)
-            gt_channel = data["channel_matrix"][b].to(device)
-            gt_channel = torch.hstack((gt_channel.real, gt_channel.imag))
-
-            wireless_data = {
-                "tx_pos": tx_position,
-                "rx_pos": rx_position,
-                "path_loss": path_loss,
-                "aoa": aoa,
-                "path_loss_per_ray": path_loss_per_ray,
-            }
-            model.embed_features(wireless_data)
-
-            render_result = rasterize(
-                points=model.get_xyz,
-                cov3d=model.get_covariance(),
-                attenuation=model.get_features[:, 0:1],
-                phase_rotation=model.get_features[:, 1:2],
-                opacity=model.get_opacity,
-                receiver=rx_position,
-                num_tx=num_tx_ant,
-                num_rx=num_rx_ant,
-                frequency=frequency,
-                return_viewspace_info=True,
-            )
-            pred_channel = render_result["channel"]
-
-            sample_loss = nmse_loss(pred_channel, gt_channel)
-            batch_loss += sample_loss
-
-        loss = batch_loss / batch_size
         loss.backward()
 
         model.update_learning_rate(iteration)
@@ -397,13 +348,13 @@ def train(args, logger, writer, log_dir):
         if iteration % args.opacity_reset_interval == 0:
             model.reset_opacity()
 
+        # log progress
         iter_time = time.time() - iter_start_time
         if iteration % args.log_freq == 0:
             logger.info(
                 f"[{iteration}/{args.iterations}] "
                 f"Loss: {loss.item():.6f}, "
                 f"Time: {iter_time:.2f}s, "
-                f"Batch Size: {batch_size}, "
                 f"Gaussians: {model.get_xyz.shape[0]}"
             )
 
@@ -413,10 +364,6 @@ def train(args, logger, writer, log_dir):
                 writer.add_scalar(
                     "train/num_gaussians", model.get_xyz.shape[0], iteration
                 )
-                writer.add_scalar("train/batch_size", batch_size, iteration)
-                writer.add_scalar(
-                    "train/samples_per_second", batch_size / iter_time, iteration
-                )
 
                 for i, param_group in enumerate(model.optimizer.param_groups):
                     writer.add_scalar(
@@ -424,9 +371,10 @@ def train(args, logger, writer, log_dir):
                     )
 
             progress_bar.set_description(
-                f"Loss: {loss.item():.6f}, Batch: {batch_size}, Gaussians: {model.get_xyz.shape[0]}"
+                f"Loss: {loss.item():.6f}, Gaussians: {model.get_xyz.shape[0]}"
             )
 
+        # evaluate on validation set
         if iteration % args.eval_freq == 0:
             val_loss = evaluate(
                 model,
