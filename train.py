@@ -11,7 +11,7 @@ import torch.nn.functional as F
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
-from core.loss import nmse_loss
+from core.loss import l1_ssim_loss, nmse_loss
 from core.rasterize import rasterize
 from datasets.dataloader import get_dataloaders
 from models.encoder import EncoderConfig
@@ -131,6 +131,12 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--device", type=str, default="cuda", help="Device to use")
     parser.add_argument(
+        "--lambda_dssim",
+        type=float,
+        default=0.2,
+        help="Weight for DSSIM component in the loss function",
+    )
+    parser.add_argument(
         "--resume",
         type=str,
         default=None,
@@ -180,6 +186,7 @@ def evaluate(
     logger,
     writer,
     iteration,
+    lambda_dssim=0.2,
 ):
     """Evaluate model on validation set"""
     model.eval()
@@ -219,15 +226,16 @@ def evaluate(
                 frequency=frequency,
             )
 
-            loss = nmse_loss(pred_channel, gt_channel)
+            loss = l1_ssim_loss(pred_channel, gt_channel, lambda_dssim=lambda_dssim)
+
             total_loss += loss.item()
             num_samples += 1
 
     avg_loss = total_loss / max(num_samples, 1)
-    logger.info(f"Evaluation NMSE Loss: {avg_loss:.6f}")
+    logger.info(f"Evaluation Loss: {avg_loss:.6f}")
 
     if writer is not None:
-        writer.add_scalar("eval/nmse_loss", avg_loss, iteration)
+        writer.add_scalar("eval/loss", avg_loss, iteration)
 
     model.train()
     return avg_loss
@@ -334,7 +342,7 @@ def train(args, logger, writer, log_dir):
             frequency=frequency,
         )
 
-        loss = nmse_loss(pred_channel, gt_channel)
+        loss = l1_ssim_loss(pred_channel, gt_channel, lambda_dssim=args.lambda_dssim)
 
         model.optimizer.zero_grad()
         model.encoder_optimizer.zero_grad()
@@ -359,7 +367,7 @@ def train(args, logger, writer, log_dir):
             )
 
             if writer is not None:
-                writer.add_scalar("train/nmse_loss", loss.item(), iteration)
+                writer.add_scalar("train/loss", loss.item(), iteration)
                 writer.add_scalar("train/iteration_time", iter_time, iteration)
                 writer.add_scalar(
                     "train/num_gaussians", model.get_xyz.shape[0], iteration
@@ -387,6 +395,7 @@ def train(args, logger, writer, log_dir):
                 logger,
                 writer,
                 iteration,
+                args.lambda_dssim,
             )
 
             # save best model
