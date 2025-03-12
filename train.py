@@ -288,13 +288,11 @@ def train(args, logger, writer, log_dir):
     best_val_loss = float("inf")
     if args.resume is not None:
         logger.info(f"Resuming from checkpoint: {args.resume}")
+        model = GaussianModel.load_model(args.resume, device=device, training_args=args)
+
+        # extract training state information
         checkpoint = torch.load(args.resume, map_location=device)
-        model.load_state_dict(checkpoint["model_state_dict"])
-        model.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-        model.encoder_optimizer.load_state_dict(
-            checkpoint["encoder_optimizer_state_dict"]
-        )
-        start_iteration = checkpoint["iteration"] + 1
+        start_iteration = checkpoint.get("iteration", 0) + 1
         best_val_loss = checkpoint.get("best_val_loss", float("inf"))
         logger.info(f"Resuming from iteration {start_iteration}")
 
@@ -402,44 +400,33 @@ def train(args, logger, writer, log_dir):
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
                 logger.info(f"New best validation loss: {best_val_loss:.6f}")
-                save_checkpoint(
-                    {
-                        "iteration": iteration,
-                        "model_state_dict": model.state_dict(),
-                        "optimizer_state_dict": model.optimizer.state_dict(),
-                        "encoder_optimizer_state_dict": model.encoder_optimizer.state_dict(),
-                        "best_val_loss": best_val_loss,
-                    },
-                    log_dir / "checkpoints",
-                    "best_model.pt",
+                model.save_model(
+                    log_dir / "checkpoints" / "best_model.pt",
+                    save_optimizer=True,
+                    iteration=iteration,
+                    best_val_loss=best_val_loss,
                 )
+                logger.info("Best model saved at iteration {iteration}")
 
         # save checkpoint
         if iteration % args.checkpoint_freq == 0:
-            save_checkpoint(
-                {
-                    "iteration": iteration,
-                    "model_state_dict": model.state_dict(),
-                    "optimizer_state_dict": model.optimizer.state_dict(),
-                    "encoder_optimizer_state_dict": model.encoder_optimizer.state_dict(),
-                    "best_val_loss": best_val_loss,
-                },
-                log_dir / "checkpoints",
-                f"checkpoint_{iteration:06d}.pt",
+            checkpoint_path = log_dir / "checkpoints" / f"checkpoint_{iteration:06d}.pt"
+            model.save_model(
+                checkpoint_path,
+                save_optimizer=True,
+                iteration=iteration,
+                best_val_loss=best_val_loss,
             )
+            logger.info(f"Checkpoint saved at iteration {iteration}")
 
     # save final model
-    save_checkpoint(
-        {
-            "iteration": args.iterations - 1,
-            "model_state_dict": model.state_dict(),
-            "optimizer_state_dict": model.optimizer.state_dict(),
-            "encoder_optimizer_state_dict": model.encoder_optimizer.state_dict(),
-            "best_val_loss": best_val_loss,
-        },
-        log_dir / "checkpoints",
-        "final_model.pt",
+    model.save_model(
+        log_dir / "checkpoints" / "final_model.pt",
+        save_optimizer=True,
+        iteration=args.iterations - 1,
+        best_val_loss=best_val_loss,
     )
+    model.save_model(log_dir / "checkpoints" / "eval_model.pt", save_optimizer=False)
 
     logger.info("Training completed!")
     return model

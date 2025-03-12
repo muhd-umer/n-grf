@@ -16,14 +16,6 @@ from utils.transform_utils import (
 from .encoder import EncoderConfig, WirelessEncoder
 
 
-@dataclass
-class GaussianModelConfig:
-    """Configuration for GaussianModel"""
-
-    num_components: int = 2  # real and imaginary parts
-    use_pred_normals: bool = False
-
-
 class GaussianModel(nn.Module):
     """Gaussian model for wireless channel reconstruction.
 
@@ -42,18 +34,18 @@ class GaussianModel(nn.Module):
     - Gradients and denominator accumulators for training
 
     Args:
-        model_cfg: Configuration for the model
-        encoder_cfg
+        encoder_cfg: Configuration for the encoder
+        use_pred_normals: Whether to use predicted normals
     """
 
     def __init__(
         self,
-        model_cfg: Optional[GaussianModelConfig] = None,
         encoder_cfg: Optional[EncoderConfig] = None,
+        use_pred_normals: bool = False,
     ):
         super().__init__()
 
-        self.model_cfg = model_cfg or GaussianModelConfig()
+        self.use_pred_normals = use_pred_normals
         self.encoder_cfg = encoder_cfg or EncoderConfig()
         self.encoder = WirelessEncoder(self.encoder_cfg)
 
@@ -72,7 +64,7 @@ class GaussianModel(nn.Module):
         self.percent_dense = 0
 
         # optional predicted normals
-        self._normals = torch.empty(0) if self.model_cfg.use_pred_normals else None
+        self._normals = torch.empty(0) if self.use_pred_normals else None
 
         self.setup_functions()
 
@@ -138,7 +130,7 @@ class GaussianModel(nn.Module):
         self.denom = torch.zeros((num_points, 1), device=device)
 
         # initialize optional normals
-        if self.model_cfg.use_pred_normals:
+        if self.use_pred_normals:
             self._normals = nn.Parameter(torch.randn(num_points, 3, device=device))
 
     @property
@@ -169,7 +161,7 @@ class GaussianModel(nn.Module):
     @property
     def get_normals(self):
         """Get predicted normals if enabled."""
-        if not self.model_cfg.use_pred_normals:
+        if not self.use_pred_normals:
             raise ValueError("Predicted normals not enabled in config")
         return self.rotation_activation(self._normals)
 
@@ -185,6 +177,117 @@ class GaussianModel(nn.Module):
         return self.covariance_activation(
             self.get_scaling, scaling_modifier, self._rotation
         )
+
+    def save(self, filepath, save_optimizer=True, iteration=None, best_val_loss=None):
+        """Save model weights and optionally training state to file.
+
+        Args:
+            filepath: Path where to save the model
+            save_optimizer: Whether to save optimizer states (for resuming training)
+            iteration: Current training iteration for resuming
+            best_val_loss: Best validation loss achieved so far
+        """
+        from pathlib import Path
+
+        filepath = Path(filepath)
+        filepath.parent.mkdir(parents=True, exist_ok=True)
+
+        model_state = {
+            "model_config": self.model_cfg,
+            "encoder_config": self.encoder_cfg,
+            "xyz": self._xyz,
+            "rotation": self._rotation,
+            "scaling": self._scaling,
+            "opacity": self._opacity,
+            "features": self.features,
+        }
+
+        if self.use_pred_normals and self._normals is not None:
+            model_state["normals"] = self._normals
+
+        if save_optimizer:
+            model_state.update(
+                {
+                    "max_radii2D": self.max_radii2D,
+                    "xyz_gradient_accum": self.xyz_gradient_accum,
+                    "denom": self.denom,
+                    "optimizer_state": (
+                        self.optimizer.state_dict() if self.optimizer else None
+                    ),
+                    "encoder_optimizer_state": (
+                        self.encoder_optimizer.state_dict()
+                        if hasattr(self, "encoder_optimizer")
+                        else None
+                    ),
+                    "iteration": iteration,
+                    "best_val_loss": best_val_loss,
+                    "percent_dense": self.percent_dense,
+                }
+            )
+
+        torch.save(model_state, filepath)
+        print(f"Model saved to {filepath}")
+
+    @classmethod
+    def load(cls, filepath, device=None, training_args=None):
+        """Load model from file and return an initialized model instance.
+
+        Args:
+            filepath: Path to the saved model file
+            device: Device to load the model to (default: current CUDA device)
+            training_args: Optional training arguments for resuming training
+
+        Returns:
+            An initialized GaussianModel instance with loaded weights
+        """
+        if device is None:
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+        state = torch.load(filepath, map_location=device, weights_only=False)
+
+        model_cfg = state.get("model_config", None)
+        encoder_cfg = state.get("encoder_config", None)
+        model = cls(model_cfg=model_cfg, encoder_cfg=encoder_cfg)
+
+        model._xyz = state["xyz"].to(device)
+        model._rotation = state["rotation"].to(device)
+        model._scaling = state["scaling"].to(device)
+        model._opacity = state["opacity"].to(device)
+        model.features = state["features"].to(device)
+
+        if "normals" in state and model.model_cfg.use_pred_normals:
+            model._normals = state["normals"].to(device)
+
+        model.max_radii2D = torch.zeros_like(model._xyz[:, 0])
+        model.xyz_gradient_accum = torch.zeros((model._xyz.shape[0], 1), device=device)
+        model.denom = torch.zeros((model._xyz.shape[0], 1), device=device)
+
+        if training_args is not None and "optimizer_state" in state:
+            model.training_setup(training_args)
+
+            model.max_radii2D = state["max_radii2D"].to(device)
+            model.xyz_gradient_accum = state["xyz_gradient_accum"].to(device)
+            model.denom = state["denom"].to(device)
+            model.percent_dense = state.get("percent_dense", 0.01)
+
+            if state["optimizer_state"] is not None:
+                model.optimizer.load_state_dict(state["optimizer_state"])
+
+                for param_group in model.optimizer.param_groups:
+                    for param in param_group["params"]:
+                        if param.grad is not None:
+                            param.grad = param.grad.to(device)
+
+            if (
+                "encoder_optimizer_state" in state
+                and state["encoder_optimizer_state"] is not None
+            ):
+                model.encoder_optimizer.load_state_dict(
+                    state["encoder_optimizer_state"]
+                )
+
+        model.to(device)
+        return model
 
     def embed_features(self, wireless_data: dict[str, torch.Tensor]):
         """Embed iteration of wireless data into Gaussian features.
@@ -257,7 +360,7 @@ class GaussianModel(nn.Module):
             },
         ]
 
-        if self.model_cfg.use_pred_normals and self._normals is not None:
+        if self.use_pred_normals and self._normals is not None:
             param_groups.append(
                 {
                     "params": [self._normals],
