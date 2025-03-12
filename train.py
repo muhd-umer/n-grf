@@ -206,9 +206,6 @@ def evaluate(
     with torch.no_grad():
         for i, data in enumerate(dataloader):
             rx_position = data["rx_position"].to(device).squeeze()
-            aoa = data["aoa"][0].to(device)
-            path_loss = data["path_loss"].to(device)
-            path_loss_per_ray = data["path_loss_per_ray"][0].to(device)
             gt_channel = data["channel_matrix"].to(device).squeeze()
             gt_channel = torch.hstack((gt_channel.real, gt_channel.imag))
 
@@ -334,9 +331,6 @@ def train(args, logger, writer, log_dir):
 
         # extract data
         rx_position = data["rx_position"].to(device).squeeze()
-        aoa = data["aoa"][0].to(device)
-        path_loss = data["path_loss"].to(device)
-        path_loss_per_ray = data["path_loss_per_ray"][0].to(device)
         gt_channel = data["channel_matrix"].to(device).squeeze()
         gt_channel = torch.hstack((gt_channel.real, gt_channel.imag))
 
