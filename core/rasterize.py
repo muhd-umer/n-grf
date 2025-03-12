@@ -4,6 +4,7 @@ from typing import Any, Dict, Tuple
 
 import torch
 
+from core.transforms import project_to_channel_space
 from utils.transform_utils import inverse_2d_covariance
 
 
@@ -125,27 +126,9 @@ def alpha_blending(
 
         transmittance = transmittance * (1.0 - effective_opacity)
 
-    channel = torch.complex(channel_real, channel_imag)
+    cat_channel = torch.cat([channel_real, channel_imag], dim=1)
 
-    return channel
-
-
-def format_channel_matrix(channel: torch.Tensor) -> torch.Tensor:
-    """Format complex channel matrix as real and imaginary stacked parts
-
-    Args:
-        channel: Complex channel matrix of shape [num_tx, num_rx]
-
-    Returns:
-        Formatted matrix of shape [num_tx, 2*num_rx] with real and imaginary
-        parts
-    """
-    real_part = torch.real(channel)
-    imag_part = torch.imag(channel)
-
-    formatted_channel = torch.cat([real_part, imag_part], dim=1)
-
-    return formatted_channel
+    return cat_channel
 
 
 def rasterize(
@@ -158,9 +141,7 @@ def rasterize(
     num_tx: int,
     num_rx: int,
     frequency: float = 5e9,
-    format_output: bool = True,
-    return_viewspace_info: bool = True,
-) -> dict:
+) -> torch.Tensor:
     """Rasterize the channel matrix for a specific receiver position
 
     Args:
@@ -173,26 +154,18 @@ def rasterize(
         num_tx: Number of transmit antennas
         num_rx: Number of receive antennas
         frequency: Signal frequency in Hz
-        format_output: Whether to format output as real/imaginary stacked parts
-        return_viewspace_info: Whether to return viewspace information for densification
 
     Returns:
-        Dictionary containing:
-            - channel: Channel matrix (formatted if format_output=True)
-            - viewspace_info: Dictionary with viewspace information if return_viewspace_info=True
+        Channel matrix of shape [num_tx, 2*num_rx] with real and imaginary parts
+        concatenated
     """
-    from core.transforms import project_to_channel_space
 
     c = 299792458.0
     wavelength = c / frequency
 
-    proj_dict = project_to_channel_space(
+    distances, uv, cov2d = project_to_channel_space(
         points=points, cov3d=cov3d, receiver=receiver, num_tx=num_tx, num_rx=num_rx
     )
-
-    uv = proj_dict["uv"]
-    cov2d = proj_dict["cov2d"]
-    distances = proj_dict["distances"]
 
     sort_indices = torch.argsort(distances)
     influences = compute_gaussian_influence(uv, cov2d, num_tx, num_rx)
@@ -203,15 +176,8 @@ def rasterize(
 
     contributions = torch.complex(real_contributions, imag_contributions)
 
-    channel = alpha_blending(
+    cat_channel = alpha_blending(
         influences, contributions, opacity, sort_indices, num_tx, num_rx
     )
 
-    if format_output:
-        channel_output = format_channel_matrix(channel)
-    else:
-        channel_output = channel
-
-    result = {"channel": channel_output}
-
-    return result
+    return cat_channel

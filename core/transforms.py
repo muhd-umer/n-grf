@@ -163,7 +163,7 @@ def project_to_channel_space(
     receiver: torch.Tensor,
     num_tx: int,
     num_rx: int,
-) -> Dict[str, torch.Tensor]:
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Project 3D Gaussians to channel matrix space for a single receiver
 
     Args:
@@ -174,7 +174,7 @@ def project_to_channel_space(
         num_rx: Number of receive antennas
 
     Returns:
-        Dictionary containing projection results, i.e., distances [N], uv
+        Tuple containing projection results, i.e., distances [N], uv
         coordinates [N, 2], and projected 2D covariance matrices [N, 2, 2]
     """
     device = points.device
@@ -188,4 +188,4 @@ def project_to_channel_space(
     cov3d_mat = symmetric_matrix(cov3d)
     cov2d = project_cov3d_to_cov2d(cov3d_mat, jacobian)
 
-    return {"distances": distances, "uv": uv, "cov2d": cov2d}
+    return distances, uv, cov2d

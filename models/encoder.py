@@ -210,7 +210,7 @@ class WirelessEncoder(nn.Module):
             points: Point positions (N, 3)
             tx_pos: Transmitter position (3,)
             rx_pos: Receiver position (3,)
-            path_loss: Path loss values (N, 1) or (1, 1) for batched processing
+            path_loss: Path loss values (N, 1)
             aoa: Angles of arrival (2, P) with azimuth and elevation for P paths
             path_loss_per_ray: Path loss per ray (P) for selecting important paths
 
@@ -224,10 +224,6 @@ class WirelessEncoder(nn.Module):
 
         path_encoding = self.path_encoder(aoa, path_loss_per_ray)
         path_encoding = path_encoding.expand(points.shape[0], -1)
-
-        # ensure path_loss has the right shape for broadcasting
-        if path_loss.dim() == 1:
-            path_loss = path_loss.unsqueeze(-1)  # [B] -> [B, 1]
 
         x = torch.cat(
             [
