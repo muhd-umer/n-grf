@@ -54,7 +54,8 @@ def compute_gaussian_influence(
 def compute_channel(
     attenuation: torch.Tensor,
     phase_rotation: torch.Tensor,
-    distances: torch.Tensor,
+    tx_rx_distance: torch.Tensor,
+    xyz_rx_distance: torch.Tensor,
     wavelength: float,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """Compute wireless channel of Gaussians based on wireless physics
@@ -62,15 +63,16 @@ def compute_channel(
     Args:
         attenuation: Learned attenuation amplitude from neural network [N, 1]
         phase_rotation: Learned phase rotation from neural network [N, 1]
-        distances: Distances from Gaussians to receiver [N]
+        tx_rx_distance: Distance from transmitter to receiver [1]
+        xyz_rx_distance: Distance from each Gaussian to receiver [N, 1]
         wavelength: Signal wavelength in meters
 
     Returns:
         Tuple of tensors (real_part, imag_part) each of shape [N, 1]
     """
     PI: float = 3.14159265358979323846
-    path_loss = wavelength / (4.0 * PI * distances.unsqueeze(1))
-    phase_shift = -2.0 * PI * distances.unsqueeze(1) / wavelength
+    path_loss = wavelength / (4.0 * PI * tx_rx_distance)
+    phase_shift = -2.0 * PI * xyz_rx_distance.unsqueeze(1) / wavelength
 
     total_attenuation = attenuation * path_loss
     total_phase = phase_rotation + phase_shift
@@ -138,9 +140,10 @@ def rasterize(
     phase_rotation: torch.Tensor,
     opacity: torch.Tensor,
     receiver: torch.Tensor,
+    transmitter: torch.Tensor,
     num_tx: int,
     num_rx: int,
-    frequency: float = 5e9,
+    frequency: float,
 ) -> torch.Tensor:
     """Rasterize the channel matrix for a specific receiver position
 
@@ -151,6 +154,7 @@ def rasterize(
         phase_rotation: Learned phase rotation from neural network [N, 1]
         opacity: Opacity of each Gaussian [N, 1]
         receiver: Receiver position [3]
+        transmitter: Transmitter position [3]
         num_tx: Number of transmit antennas
         num_rx: Number of receive antennas
         frequency: Signal frequency in Hz
@@ -163,15 +167,21 @@ def rasterize(
     c = 299792458.0
     wavelength = c / frequency
 
-    distances, uv, cov2d = project_to_channel_space(
+    tx_rx_distance = torch.sqrt(torch.sum((transmitter - receiver) ** 2))
+
+    xyz_rx_distances, uv, cov2d = project_to_channel_space(
         points=points, cov3d=cov3d, receiver=receiver, num_tx=num_tx, num_rx=num_rx
     )
 
-    sort_indices = torch.argsort(distances)
+    sort_indices = torch.argsort(xyz_rx_distances)
     influences = compute_gaussian_influence(uv, cov2d, num_tx, num_rx)
 
     real_contributions, imag_contributions = compute_channel(
-        attenuation, phase_rotation, distances, wavelength
+        attenuation,
+        phase_rotation,
+        tx_rx_distance,
+        xyz_rx_distances,
+        wavelength,
     )
 
     contributions = torch.complex(real_contributions, imag_contributions)

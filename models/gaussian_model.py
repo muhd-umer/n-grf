@@ -13,7 +13,7 @@ from utils.transform_utils import (
     strip_symmetric,
 )
 
-from .encoder import EncoderConfig, WirelessEncoder
+from .encoder import EncoderConfig, FeatureEncoder
 
 
 class GaussianModel(nn.Module):
@@ -47,7 +47,7 @@ class GaussianModel(nn.Module):
 
         self.use_pred_normals = use_pred_normals
         self.encoder_cfg = encoder_cfg or EncoderConfig()
-        self.encoder = WirelessEncoder(self.encoder_cfg)
+        self.encoder = FeatureEncoder(self.encoder_cfg)
 
         # initialize empty tensors; will be set in init_from_pc
         self._xyz = torch.empty(0)  # positions
@@ -193,13 +193,13 @@ class GaussianModel(nn.Module):
         filepath.parent.mkdir(parents=True, exist_ok=True)
 
         model_state = {
-            "model_config": self.model_cfg,
             "encoder_config": self.encoder_cfg,
             "xyz": self._xyz,
             "rotation": self._rotation,
             "scaling": self._scaling,
             "opacity": self._opacity,
             "features": self.features,
+            "use_pred_normals": self.use_pred_normals,
         }
 
         if self.use_pred_normals and self._normals is not None:
@@ -245,9 +245,9 @@ class GaussianModel(nn.Module):
 
         state = torch.load(filepath, map_location=device, weights_only=False)
 
-        model_cfg = state.get("model_config", None)
         encoder_cfg = state.get("encoder_config", None)
-        model = cls(model_cfg=model_cfg, encoder_cfg=encoder_cfg)
+        use_pred_normals = state.get("use_pred_normals", False)
+        model = cls(encoder_cfg=encoder_cfg, use_pred_normals=use_pred_normals)
 
         model._xyz = state["xyz"].to(device)
         model._rotation = state["rotation"].to(device)
@@ -289,33 +289,22 @@ class GaussianModel(nn.Module):
         model.to(device)
         return model
 
-    def embed_features(self, wireless_data: dict[str, torch.Tensor]):
+    def embed_features(self, enc_data: dict[str, torch.Tensor]):
         """Embed iteration of wireless data into Gaussian features.
 
         The wireless data should contain the following keys:
         - tx_pos: Transmitter position (3,)
         - rx_pos: Receiver position (3,)
-        - path_loss: Path loss values (N, 1) or (1, 1) for batched processing
-        - aoa: Angles of arrival (2, P) with azimuth and elevation for P paths
-        - path_loss_per_ray: Path loss per ray (P) for selecting important paths
 
         Args:
-            wireless_data: Dictionary containing wireless data tensors with keys
+            enc_data: Dictionary containing wireless data tensors with keys
         """
         # extract data
-        tx_pos = wireless_data["tx_pos"]
-        rx_pos = wireless_data["rx_pos"]
-        path_loss = wireless_data["path_loss"]
-        aoa = wireless_data["aoa"]
-        path_loss_per_ray = wireless_data["path_loss_per_ray"]
+        tx_pos = enc_data["tx_pos"]
+        rx_pos = enc_data.get("rx_pos", None)
 
         # compute features
-        enc_output = self.encoder(
-            self._xyz, tx_pos, rx_pos, path_loss, aoa, path_loss_per_ray
-        )
-
-        attenuation = enc_output["attenuation"]
-        phase_rotation = enc_output["phase_rotation"]
+        attenuation, phase_rotation = self.encoder(self._xyz, tx_pos, rx_pos)
 
         # update features
         self.features = torch.cat([attenuation, phase_rotation], dim=-1)

@@ -1,13 +1,11 @@
 # train.py
 
 import argparse
-import os
 import time
 from datetime import datetime
 from pathlib import Path
 
 import torch
-import torch.nn.functional as F
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
@@ -15,8 +13,8 @@ from core.loss import l1_ssim_loss, nmse_loss
 from core.rasterize import rasterize
 from datasets.dataloader import get_dataloaders
 from models.encoder import EncoderConfig
-from models.gaussian_model import GaussianModel, GaussianModelConfig
-from utils.general_utils import save_checkpoint, set_random_seed
+from models.gaussian_model import GaussianModel
+from utils.general_utils import set_random_seed
 from utils.train_utils import setup_logging
 
 torch.set_float32_matmul_precision("high")
@@ -45,15 +43,15 @@ def parse_args():
         help="Whether to predict surface normals",
     )
     parser.add_argument(
-        "--use_attention",
-        action="store_true",
-        help="Whether to use attention for path encoding",
-    )
-    parser.add_argument(
         "--max_paths",
         type=int,
         default=10,
         help="Maximum number of paths to consider when using masking",
+    )
+    parser.add_argument(
+        "--use_rx_pos",
+        action="store_true",
+        help="Whether to use receiver position in encoder",
     )
 
     # optimization params
@@ -99,6 +97,13 @@ def parse_args():
         "--log_dir", type=str, default="logs", help="Directory to save outputs"
     )
     parser.add_argument(
+        "--loss_type",
+        type=str,
+        default="l1_ssim",
+        choices=["nmse", "l1_ssim"],
+        help="Loss function to use for training",
+    )
+    parser.add_argument(
         "--iterations",
         type=int,
         default=7_000,
@@ -128,7 +133,7 @@ def parse_args():
         default=700,
         help="Reset opacity every N iterations",
     )
-    parser.add_argument("--seed", type=int, default=42, help="Random seed")
+    parser.add_argument("--seed", type=int, default=17, help="Random seed")
     parser.add_argument("--device", type=str, default="cuda", help="Device to use")
     parser.add_argument(
         "--lambda_dssim",
@@ -186,11 +191,14 @@ def evaluate(
     logger,
     writer,
     iteration,
+    loss_type="nmse",
     lambda_dssim=0.2,
 ):
     """Evaluate model on validation set"""
     model.eval()
     total_loss = 0.0
+    total_nmse_loss = 0.0
+    total_l1_ssim_loss = 0.0
     num_samples = 0
 
     logger.info(f"Evaluating at iteration {iteration}...")
@@ -205,14 +213,12 @@ def evaluate(
             gt_channel = torch.hstack((gt_channel.real, gt_channel.imag))
 
             # embed wireless features
-            wireless_data = {
+            enc_data = {
                 "tx_pos": tx_position,
                 "rx_pos": rx_position,
-                "path_loss": path_loss,
-                "aoa": aoa,
-                "path_loss_per_ray": path_loss_per_ray,
+                "frequency": frequency,
             }
-            model.embed_features(wireless_data)
+            model.embed_features(enc_data)
 
             pred_channel = rasterize(
                 points=model.get_xyz,
@@ -221,21 +227,34 @@ def evaluate(
                 phase_rotation=model.get_features[:, 1:2],
                 opacity=model.get_opacity,
                 receiver=rx_position,
+                transmitter=tx_position,
                 num_tx=num_tx_ant,
                 num_rx=num_rx_ant,
                 frequency=frequency,
             )
 
-            loss = l1_ssim_loss(pred_channel, gt_channel, lambda_dssim=lambda_dssim)
+            nmse = nmse_loss(pred_channel, gt_channel)
+            l1_ssim = l1_ssim_loss(pred_channel, gt_channel, lambda_dssim=lambda_dssim)
+
+            loss = nmse if loss_type == "nmse" else l1_ssim
 
             total_loss += loss.item()
+            total_nmse_loss += nmse.item()
+            total_l1_ssim_loss += l1_ssim.item()
             num_samples += 1
 
     avg_loss = total_loss / max(num_samples, 1)
-    logger.info(f"Evaluation Loss: {avg_loss:.6f}")
+    avg_nmse_loss = total_nmse_loss / max(num_samples, 1)
+    avg_l1_ssim_loss = total_l1_ssim_loss / max(num_samples, 1)
+
+    logger.info(f"Evaluation Loss ({loss_type}): {avg_loss:.6f}")
+    logger.info(f"Evaluation NMSE Loss: {avg_nmse_loss:.6f}")
+    logger.info(f"Evaluation L1-SSIM Loss: {avg_l1_ssim_loss:.6f}")
 
     if writer is not None:
         writer.add_scalar("eval/loss", avg_loss, iteration)
+        writer.add_scalar("eval/nmse_loss", avg_nmse_loss, iteration)
+        writer.add_scalar("eval/l1_ssim_loss", avg_l1_ssim_loss, iteration)
 
     model.train()
     return avg_loss
@@ -270,14 +289,16 @@ def train(args, logger, writer, log_dir):
 
     # initialize model
     logger.info("Initializing model...")
-    model_cfg = GaussianModelConfig(
-        use_pred_normals=args.use_pred_normals,
-    )
     encoder_cfg = EncoderConfig(
-        use_attention=args.use_attention,
-        max_paths=args.max_paths,
+        hidden_size=128,
+        num_layers=8,
+        skip_layers=(4,),
+        input_pos_multires=10,
+        use_rx_pos=args.use_rx_pos,
     )
-    model = GaussianModel(model_cfg=model_cfg, encoder_cfg=encoder_cfg).to(device)
+    model = GaussianModel(
+        encoder_cfg=encoder_cfg, use_pred_normals=args.use_pred_normals
+    ).to(device)
 
     model.init_from_pc(point_cloud.to(device))
     logger.info(f"Initialized model with {len(point_cloud)} Gaussians")
@@ -288,7 +309,7 @@ def train(args, logger, writer, log_dir):
     best_val_loss = float("inf")
     if args.resume is not None:
         logger.info(f"Resuming from checkpoint: {args.resume}")
-        model = GaussianModel.load_model(args.resume, device=device, training_args=args)
+        model = GaussianModel.load(args.resume, device=device, training_args=args)
 
         # extract training state information
         checkpoint = torch.load(args.resume, map_location=device)
@@ -298,6 +319,7 @@ def train(args, logger, writer, log_dir):
 
     # training loop
     logger.info("Starting training...")
+    logger.info(f"Using {args.loss_type} loss function")
     train_iter = iter(train_dataloader)
 
     progress_bar = tqdm(range(start_iteration, args.iterations))
@@ -319,14 +341,12 @@ def train(args, logger, writer, log_dir):
         gt_channel = torch.hstack((gt_channel.real, gt_channel.imag))
 
         # embed wireless features
-        wireless_data = {
+        enc_data = {
             "tx_pos": tx_position,
             "rx_pos": rx_position,
-            "path_loss": path_loss,
-            "aoa": aoa,
-            "path_loss_per_ray": path_loss_per_ray,
+            "frequency": frequency,
         }
-        model.embed_features(wireless_data)
+        model.embed_features(enc_data)
 
         pred_channel = rasterize(
             points=model.get_xyz,
@@ -335,12 +355,18 @@ def train(args, logger, writer, log_dir):
             phase_rotation=model.get_features[:, 1:2],
             opacity=model.get_opacity,
             receiver=rx_position,
+            transmitter=tx_position,
             num_tx=num_tx_ant,
             num_rx=num_rx_ant,
             frequency=frequency,
         )
 
-        loss = l1_ssim_loss(pred_channel, gt_channel, lambda_dssim=args.lambda_dssim)
+        if args.loss_type == "nmse":
+            loss = nmse_loss(pred_channel, gt_channel)
+        else:  # l1_ssim
+            loss = l1_ssim_loss(
+                pred_channel, gt_channel, lambda_dssim=args.lambda_dssim
+            )
 
         model.optimizer.zero_grad()
         model.encoder_optimizer.zero_grad()
@@ -393,14 +419,15 @@ def train(args, logger, writer, log_dir):
                 logger,
                 writer,
                 iteration,
-                args.lambda_dssim,
+                loss_type=args.loss_type,
+                lambda_dssim=args.lambda_dssim,
             )
 
             # save best model
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
                 logger.info(f"New best validation loss: {best_val_loss:.6f}")
-                model.save_model(
+                model.save(
                     log_dir / "checkpoints" / "best_model.pt",
                     save_optimizer=True,
                     iteration=iteration,
@@ -411,7 +438,7 @@ def train(args, logger, writer, log_dir):
         # save checkpoint
         if iteration % args.checkpoint_freq == 0:
             checkpoint_path = log_dir / "checkpoints" / f"checkpoint_{iteration:06d}.pt"
-            model.save_model(
+            model.save(
                 checkpoint_path,
                 save_optimizer=True,
                 iteration=iteration,
@@ -420,13 +447,13 @@ def train(args, logger, writer, log_dir):
             logger.info(f"Checkpoint saved at iteration {iteration}")
 
     # save final model
-    model.save_model(
+    model.save(
         log_dir / "checkpoints" / "final_model.pt",
         save_optimizer=True,
         iteration=args.iterations - 1,
         best_val_loss=best_val_loss,
     )
-    model.save_model(log_dir / "checkpoints" / "eval_model.pt", save_optimizer=False)
+    model.save(log_dir / "checkpoints" / "eval_model.pt", save_optimizer=False)
 
     logger.info("Training completed!")
     return model

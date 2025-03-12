@@ -4,10 +4,8 @@ import torch
 import torch.nn.functional as F
 
 
-def nmse_loss(
-    pred: torch.Tensor, target: torch.Tensor, complex_dim: int = 1
-) -> torch.Tensor:
-    """Normalized MSE loss for complex wireless channel matrices.
+def nmse_loss(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    """Normalized Mean Square Error loss for complex wireless channel matrices.
 
     Args:
         pred: Predicted channel tensor
@@ -16,27 +14,11 @@ def nmse_loss(
     Returns:
         NMSE loss value
     """
-    total_rx = pred.size(1)
-    num_rx = total_rx // 2
+    mse = torch.sum(torch.abs(pred - target) ** 2)
+    normalization = torch.sum(torch.abs(target) ** 2)
+    normalization = torch.clamp(normalization, min=1e-10)
 
-    pred_reshaped = torch.complex(pred[:, :num_rx], pred[:, num_rx:])
-    target_reshaped = torch.complex(target[:, :num_rx], target[:, num_rx:])
-
-    error = pred_reshaped - target_reshaped
-
-    # calculate power (absolute square) of error and target
-    error_power = torch.abs(error) ** 2
-    target_power = torch.abs(target_reshaped) ** 2
-
-    total_error = torch.sum(error_power)
-    total_power = torch.sum(target_power)
-
-    epsilon = 1e-10
-    total_power = torch.clamp(total_power, min=epsilon)
-
-    nmse = total_error / total_power
-
-    return nmse
+    return mse / normalization
 
 
 def l1_loss(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
