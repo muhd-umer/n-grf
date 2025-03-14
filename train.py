@@ -54,6 +54,41 @@ def parse_args():
         help="Whether to use receiver position in encoder",
     )
 
+    # initialization params
+    parser.add_argument(
+        "--init_method",
+        type=str,
+        default="point_cloud",
+        choices=["point_cloud", "random"],
+        help="Method to initialize Gaussian points (point_cloud or random)",
+    )
+    parser.add_argument(
+        "--physics_init",
+        action="store_true",
+        dest="physics_init",
+        default=True,
+        help="Use physics-based initialization for Gaussian features",
+    )
+    parser.add_argument(
+        "--no_physics_init",
+        action="store_false",
+        dest="physics_init",
+        help="Disable physics-based initialization",
+    )
+    parser.add_argument(
+        "--use_positional_encoding",
+        action="store_true",
+        dest="use_positional_encoding",
+        default=True,
+        help="Enable positional encoding in the encoder",
+    )
+    parser.add_argument(
+        "--no_positional_encoding",
+        action="store_false",
+        dest="use_positional_encoding",
+        help="Disable positional encoding in the encoder",
+    )
+
     # optimization params
     parser.add_argument(
         "--position_lr_init",
@@ -292,13 +327,33 @@ def train(args, logger, writer, log_dir):
         skip_layers=(4,),
         input_pos_multires=10,
         use_rx_pos=args.use_rx_pos,
+        use_positional_encoding=args.use_positional_encoding,
     )
     model = GaussianModel(
         encoder_cfg=encoder_cfg, use_pred_normals=args.use_pred_normals
     ).to(device)
 
-    model.init_from_pc(point_cloud.to(device))
-    logger.info(f"Initialized model with {len(point_cloud)} Gaussians")
+    if args.init_method == "point_cloud":
+        point_cloud = train_dataloader.dataset.get_point_cloud(args.num_points)
+        model.init_from_pc(
+            point_cloud.to(device),
+            tx_position=tx_position if args.physics_init else None,
+            frequency=frequency if args.physics_init else None,
+            use_physics_init=args.physics_init,
+        )
+        logger.info(
+            f"Initialized model with {len(point_cloud)} Gaussians from point cloud"
+        )
+    else:  # random initialization
+        model.init_randomly(
+            args.num_points,
+            env_dims.to(device),
+            tx_position=tx_position if args.physics_init else None,
+            frequency=frequency if args.physics_init else None,
+            use_physics_init=args.physics_init,
+        )
+        logger.info(f"Initialized model with {args.num_points} random Gaussians")
+
     model.training_setup(args)
 
     # resume from checkpoint if specified
@@ -431,7 +486,7 @@ def train(args, logger, writer, log_dir):
                 logger.info("Best model saved at iteration {iteration}")
 
         # save checkpoint
-        if iteration % args.checkpoint_freq == 0:
+        if iteration > 0 and iteration % args.checkpoint_freq == 0:
             checkpoint_path = log_dir / "checkpoints" / f"checkpoint_{iteration:06d}.pt"
             model.save(
                 checkpoint_path,

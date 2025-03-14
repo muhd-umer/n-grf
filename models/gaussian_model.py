@@ -7,6 +7,7 @@ import torch
 import torch.nn as nn
 from simple_knn._C import distCUDA2  # type: ignore
 
+from utils.prop_utils import compute_path_loss, compute_phase_rotation
 from utils.transform_utils import (
     build_scaling_rotation,
     inverse_sigmoid,
@@ -95,11 +96,20 @@ class GaussianModel(nn.Module):
         self.rotation_activation = torch.nn.functional.normalize
         self.covariance_activation = build_covariance_from_scaling_rotation
 
-    def init_from_pc(self, points: torch.Tensor):
+    def init_from_pc(
+        self,
+        points: torch.Tensor,
+        tx_position: torch.Tensor = None,
+        frequency: float = None,
+        use_physics_init: bool = False,
+    ):
         """Initialize Gaussian properties from point cloud.
 
         Args:
             points: Point cloud tensor of shape [N, 3]
+            tx_position: Transmitter position [3], required for physics init
+            frequency: Signal frequency in Hz, required for physics init
+            use_physics_init: Whether to use physics-based feature initialization
         """
         num_points = points.shape[0]
         device = points.device
@@ -115,10 +125,22 @@ class GaussianModel(nn.Module):
         rots[:, 0] = 1
         self._rotation = nn.Parameter(rots)
 
-        # wireless features
-        self.features = torch.zeros(
-            (num_points, 2), device=device  # 0: attenuation, 1: phase_rotation
-        ).float()
+        # features
+        if use_physics_init and tx_position is not None and frequency is not None:
+            from utils.prop_utils import compute_path_loss, compute_phase_rotation
+
+            tx_distances = torch.sqrt(torch.sum((self._xyz - tx_position) ** 2, dim=1))
+            c = 299792458.0
+            wavelength = c / frequency
+
+            attenuation = compute_path_loss(tx_distances, wavelength)
+            phase_rotation = compute_phase_rotation(tx_distances, wavelength)
+
+            self.features = torch.cat([attenuation, phase_rotation], dim=1).to(device)
+        else:
+            self.features = torch.zeros(
+                (num_points, 2), device=device  # 0: attenuation, 1: phase_rotation
+            ).float()
 
         # initialize opacity
         init_opacity = 0.1 * torch.ones((num_points, 1), device=device)
@@ -132,6 +154,33 @@ class GaussianModel(nn.Module):
         # initialize optional normals
         if self.use_pred_normals:
             self._normals = nn.Parameter(torch.randn(num_points, 3, device=device))
+
+    def init_randomly(
+        self,
+        num_points: int,
+        env_dims: torch.Tensor,
+        tx_position: torch.Tensor = None,
+        frequency: float = None,
+        use_physics_init: bool = False,
+    ):
+        """Initialize Gaussian properties randomly within environment dimensions.
+
+        Args:
+            num_points: Number of random points to initialize
+            env_dims: Environment dimensions as [3, 2] tensor with min/max per dimension
+            tx_position: Transmitter position [3], required for physics init
+            frequency: Signal frequency in Hz, required for physics init
+            use_physics_init: Whether to use physics-based feature initialization
+        """
+        device = env_dims.device
+
+        env_min = env_dims[:, 0]
+        env_max = env_dims[:, 1]
+
+        random_points = torch.rand(num_points, 3, device=device)
+        random_points = random_points * (env_max - env_min) + env_min
+
+        self.init_from_pc(random_points, tx_position, frequency, use_physics_init)
 
     @property
     def get_scaling(self):

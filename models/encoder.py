@@ -20,6 +20,7 @@ class EncoderConfig:
         skip_layers: List of layer indices to add skip connections
         input_pos_multires: Positional encoding resolution for positions
         use_rx_pos: Whether to use receiver position in encoding
+        use_positional_encoding: Whether to use positional encoding
     """
 
     hidden_size: int = 128
@@ -27,6 +28,7 @@ class EncoderConfig:
     skip_layers: Tuple[int, ...] = (4,)
     input_pos_multires: int = 10
     use_rx_pos: bool = False  # whether to use receiver position
+    use_positional_encoding: bool = True
 
 
 class FeatureEncoder(nn.Module):
@@ -40,17 +42,23 @@ class FeatureEncoder(nn.Module):
         super().__init__()
         self.config = config
         self.use_rx_pos = config.use_rx_pos
+        self.use_positional_encoding = config.use_positional_encoding
 
-        # for positional encoding
-        self.pos_embedder, pos_embed_dim = get_embedder(
-            config.input_pos_multires, input_dims=3
-        )
-
-        point_feat_dim = pos_embed_dim
-        tx_feat_dim = pos_embed_dim
+        if self.use_positional_encoding:
+            self.pos_embedder, pos_embed_dim = get_embedder(
+                config.input_pos_multires, input_dims=3
+            )
+            point_feat_dim = pos_embed_dim
+            tx_feat_dim = pos_embed_dim
+            if self.use_rx_pos:
+                rx_feat_dim = pos_embed_dim
+        else:
+            point_feat_dim = 3
+            tx_feat_dim = 3
+            if self.use_rx_pos:
+                rx_feat_dim = 3
 
         if self.use_rx_pos:
-            rx_feat_dim = pos_embed_dim
             input_dim = point_feat_dim + tx_feat_dim + rx_feat_dim
         else:
             input_dim = point_feat_dim + tx_feat_dim
@@ -85,20 +93,27 @@ class FeatureEncoder(nn.Module):
         Returns:
             Tuple of tensors (attenuation, phase_rotation) each of shape (N, 1)
         """
-        points_embed = self.pos_embedder(points)
-        tx_embed = self.pos_embedder(tx_pos.expand(points.shape[0], -1))
+        if self.use_positional_encoding:
+            points_embed = self.pos_embedder(points)
+            tx_embed = self.pos_embedder(tx_pos.expand(points.shape[0], -1))
 
-        if self.use_rx_pos and rx_pos is not None:
-            rx_embed = self.pos_embedder(rx_pos.expand(points.shape[0], -1))
-            x = torch.cat(
-                [points_embed, tx_embed, rx_embed],
-                dim=-1,
-            )
+            if self.use_rx_pos and rx_pos is not None:
+                rx_embed = self.pos_embedder(rx_pos.expand(points.shape[0], -1))
+                x = torch.cat([points_embed, tx_embed, rx_embed], dim=-1)
+            else:
+                x = torch.cat([points_embed, tx_embed], dim=-1)
         else:
-            x = torch.cat(
-                [points_embed, tx_embed],
-                dim=-1,
-            )
+            if self.use_rx_pos and rx_pos is not None:
+                x = torch.cat(
+                    [
+                        points,
+                        tx_pos.expand(points.shape[0], -1),
+                        rx_pos.expand(points.shape[0], -1),
+                    ],
+                    dim=-1,
+                )
+            else:
+                x = torch.cat([points, tx_pos.expand(points.shape[0], -1)], dim=-1)
 
         # forward with residual connections
         input_features = x
