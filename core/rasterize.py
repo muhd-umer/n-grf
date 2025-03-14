@@ -1,6 +1,6 @@
 # core/rasterize.py
 
-from typing import Any, Dict, Tuple
+from typing import Optional, Tuple
 
 import torch
 
@@ -54,7 +54,6 @@ def compute_gaussian_influence(
 def compute_channel(
     attenuation: torch.Tensor,
     phase_rotation: torch.Tensor,
-    tx_rx_distance: torch.Tensor,
     xyz_rx_distance: torch.Tensor,
     wavelength: float,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -71,7 +70,7 @@ def compute_channel(
         Tuple of tensors (real_part, imag_part) each of shape [N, 1]
     """
     PI: float = 3.14159265358979323846
-    path_loss = wavelength / (4.0 * PI * tx_rx_distance)
+    path_loss = wavelength / (4.0 * PI * xyz_rx_distance.unsqueeze(1))
     phase_shift = -2.0 * PI * xyz_rx_distance.unsqueeze(1) / wavelength
 
     total_attenuation = attenuation * path_loss
@@ -133,6 +132,28 @@ def alpha_blending(
     return cat_channel
 
 
+def normalize(channel, scale, num_rx):
+    """Normalize channel matrix using a learnable scale factor.
+
+    Args:
+        channel: Channel matrix of shape [num_tx, 2*num_rx]
+        scale: Scale factor for normalization
+        num_rx: Number of receive antennas
+
+    Returns:
+        Normalized channel matrix of shape [num_tx, 2*num_rx]
+    """
+    real_part = channel[:, :num_rx]
+    imag_part = channel[:, num_rx:]
+    magnitude = torch.sqrt(real_part**2 + imag_part**2)
+    mean_magnitude = torch.mean(magnitude)
+
+    if mean_magnitude > 0:
+        norm_factor = scale / mean_magnitude
+        return channel * norm_factor
+    return channel
+
+
 def rasterize(
     points: torch.Tensor,
     cov3d: torch.Tensor,
@@ -144,6 +165,7 @@ def rasterize(
     num_tx: int,
     num_rx: int,
     frequency: float,
+    scale_factor: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     """Rasterize the channel matrix for a specific receiver position
 
@@ -167,8 +189,6 @@ def rasterize(
     c = 299792458.0
     wavelength = c / frequency
 
-    tx_rx_distance = torch.sqrt(torch.sum((transmitter - receiver) ** 2))
-
     xyz_rx_distances, uv, cov2d = project_to_channel_space(
         points=points, cov3d=cov3d, receiver=receiver, num_tx=num_tx, num_rx=num_rx
     )
@@ -179,7 +199,6 @@ def rasterize(
     real_contributions, imag_contributions = compute_channel(
         attenuation,
         phase_rotation,
-        tx_rx_distance,
         xyz_rx_distances,
         wavelength,
     )
@@ -189,5 +208,8 @@ def rasterize(
     cat_channel = alpha_blending(
         influences, contributions, opacity, sort_indices, num_tx, num_rx
     )
+
+    if scale_factor is not None:
+        cat_channel = normalize(cat_channel, scale_factor, num_rx)
 
     return cat_channel

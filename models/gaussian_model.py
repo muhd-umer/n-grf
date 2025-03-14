@@ -43,6 +43,7 @@ class GaussianModel(nn.Module):
         self,
         encoder_cfg: Optional[EncoderConfig] = None,
         use_pred_normals: bool = False,
+        init_scale: float = 1e-3,
     ):
         super().__init__()
 
@@ -55,6 +56,7 @@ class GaussianModel(nn.Module):
         self._rotation = torch.empty(0)  # rotation quaternions
         self._scaling = torch.empty(0)  # scaling factors
         self._opacity = torch.empty(0)  # opacity values
+        self._channel_scale_raw = nn.Parameter(torch.log(torch.tensor(init_scale)))
         self.features = torch.empty(0)  # wireless features
 
         # training state
@@ -214,6 +216,11 @@ class GaussianModel(nn.Module):
             raise ValueError("Predicted normals not enabled in config")
         return self.rotation_activation(self._normals)
 
+    @property
+    def channel_scale(self):
+        """Get positive-only scale by using exponential activation."""
+        return torch.exp(self._channel_scale_raw)
+
     def get_covariance(self, scaling_modifier: float = 1.0):
         """Compute covariance matrices for each Gaussian.
 
@@ -249,6 +256,7 @@ class GaussianModel(nn.Module):
             "opacity": self._opacity,
             "features": self.features,
             "use_pred_normals": self.use_pred_normals,
+            "channel_scale": self._channel_scale_raw,
         }
 
         if self.use_pred_normals and self._normals is not None:
@@ -306,6 +314,13 @@ class GaussianModel(nn.Module):
 
         if "normals" in state and model.model_cfg.use_pred_normals:
             model._normals = state["normals"].to(device)
+
+        if "channel_scale" in state:
+            model._channel_scale_raw = nn.Parameter(state["channel_scale"].to(device))
+        else:
+            model._channel_scale_raw = nn.Parameter(
+                torch.log(torch.tensor(1e-3)).to(device)
+            )
 
         model.max_radii2D = torch.zeros_like(model._xyz[:, 0])
         model.xyz_gradient_accum = torch.zeros((model._xyz.shape[0], 1), device=device)
@@ -396,6 +411,11 @@ class GaussianModel(nn.Module):
                 "lr": training_args.opacity_lr,
                 "name": "opacity",
             },
+            {
+                "params": [self._channel_scale_raw],
+                "lr": training_args.scaling_lr,
+                "name": "channel_scale",
+            },
         ]
 
         if self.use_pred_normals and self._normals is not None:
@@ -407,7 +427,7 @@ class GaussianModel(nn.Module):
                 }
             )
 
-        self.optimizer = torch.optim.Adam(param_groups, lr=0.0, eps=1e-15)
+        self.optimizer = torch.optim.Adam(param_groups, lr=0.0, eps=1e-8)
 
         self.encoder_optimizer = torch.optim.SGD(
             self.encoder.parameters(),

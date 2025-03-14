@@ -9,7 +9,13 @@ import torch
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
-from core.loss import l1_ssim_loss, nmse_loss
+from core.loss import (
+    channel_corr_loss,
+    complex_mse_loss,
+    l1_ssim_loss,
+    mse_corr_loss,
+    nmse_loss,
+)
 from core.rasterize import rasterize
 from datasets.dataloader import get_dataloaders
 from models.encoder import EncoderConfig
@@ -55,6 +61,12 @@ def parse_args():
     )
 
     # initialization params
+    parser.add_argument(
+        "--init_scale",
+        type=float,
+        default=1e-3,
+        help="Initial value for learnable channel scale factor",
+    )
     parser.add_argument(
         "--init_method",
         type=str,
@@ -134,8 +146,14 @@ def parse_args():
     parser.add_argument(
         "--loss_type",
         type=str,
-        default="nmse",
-        choices=["nmse", "l1_ssim"],
+        default="mse_corr",
+        choices=[
+            "mse_corr",
+            "complex_mse",
+            "channel_corr",
+            "nmse",
+            "l1_ssim",
+        ],
         help="Loss function to use for training",
     )
     parser.add_argument(
@@ -167,6 +185,16 @@ def parse_args():
         type=int,
         default=700,
         help="Reset opacity every N iterations",
+    )
+    parser.add_argument(
+        "--clip_type",
+        type=str,
+        default="none",
+        choices=["none", "norm", "value"],
+        help="Type of gradient clipping to apply",
+    )
+    parser.add_argument(
+        "--clip_value", type=float, default=1.0, help="Value for gradient clipping"
     )
     parser.add_argument("--seed", type=int, default=17, help="Random seed")
     parser.add_argument("--device", type=str, default="cuda", help="Device to use")
@@ -263,6 +291,7 @@ def evaluate(
                 num_tx=num_tx_ant,
                 num_rx=num_rx_ant,
                 frequency=frequency,
+                scale_factor=model.channel_scale,
             )
 
             nmse = nmse_loss(pred_channel, gt_channel)
@@ -330,7 +359,9 @@ def train(args, logger, writer, log_dir):
         use_positional_encoding=args.use_positional_encoding,
     )
     model = GaussianModel(
-        encoder_cfg=encoder_cfg, use_pred_normals=args.use_pred_normals
+        encoder_cfg=encoder_cfg,
+        use_pred_normals=args.use_pred_normals,
+        init_scale=args.init_scale,
     ).to(device)
 
     if args.init_method == "point_cloud":
@@ -355,6 +386,33 @@ def train(args, logger, writer, log_dir):
         logger.info(f"Initialized model with {args.num_points} random Gaussians")
 
     model.training_setup(args)
+
+    def grad_clipping(model, clip_type, clip_value):
+        if clip_type == "none":
+            return
+
+        logger.info(
+            f"Setting up gradient clipping: {clip_type} with value {clip_value}"
+        )
+
+        def clip_grad_hook(grad):
+            if grad is None:
+                return None
+
+            if clip_type == "value":
+                return torch.clamp(grad, -clip_value, clip_value)
+            elif clip_type == "norm":
+                grad_norm = torch.norm(grad)
+                if grad_norm > clip_value:
+                    return grad * clip_value / grad_norm
+            return grad
+
+        for p in model.parameters():
+            if p.requires_grad:
+                p.register_hook(clip_grad_hook)
+
+    if args.clip_type != "none":
+        grad_clipping(model, args.clip_type, args.clip_value)
 
     # resume from checkpoint if specified
     start_iteration = 0
@@ -408,14 +466,23 @@ def train(args, logger, writer, log_dir):
             num_tx=num_tx_ant,
             num_rx=num_rx_ant,
             frequency=frequency,
+            scale_factor=model.channel_scale,
         )
 
         if args.loss_type == "nmse":
             loss = nmse_loss(pred_channel, gt_channel)
-        else:  # l1_ssim
+        elif args.loss_type == "l1_ssim":
             loss = l1_ssim_loss(
                 pred_channel, gt_channel, lambda_dssim=args.lambda_dssim
             )
+        elif args.loss_type == "complex_mse":
+            loss = complex_mse_loss(pred_channel, gt_channel)
+        elif args.loss_type == "channel_corr":
+            loss = channel_corr_loss(pred_channel, gt_channel)
+        elif args.loss_type == "mse_corr":
+            loss = mse_corr_loss(pred_channel, gt_channel)
+        else:
+            raise ValueError(f"Unknown loss type: {args.loss_type}")
 
         model.optimizer.zero_grad()
         model.encoder_optimizer.zero_grad()
