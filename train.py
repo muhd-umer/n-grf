@@ -115,7 +115,7 @@ def parse_args():
         "--opacity_lr", type=float, default=0.025, help="Opacity learning rate"
     )
     parser.add_argument(
-        "--encoder_lr", type=float, default=1e-3, help="Encoder learning rate"
+        "--encoder_lr", type=float, default=0.0075, help="Encoder learning rate"
     )
     parser.add_argument(
         "--normals_lr", type=float, default=0.0025, help="Normals learning rate"

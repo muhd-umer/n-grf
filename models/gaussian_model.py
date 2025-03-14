@@ -409,7 +409,7 @@ class GaussianModel(nn.Module):
 
         self.optimizer = torch.optim.Adam(param_groups, lr=0.0, eps=1e-15)
 
-        self.encoder_optimizer = torch.optim.Adam(
+        self.encoder_optimizer = torch.optim.SGD(
             self.encoder.parameters(),
             lr=training_args.encoder_lr,
             weight_decay=training_args.weight_decay,
