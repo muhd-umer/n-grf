@@ -400,8 +400,9 @@ def train(args, logger, writer, log_dir):
                 f"Loss: {loss.item():.6f}, Gaussians: {model.get_xyz.shape[0]}"
             )
 
-        # evaluate on validation set
-        if iteration % args.eval_freq == 0:
+        if (
+            iteration > 0 and iteration % args.eval_freq == 0
+        ) or iteration == args.iterations - 1:
             val_loss = evaluate(
                 model,
                 val_dataloader,
