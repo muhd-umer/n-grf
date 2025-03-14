@@ -99,7 +99,7 @@ def parse_args():
     parser.add_argument(
         "--loss_type",
         type=str,
-        default="l1_ssim",
+        default="nmse",
         choices=["nmse", "l1_ssim"],
         help="Loss function to use for training",
     )
