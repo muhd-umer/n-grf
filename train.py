@@ -68,6 +68,19 @@ def parse_args():
         help="Initial value for learnable channel scale factor",
     )
     parser.add_argument(
+        "--scaling_type",
+        type=str,
+        default="adaptive",
+        choices=["none", "fixed", "adaptive"],
+        help="Channel scaling method: none, fixed (constant value), or adaptive (learnable)",
+    )
+    parser.add_argument(
+        "--fixed_scale",
+        type=float,
+        default=1e-3,
+        help="Fixed scale value to use when scaling_type is 'fixed'",
+    )
+    parser.add_argument(
         "--init_method",
         type=str,
         default="point_cloud",
@@ -347,6 +360,9 @@ def train(args, logger, writer, log_dir):
     logger.info(f"Number of RX antennas: {num_rx_ant}")
     logger.info(f"Environment extent: {scene_extent:.2f}")
     logger.info(f"Operating frequency: {frequency/1e9:.2f} GHz")
+    logger.info(f"Channel scaling method: {args.scaling_type}")
+    if args.scaling_type == "fixed":
+        logger.info(f"Fixed scale value: {args.fixed_scale}")
 
     # initialize model
     logger.info("Initializing model...")
@@ -361,7 +377,8 @@ def train(args, logger, writer, log_dir):
     model = GaussianModel(
         encoder_cfg=encoder_cfg,
         use_pred_normals=args.use_pred_normals,
-        init_scale=args.init_scale,
+        scaling_type=args.scaling_type,
+        fixed_scale=args.fixed_scale,
     ).to(device)
 
     if args.init_method == "point_cloud":

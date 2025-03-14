@@ -133,7 +133,7 @@ def alpha_blending(
 
 
 def normalize(channel, scale, num_rx):
-    """Normalize channel matrix using a learnable scale factor.
+    """Normalize channel matrix using a scale factor.
 
     Args:
         channel: Channel matrix of shape [num_tx, 2*num_rx]
@@ -180,6 +180,8 @@ def rasterize(
         num_tx: Number of transmit antennas
         num_rx: Number of receive antennas
         frequency: Signal frequency in Hz
+        scale_factor: Scale factor for normalization. If None, no scaling is
+            applied.
 
     Returns:
         Channel matrix of shape [num_tx, 2*num_rx] with real and imaginary parts
