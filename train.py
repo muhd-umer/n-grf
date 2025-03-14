@@ -203,6 +203,17 @@ def parse_args():
     parser.add_argument(
         "--clip_value", type=float, default=1.0, help="Value for gradient clipping"
     )
+    parser.add_argument(
+        "--momentum",
+        type=float,
+        default=0.9,
+        help="Momentum for the encoder optimizer",
+    )
+    parser.add_argument(
+        "--nesterov",
+        action="store_true",
+        help="Use Nesterov momentum for the encoder optimizer",
+    )
     parser.add_argument("--seed", type=int, default=17, help="Random seed")
     parser.add_argument("--device", type=str, default="cuda", help="Device to use")
     parser.add_argument(
@@ -522,7 +533,9 @@ def train(args, logger, writer, log_dir):
                 f"Loss: {loss.item():.6f}, Gaussians: {model.get_xyz.shape[0]}"
             )
 
-        if (iteration % args.eval_freq == 0) or iteration == args.iterations - 1:
+        if (
+            iteration > 0 and iteration % args.eval_freq == 0
+        ) or iteration == args.iterations - 1:
             val_loss = evaluate(
                 model,
                 val_dataloader,

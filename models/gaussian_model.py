@@ -469,6 +469,8 @@ class GaussianModel(nn.Module):
             self.encoder.parameters(),
             lr=training_args.encoder_lr,
             weight_decay=training_args.weight_decay,
+            momentum=training_args.momentum,
+            nesterov=training_args.nesterov,
         )
 
         from utils.train_utils import get_expon_lr_func
