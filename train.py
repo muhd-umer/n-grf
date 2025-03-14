@@ -49,12 +49,6 @@ def parse_args():
         help="Whether to predict surface normals",
     )
     parser.add_argument(
-        "--max_paths",
-        type=int,
-        default=10,
-        help="Maximum number of paths to consider when using masking",
-    )
-    parser.add_argument(
         "--use_rx_pos",
         action="store_true",
         help="Whether to use receiver position in encoder",
@@ -212,12 +206,6 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=17, help="Random seed")
     parser.add_argument("--device", type=str, default="cuda", help="Device to use")
     parser.add_argument(
-        "--lambda_dssim",
-        type=float,
-        default=0.2,
-        help="Weight for DSSIM component in the loss function",
-    )
-    parser.add_argument(
         "--resume",
         type=str,
         default=None,
@@ -267,14 +255,11 @@ def evaluate(
     logger,
     writer,
     iteration,
-    loss_type="nmse",
-    lambda_dssim=0.2,
+    loss_type,
 ):
     """Evaluate model on validation set"""
     model.eval()
     total_loss = 0.0
-    total_nmse_loss = 0.0
-    total_l1_ssim_loss = 0.0
     num_samples = 0
 
     logger.info(f"Evaluating at iteration {iteration}...")
@@ -307,28 +292,28 @@ def evaluate(
                 scale_factor=model.channel_scale,
             )
 
-            nmse = nmse_loss(pred_channel, gt_channel)
-            l1_ssim = l1_ssim_loss(pred_channel, gt_channel, lambda_dssim=lambda_dssim)
-
-            loss = nmse if loss_type == "nmse" else l1_ssim
+            if loss_type == "nmse":
+                loss = nmse_loss(pred_channel, gt_channel)
+            elif loss_type == "l1_ssim":
+                loss = l1_ssim_loss(pred_channel, gt_channel)
+            elif loss_type == "complex_mse":
+                loss = complex_mse_loss(pred_channel, gt_channel)
+            elif loss_type == "channel_corr":
+                loss = channel_corr_loss(pred_channel, gt_channel)
+            elif loss_type == "mse_corr":
+                loss = mse_corr_loss(pred_channel, gt_channel)
+            else:
+                raise ValueError(f"Unknown loss type: {loss_type}")
 
             total_loss += loss.item()
-            total_nmse_loss += nmse.item()
-            total_l1_ssim_loss += l1_ssim.item()
             num_samples += 1
 
     avg_loss = total_loss / max(num_samples, 1)
-    avg_nmse_loss = total_nmse_loss / max(num_samples, 1)
-    avg_l1_ssim_loss = total_l1_ssim_loss / max(num_samples, 1)
 
     logger.info(f"Evaluation Loss ({loss_type}): {avg_loss:.6f}")
-    logger.info(f"Evaluation NMSE Loss: {avg_nmse_loss:.6f}")
-    logger.info(f"Evaluation L1-SSIM Loss: {avg_l1_ssim_loss:.6f}")
 
     if writer is not None:
         writer.add_scalar("eval/loss", avg_loss, iteration)
-        writer.add_scalar("eval/nmse_loss", avg_nmse_loss, iteration)
-        writer.add_scalar("eval/l1_ssim_loss", avg_l1_ssim_loss, iteration)
 
     model.train()
     return avg_loss
@@ -489,9 +474,7 @@ def train(args, logger, writer, log_dir):
         if args.loss_type == "nmse":
             loss = nmse_loss(pred_channel, gt_channel)
         elif args.loss_type == "l1_ssim":
-            loss = l1_ssim_loss(
-                pred_channel, gt_channel, lambda_dssim=args.lambda_dssim
-            )
+            loss = l1_ssim_loss(pred_channel, gt_channel)
         elif args.loss_type == "complex_mse":
             loss = complex_mse_loss(pred_channel, gt_channel)
         elif args.loss_type == "channel_corr":
@@ -539,9 +522,7 @@ def train(args, logger, writer, log_dir):
                 f"Loss: {loss.item():.6f}, Gaussians: {model.get_xyz.shape[0]}"
             )
 
-        if (
-            iteration > 0 and iteration % args.eval_freq == 0
-        ) or iteration == args.iterations - 1:
+        if (iteration % args.eval_freq == 0) or iteration == args.iterations - 1:
             val_loss = evaluate(
                 model,
                 val_dataloader,
@@ -554,7 +535,6 @@ def train(args, logger, writer, log_dir):
                 writer,
                 iteration,
                 loss_type=args.loss_type,
-                lambda_dssim=args.lambda_dssim,
             )
 
             # save best model
