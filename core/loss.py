@@ -108,3 +108,78 @@ def l1_ssim_loss(
     dssim = 1.0 - ssim_value
 
     return (1.0 - lambda_dssim) * l1 + lambda_dssim * dssim
+
+
+def complex_mse_loss(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    """Complex MSE loss for MIMO wireless channels.
+
+    This function converts real-valued tensors to complex representation
+    and computes MSE in the complex domain. The input tensors are assumed
+    to have their real parts in the first half of the feature dimension
+    and imaginary parts in the second half.
+
+    Args:
+        pred: Predicted channel tensor with shape [..., 2*num_rx]
+        target: Target (ground truth) channel tensor with shape [..., 2*num_rx]
+
+    Returns:
+        Complex domain MSE loss value (lower is better)
+    """
+    num_rx = pred.shape[1] // 2
+    pred_complex = torch.complex(pred[:, :num_rx], pred[:, num_rx:])
+    target_complex = torch.complex(target[:, :num_rx], target[:, num_rx:])
+    return torch.mean(torch.abs(pred_complex - target_complex) ** 2)
+
+
+def channel_corr_loss(
+    pred: torch.Tensor, target: torch.Tensor, eps=1e-8
+) -> torch.Tensor:
+    """Channel correlation loss for wireless MIMO channels.
+
+    Measures how well the predicted channel correlates with the target channel
+    by computing normalized correlation coefficient. The function first
+    converts real-valued tensors to complex representation, then computes
+    normalized correlation.
+
+    Args:
+        pred: Predicted channel tensor with shape [..., 2*num_rx]
+        target: Target channel tensor with shape [..., 2*num_rx]
+        eps: Small value to prevent division by zero during normalization
+
+    Returns:
+        Correlation loss value (1-correlation, so lower is better)
+    """
+    num_rx = pred.shape[1] // 2
+    pred_complex = torch.complex(pred[:, :num_rx], pred[:, num_rx:])
+    target_complex = torch.complex(target[:, :num_rx], target[:, num_rx:])
+
+    pred_flat = pred_complex.view(-1)
+    target_flat = target_complex.view(-1)
+    pred_norm = pred_flat / (torch.norm(pred_flat) + eps)
+    target_norm = target_flat / (torch.norm(target_flat) + eps)
+
+    correlation = torch.abs(torch.sum(pred_norm * torch.conj(target_norm)))
+    return 1.0 - correlation
+
+
+def mse_corr_loss(
+    pred: torch.Tensor, target: torch.Tensor, lambda_mse=0.5, lambda_corr=0.5
+) -> torch.Tensor:
+    """Combined channel loss for MIMO wireless channel estimation.
+
+    This loss combines complex MSE and correlation metrics for more
+    effective channel estimation. The weighting between MSE and
+    correlation components can be adjusted through lambda parameters.
+
+    Args:
+        pred: Predicted channel tensor with shape [..., 2*num_rx]
+        target: Target channel tensor with shape [..., 2*num_rx]
+        lambda_mse: Weight for the MSE component (default: 0.5)
+        lambda_corr: Weight for the correlation component (default: 0.5)
+
+    Returns:
+        Combined loss value (lower is better)
+    """
+    mse = complex_mse_loss(pred, target)
+    corr = channel_corr_loss(pred, target)
+    return lambda_mse * mse + lambda_corr * corr
