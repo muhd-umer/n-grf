@@ -7,7 +7,7 @@ echo "Starting training process..."
 echo "Once training completes, this instance will automatically stop."
 echo "================================================================="
 
-python train.py "$@" | tee $LOG_FILE
+uv run train.py "$@" | tee $LOG_FILE
 TRAIN_EXIT_CODE=${PIPESTATUS[0]}
 
 if [ $TRAIN_EXIT_CODE -eq 0 ]; then
