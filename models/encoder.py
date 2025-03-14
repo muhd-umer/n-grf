@@ -126,7 +126,7 @@ class FeatureEncoder(nn.Module):
         raw_attenuation = self.attenuation_head(x)
         raw_phase_rotation = self.phase_rotation_head(x)
 
-        attenuation = torch.abs(raw_attenuation)
+        attenuation = F.softplus(raw_attenuation)
         phase_rotation = torch.sigmoid(raw_phase_rotation) * 2 * torch.pi
 
         return attenuation, phase_rotation

@@ -30,7 +30,9 @@ def compute_phase_rotation(distances: torch.Tensor, wavelength: float) -> torch.
         Phase rotation values [N, 1] in range [0, 2π)
     """
     PI = 3.14159265358979323846
-    phase = -2.0 * PI * distances / wavelength
-    phase = torch.remainder(phase, 2.0 * PI)
+    phase_raw = -2.0 * PI * distances / wavelength
+    phase_sin = torch.sin(phase_raw)
+    phase_cos = torch.cos(phase_raw)
+    phase = torch.atan2(phase_sin, phase_cos)
 
     return phase.unsqueeze(1)
