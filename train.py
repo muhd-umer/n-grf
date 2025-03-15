@@ -23,7 +23,7 @@ from models.gaussian_model import GaussianModel
 from utils.general_utils import set_random_seed
 from utils.train_utils import setup_logging
 
-torch.set_float32_matmul_precision("high")
+torch.set_float32_matmul_precision("highest")
 
 
 def parse_args():
@@ -202,17 +202,6 @@ def parse_args():
     )
     parser.add_argument(
         "--clip_value", type=float, default=1.0, help="Value for gradient clipping"
-    )
-    parser.add_argument(
-        "--momentum",
-        type=float,
-        default=0.9,
-        help="Momentum for the encoder optimizer",
-    )
-    parser.add_argument(
-        "--nesterov",
-        action="store_true",
-        help="Use Nesterov momentum for the encoder optimizer",
     )
     parser.add_argument("--seed", type=int, default=17, help="Random seed")
     parser.add_argument("--device", type=str, default="cuda", help="Device to use")
