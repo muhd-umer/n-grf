@@ -48,11 +48,6 @@ def parse_args():
         action="store_true",
         help="Whether to predict surface normals",
     )
-    parser.add_argument(
-        "--use_rx_pos",
-        action="store_true",
-        help="Whether to use receiver position in encoder",
-    )
 
     # initialization params
     parser.add_argument(
@@ -356,7 +351,6 @@ def train(args, logger, writer, log_dir):
         num_layers=8,
         skip_layers=(4,),
         input_pos_multires=10,
-        use_rx_pos=args.use_rx_pos,
         use_positional_encoding=args.use_positional_encoding,
     )
     model = GaussianModel(
