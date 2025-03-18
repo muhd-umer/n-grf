@@ -9,7 +9,9 @@ import torch
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
-from core.rasterize import rasterize
+from core._torch_impl import (
+    rasterize,  # using torch implementation until custom CUDA is implemented
+)
 from datasets.dataloader import get_dataloaders
 from models.encoder import EncoderConfig
 from models.gaussian_model import GaussianModel

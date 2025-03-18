@@ -1,11 +1,12 @@
-# core/rasterize.py
+# core/_torch_impl/rasterize.py
 
 from typing import Optional, Tuple
 
 import torch
 
-from core.transforms import project_to_channel_space
 from utils.transform_utils import inverse_2d_covariance
+
+from .transforms import project_to_channel_space
 
 
 @torch.jit.script
