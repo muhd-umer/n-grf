@@ -133,28 +133,6 @@ def alpha_blending(
     return cat_channel
 
 
-def normalize(channel, scale, num_rx):
-    """Normalize channel matrix using a scale factor.
-
-    Args:
-        channel: Channel matrix of shape [num_tx, 2*num_rx]
-        scale: Scale factor for normalization
-        num_rx: Number of receive antennas
-
-    Returns:
-        Normalized channel matrix of shape [num_tx, 2*num_rx]
-    """
-    real_part = channel[:, :num_rx]
-    imag_part = channel[:, num_rx:]
-    magnitude = torch.sqrt(real_part**2 + imag_part**2)
-    mean_magnitude = torch.mean(magnitude)
-
-    if mean_magnitude > 0:
-        norm_factor = scale / mean_magnitude
-        return channel * norm_factor
-    return channel
-
-
 def rasterize(
     points: torch.Tensor,
     cov3d: torch.Tensor,
@@ -166,7 +144,6 @@ def rasterize(
     num_tx: int,
     num_rx: int,
     frequency: float,
-    scale_factor: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     """Rasterize the channel matrix for a specific receiver position
 
@@ -181,8 +158,6 @@ def rasterize(
         num_tx: Number of transmit antennas
         num_rx: Number of receive antennas
         frequency: Signal frequency in Hz
-        scale_factor: Scale factor for normalization. If None, no scaling is
-            applied.
 
     Returns:
         Channel matrix of shape [num_tx, 2*num_rx] with real and imaginary parts
@@ -211,8 +186,5 @@ def rasterize(
     cat_channel = alpha_blending(
         influences, contributions, opacity, sort_indices, num_tx, num_rx
     )
-
-    if scale_factor is not None:
-        cat_channel = normalize(cat_channel, scale_factor, num_rx)
 
     return cat_channel

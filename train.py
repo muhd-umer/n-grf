@@ -53,25 +53,6 @@ def parse_args():
 
     # initialization params
     parser.add_argument(
-        "--init_scale",
-        type=float,
-        default=1e-3,
-        help="Initial value for learnable channel scale factor",
-    )
-    parser.add_argument(
-        "--scaling_type",
-        type=str,
-        default="adaptive",
-        choices=["none", "fixed", "adaptive"],
-        help="Channel scaling method: none, fixed (constant value), or adaptive (learnable)",
-    )
-    parser.add_argument(
-        "--fixed_scale",
-        type=float,
-        default=1e-3,
-        help="Fixed scale value to use when scaling_type is 'fixed'",
-    )
-    parser.add_argument(
         "--init_method",
         type=str,
         default="point_cloud",
@@ -286,7 +267,6 @@ def evaluate(
                 num_tx=num_tx_ant,
                 num_rx=num_rx_ant,
                 frequency=frequency,
-                scale_factor=model.channel_scale,
             )
 
             if loss_type == "nmse":
@@ -342,9 +322,6 @@ def train(args, logger, writer, log_dir):
     logger.info(f"Number of RX antennas: {num_rx_ant}")
     logger.info(f"Environment extent: {scene_extent:.2f}")
     logger.info(f"Operating frequency: {frequency/1e9:.2f} GHz")
-    logger.info(f"Channel scaling method: {args.scaling_type}")
-    if args.scaling_type == "fixed":
-        logger.info(f"Fixed scale value: {args.fixed_scale}")
 
     # initialize model
     logger.info("Initializing model...")
@@ -356,10 +333,7 @@ def train(args, logger, writer, log_dir):
         use_positional_encoding=args.use_positional_encoding,
     )
     model = GaussianModel(
-        encoder_cfg=encoder_cfg,
-        use_pred_normals=args.use_pred_normals,
-        scaling_type=args.scaling_type,
-        fixed_scale=args.fixed_scale,
+        encoder_cfg=encoder_cfg, use_pred_normals=args.use_pred_normals
     ).to(device)
 
     if args.init_method == "point_cloud":
@@ -464,7 +438,6 @@ def train(args, logger, writer, log_dir):
             num_tx=num_tx_ant,
             num_rx=num_rx_ant,
             frequency=frequency,
-            scale_factor=model.channel_scale,
         )
 
         if args.loss_type == "nmse":

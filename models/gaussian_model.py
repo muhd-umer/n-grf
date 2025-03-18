@@ -37,37 +37,24 @@ class GaussianModel(nn.Module):
     Args:
         encoder_cfg: Configuration for the encoder
         use_pred_normals: Whether to use predicted normals
-        scaling_type: Scaling method for channel output ("none", "fixed", or "adaptive")
-        fixed_scale: Fixed scale value to use when scaling_type is "fixed"
     """
 
     def __init__(
         self,
         encoder_cfg: Optional[EncoderConfig] = None,
         use_pred_normals: bool = False,
-        scaling_type: str = "adaptive",
-        fixed_scale: float = 1e-3,
     ):
         super().__init__()
 
         self.use_pred_normals = use_pred_normals
         self.encoder_cfg = encoder_cfg or EncoderConfig()
         self.encoder = FeatureEncoder(self.encoder_cfg)
-        self.scaling_type = scaling_type
-        self.fixed_scale = fixed_scale
 
         # initialize empty tensors; will be set in init_from_pc
         self._xyz = torch.empty(0)  # positions
         self._rotation = torch.empty(0)  # rotation quaternions
         self._scaling = torch.empty(0)  # scaling factors
         self._opacity = torch.empty(0)  # opacity values
-
-        if scaling_type == "adaptive":
-            self._channel_scale_raw = nn.Parameter(torch.log(torch.tensor(fixed_scale)))
-        elif scaling_type == "fixed":
-            self._channel_scale_raw = torch.log(torch.tensor(fixed_scale))
-        else:  # "none"
-            self._channel_scale_raw = None
 
         self.features = torch.empty(0)  # wireless features
 
@@ -228,18 +215,6 @@ class GaussianModel(nn.Module):
             raise ValueError("Predicted normals not enabled in config")
         return self.rotation_activation(self._normals)
 
-    @property
-    def channel_scale(self):
-        """Get channel scale factor based on the specified scaling method.
-
-        Returns:
-            Scale factor tensor or None if scaling is disabled
-        """
-        if self.scaling_type == "none":
-            return None
-        else:
-            return torch.exp(self._channel_scale_raw)
-
     def get_covariance(self, scaling_modifier: float = 1.0):
         """Compute covariance matrices for each Gaussian.
 
@@ -275,12 +250,7 @@ class GaussianModel(nn.Module):
             "opacity": self._opacity,
             "features": self.features,
             "use_pred_normals": self.use_pred_normals,
-            "scaling_type": self.scaling_type,
-            "fixed_scale": self.fixed_scale,
         }
-
-        if self.scaling_type != "none":
-            model_state["channel_scale_raw"] = self._channel_scale_raw
 
         if self.use_pred_normals and self._normals is not None:
             model_state["normals"] = self._normals
@@ -327,14 +297,10 @@ class GaussianModel(nn.Module):
 
         encoder_cfg = state.get("encoder_config", None)
         use_pred_normals = state.get("use_pred_normals", False)
-        scaling_type = state.get("scaling_type", "adaptive")
-        fixed_scale = state.get("fixed_scale", 1e-3)
 
         model = cls(
             encoder_cfg=encoder_cfg,
             use_pred_normals=use_pred_normals,
-            scaling_type=scaling_type,
-            fixed_scale=fixed_scale,
         )
 
         model._xyz = state["xyz"].to(device)
@@ -345,14 +311,6 @@ class GaussianModel(nn.Module):
 
         if "normals" in state and model.use_pred_normals:
             model._normals = state["normals"].to(device)
-
-        if "channel_scale_raw" in state and model.scaling_type != "none":
-            if model.scaling_type == "adaptive":
-                model._channel_scale_raw = nn.Parameter(
-                    state["channel_scale_raw"].to(device)
-                )
-            else:  # "fixed"
-                model._channel_scale_raw = state["channel_scale_raw"].to(device)
 
         model.max_radii2D = torch.zeros_like(model._xyz[:, 0])
         model.xyz_gradient_accum = torch.zeros((model._xyz.shape[0], 1), device=device)
@@ -444,15 +402,6 @@ class GaussianModel(nn.Module):
                 "name": "opacity",
             },
         ]
-
-        if self.scaling_type == "adaptive":
-            param_groups.append(
-                {
-                    "params": [self._channel_scale_raw],
-                    "lr": training_args.scaling_lr,
-                    "name": "channel_scale",
-                }
-            )
 
         if self.use_pred_normals and self._normals is not None:
             param_groups.append(
