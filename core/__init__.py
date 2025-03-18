@@ -1,4 +1,4 @@
-# core/_torch_impl/__init__.py
+# core/__init__.py
 
 try:
     from core._C import project_to_channel_space, rasterize
@@ -12,4 +12,4 @@ except ImportError:
 
 import core._torch_impl
 
-__all__ = ["rasterize", "project_to_channel_space", "CUDA_AVAILABLE", "_torch_impl"]
+__all__ = ["rasterize", "project_to_channel_space", "CCUDA_AVAILABLE", "_torch_impl"]

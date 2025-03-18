@@ -8,9 +8,9 @@ from torch.utils.cpp_extension import BuildExtension, CUDAExtension
 root_dir = os.path.dirname(os.path.abspath(__file__))
 
 cuda_sources = [
-    os.path.join(root_dir, "core/cuda/rasterizer_impl.cu"),
-    os.path.join(root_dir, "core/cuda/forward.cu"),
-    os.path.join(root_dir, "core/cuda/backward.cu"),
+    os.path.join(root_dir, "cuda/rasterizer_impl.cu"),
+    os.path.join(root_dir, "cuda/forward.cu"),
+    os.path.join(root_dir, "cuda/backward.cu"),
     os.path.join(root_dir, "ext.cpp"),
 ]
 

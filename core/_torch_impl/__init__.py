@@ -2,7 +2,6 @@ from .rasterize import (
     alpha_blending,
     compute_channel,
     compute_gaussian_influence,
-    normalize,
     rasterize,
 )
 from .transforms import (
@@ -20,7 +19,6 @@ __all__ = [
     "compute_gaussian_influence",
     "compute_channel",
     "alpha_blending",
-    "normalize",
     "project_to_channel_space",
     "compute_distances_to_receiver",
     "compute_spherical_coords",

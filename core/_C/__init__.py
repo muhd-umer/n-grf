@@ -20,11 +20,9 @@ class RasterizeFunction(Function):
         num_tx,
         num_rx,
         frequency,
-        scale_factor=None,
     ):
         """Forward pass of rasterization"""
 
-        # Save for backward
         ctx.save_for_backward(
             points,
             cov3d,
@@ -33,14 +31,14 @@ class RasterizeFunction(Function):
             opacity,
             receiver,
             transmitter,
-            scale_factor,
         )
         ctx.num_tx = num_tx
         ctx.num_rx = num_rx
         ctx.frequency = frequency
 
-        # Call CUDA implementation
-        return _C.rasterize_forward(
+        # rasterize_forward returns tuple of (channel_matrix, aux_data1, aux_data2)
+        # we only need the channel matrix for the forward pass
+        result = _C.rasterize_forward(
             points,
             cov3d,
             attenuation,
@@ -51,8 +49,9 @@ class RasterizeFunction(Function):
             num_tx,
             num_rx,
             frequency,
-            scale_factor,
         )
+
+        return result[0]
 
     @staticmethod
     def backward(ctx, grad_output):
@@ -65,10 +64,8 @@ class RasterizeFunction(Function):
             opacity,
             receiver,
             transmitter,
-            scale_factor,
         ) = ctx.saved_tensors
 
-        # Call CUDA implementation
         grad_points, grad_cov3d, grad_attenuation, grad_phase_rotation, grad_opacity = (
             _C.rasterize_backward(
                 grad_output,
@@ -82,23 +79,21 @@ class RasterizeFunction(Function):
                 ctx.num_tx,
                 ctx.num_rx,
                 ctx.frequency,
-                scale_factor,
             )
         )
 
-        # Return gradients for each input (None for parameters that don't require gradients)
+        # return gradients for each input
         return (
             grad_points,
             grad_cov3d,
             grad_attenuation,
             grad_phase_rotation,
             grad_opacity,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
+            None,  # receiver
+            None,  # transmitter
+            None,  # num_tx
+            None,  # num_rx
+            None,  # frequency
         )
 
 
@@ -113,7 +108,6 @@ def rasterize(
     num_tx,
     num_rx,
     frequency,
-    scale_factor=None,
 ):
     """
     Rasterize the channel matrix for a specific receiver position
@@ -129,7 +123,6 @@ def rasterize(
         num_tx: Number of transmit antennas
         num_rx: Number of receive antennas
         frequency: Signal frequency in Hz
-        scale_factor: Scale factor for normalization. If None, no scaling is applied.
 
     Returns:
         Channel matrix of shape [num_tx, 2*num_rx] with real and imaginary parts concatenated
@@ -145,5 +138,4 @@ def rasterize(
         num_tx,
         num_rx,
         frequency,
-        scale_factor,
     )
