@@ -21,7 +21,7 @@ _Note: Current name is temporary and subject to change_
 
 - Install the dependencies:
     ```bash
-    uv sync
+    uv sync --inexact
     ```
 
 - Install the submodules as (add the editable `-e` flag as needed):
