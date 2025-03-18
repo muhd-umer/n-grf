@@ -32,9 +32,7 @@ dependencies = [
     { name = "ipykernel" },
     { name = "matplotlib" },
     { name = "pymatreader" },
-    { name = "r2f-engine" },
     { name = "setuptools" },
-    { name = "simple-knn" },
     { name = "tensorboard" },
     { name = "torch", version = "2.6.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
     { name = "torch", version = "2.6.0+cu124", source = { registry = "https://download.pytorch.org/whl/cu124" }, marker = "sys_platform == 'linux'" },
@@ -48,9 +46,7 @@ requires-dist = [
     { name = "ipykernel", specifier = ">=6.29.5" },
     { name = "matplotlib", specifier = ">=3.10.0" },
     { name = "pymatreader", specifier = ">=1.0.0" },
-    { name = "r2f-engine", directory = "r2f_engine" },
     { name = "setuptools", specifier = ">=75.8.0" },
-    { name = "simple-knn", directory = "submodules/simple-knn" },
     { name = "tensorboard", specifier = ">=2.19.0" },
     { name = "torch", marker = "sys_platform != 'linux'", specifier = ">=2.6.0" },
     { name = "torch", marker = "sys_platform == 'linux'", specifier = ">=2.6.0", index = "https://download.pytorch.org/whl/cu124" },
@@ -973,24 +969,6 @@ wheels = [
 ]
 
 [[package]]
-name = "r2f-engine"
-version = "0.1.0"
-source = { directory = "r2f_engine" }
-dependencies = [
-    { name = "numpy" },
-    { name = "setuptools" },
-    { name = "torch", version = "2.6.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
-    { name = "torch", version = "2.6.0+cu124", source = { registry = "https://download.pytorch.org/whl/cu124" }, marker = "sys_platform == 'linux'" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "numpy", specifier = ">=2.2.2" },
-    { name = "setuptools", specifier = ">=75.8.0" },
-    { name = "torch", specifier = ">=2.6.0" },
-]
-
-[[package]]
 name = "scipy"
 version = "1.15.1"
 source = { registry = "https://pypi.org/simple" }
@@ -1032,11 +1010,6 @@ sdist = { url = "https://files.pythonhosted.org/packages/92/ec/089608b791d210aec
 wheels = [
     { url = "https://files.pythonhosted.org/packages/69/8a/b9dc7678803429e4a3bc9ba462fa3dd9066824d3c607490235c6a796be5a/setuptools-75.8.0-py3-none-any.whl", hash = "sha256:e3982f444617239225d675215d51f6ba05f845d4eec313da4418fdbb56fb27e3", size = 1228782 },
 ]
-
-[[package]]
-name = "simple-knn"
-version = "0.1.0"
-source = { directory = "submodules/simple-knn" }
 
 [[package]]
 name = "six"

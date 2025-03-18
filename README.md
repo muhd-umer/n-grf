@@ -24,8 +24,8 @@ _Note: Current name is temporary and subject to change_
     uv sync
     ```
 
-- If installation of submodules fails, install them manually as (add the `--editable` flag as needed):
+- Install the submodules as (add the editable `-e` flag as needed):
     ```bash
-    uv add "simple-knn @ ./submodules/simple-knn"
-    uv add "diff-gaussian-rasterization @ ./submodules/diff-gaussian-rasterization"
+    uv pip install "simple-knn @ ./submodules/simple-knn"
+    uv pip install "r2f_engine @ ./r2f_engine"
     ```
