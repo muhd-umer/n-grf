@@ -1,6 +1,5 @@
 # core/_C/__init__.py
 
-import torch
 from torch.autograd import Function
 
 from . import _C
@@ -125,7 +124,8 @@ def rasterize(
         frequency: Signal frequency in Hz
 
     Returns:
-        Channel matrix of shape [num_tx, 2*num_rx] with real and imaginary parts concatenated
+        Channel matrix of shape [num_tx, 2*num_rx] with real and imaginary parts
+        concatenated
     """
     return RasterizeFunction.apply(
         points,

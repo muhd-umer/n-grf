@@ -16,9 +16,13 @@ include_directories(${CMAKE_CURRENT_SOURCE_DIR}/third_party/glm)
 
 # add CUDA sources
 set(CUDA_SOURCES
-    core/cuda/rasterizer_impl.cu
-    core/cuda/forward.cu
-    core/cuda/backward.cu
+    _cuda_impl/rasterize.cu
+    _cuda_impl/forward.cu
+    _cuda_impl/backward.cu
+    _cuda_impl/auxiliary.h
+    _cuda_impl/rasterize.h
+    _cuda_impl/forward.h
+    _cuda_impl/backward.h
 )
 
 # add library target

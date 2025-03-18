@@ -6,6 +6,6 @@
 	path = submodules/diff-gaussian-rasterization
 	url = https://github.com/muhd-umer/diff-gaussian-rasterization
 	branch = main
-[submodule "core/third_party/glm"]
-	path = core/third_party/glm
+[submodule "r2f_engine/third_party/glm"]
+	path = r2f_engine/third_party/glm
 	url = https://github.com/g-truc/glm.git

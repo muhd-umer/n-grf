@@ -5,10 +5,10 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "diff-gaussian-rasterization",
     "ipykernel>=6.29.5",
     "matplotlib>=3.10.0",
     "pymatreader>=1.0.0",
+    "r2f-engine",
     "setuptools>=75.8.0",
     "simple-knn",
     "tensorboard>=2.19.0",
@@ -23,8 +23,8 @@ config-settings = { editable_mode = "compat" }
 [tool.uv.sources]
 torch = { index = "pytorch-cu124", marker = "sys_platform == 'linux'" }
 torchvision = { index = "pytorch-cu124", marker = "sys_platform == 'linux'" }
-diff-gaussian-rasterization = { path = "submodules/diff-gaussian-rasterization", editable = true }
 simple-knn = { path = "submodules/simple-knn" }
+r2f-engine = { path = "r2f_engine" }
 
 [[tool.uv.index]]
 name = "pytorch-cu124"

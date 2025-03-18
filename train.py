@@ -9,9 +9,7 @@ import torch
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
-from core._torch_impl import (
-    rasterize,  # using torch implementation until custom CUDA is implemented
-)
+import r2f_engine
 from datasets.dataloader import get_dataloaders
 from models.encoder import EncoderConfig
 from models.gaussian_model import GaussianModel
@@ -256,7 +254,7 @@ def evaluate(
             }
             model.embed_features(enc_data)
 
-            pred_channel = rasterize(
+            pred_channel = r2f_engine.rasterize(
                 points=model.get_xyz,
                 cov3d=model.get_covariance(),
                 attenuation=model.get_features[:, 0:1],
@@ -427,7 +425,7 @@ def train(args, logger, writer, log_dir):
         }
         model.embed_features(enc_data)
 
-        pred_channel = rasterize(
+        pred_channel = r2f_engine.rasterize(
             points=model.get_xyz,
             cov3d=model.get_covariance(),
             attenuation=model.get_features[:, 0:1],
