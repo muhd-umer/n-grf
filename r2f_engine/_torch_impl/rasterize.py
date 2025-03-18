@@ -1,6 +1,6 @@
 # r2f_engine/_torch_impl/rasterize.py
 
-from typing import Optional, Tuple
+from typing import Tuple
 
 import torch
 

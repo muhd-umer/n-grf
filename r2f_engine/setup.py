@@ -20,7 +20,7 @@ setup(
     packages=find_packages(),
     ext_modules=[
         CUDAExtension(
-            name="r2f_engine._C",
+            name="_C",
             sources=cuda_sources,
             extra_compile_args={
                 "cxx": ["-O3"],
