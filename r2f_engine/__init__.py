@@ -1,4 +1,4 @@
-# core/__init__.py
+# r2f_engine/__init__.py
 
 import os
 import warnings

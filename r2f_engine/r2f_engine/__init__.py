@@ -1,4 +1,4 @@
-# core/_C/__init__.py
+# r2f_engine/_C/__init__.py
 
 from torch.autograd import Function
 
