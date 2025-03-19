@@ -9,10 +9,20 @@ import numpy as np
 import pytest
 import torch
 
-import engine
 import engine._torch_impl as torch_impl
-
-CUDA_AVAILABLE = engine.CUSTOM_KERNEL
+from engine import (
+    CUDA_AVAILABLE,
+    alpha_blending,
+    compute_channel,
+    compute_distances_to_receiver,
+    compute_gaussian_influence,
+    compute_jacobian,
+    compute_spherical_coords,
+    map_to_channel_matrix,
+    project_cov3d_to_cov2d,
+    project_to_channel_space,
+    transform_to_uniform_coords,
+)
 
 
 def generate_test_data(batch_size=100, device="cuda"):
@@ -51,11 +61,11 @@ def test_compute_distances_to_receiver():
         data["points"], data["receiver"]
     )
 
-    # CUDA implementation - TODO: Implement when CUDA function is available
-    # cuda_result = ...
+    # CUDA implementation
+    cuda_result = compute_distances_to_receiver(data["points"], data["receiver"])
 
-    # Assert close
-    # torch.testing.assert_close(torch_result, cuda_result, rtol=1e-5, atol=1e-5)
+    # assert close
+    torch.testing.assert_close(torch_result, cuda_result, rtol=1e-5, atol=1e-5)
 
 
 @pytest.mark.skipif(not CUDA_AVAILABLE, reason="CUDA implementation not available")
@@ -65,14 +75,15 @@ def test_compute_spherical_coords():
     torch_d, torch_lon, torch_lat = torch_impl.compute_spherical_coords(
         data["points"], data["receiver"]
     )
+    cuda_d, cuda_lon, cuda_lat = compute_spherical_coords(
+        data["points"], data["receiver"]
+    )
 
-    # CUDA implementation - TODO: Implement when CUDA function is available
-    # cuda_d, cuda_lon, cuda_lat = ...
-
-    # Assert close
-    # torch.testing.assert_close(torch_d, cuda_d, rtol=1e-5, atol=1e-5)  # displacement vectors
-    # torch.testing.assert_close(torch_lon, cuda_lon, rtol=1e-5, atol=1e-5)  # longitude
-    # torch.testing.assert_close(torch_lat, cuda_lat, rtol=1e-5, atol=1e-5)  # latitude
+    torch.testing.assert_close(
+        torch_d, cuda_d, rtol=1e-5, atol=1e-5
+    )  # displacement vectors
+    torch.testing.assert_close(torch_lon, cuda_lon, rtol=1e-5, atol=1e-5)  # longitude
+    torch.testing.assert_close(torch_lat, cuda_lat, rtol=1e-5, atol=1e-5)  # latitude
 
 
 @pytest.mark.skipif(not CUDA_AVAILABLE, reason="CUDA implementation not available")
@@ -83,15 +94,11 @@ def test_transform_to_uniform_coords():
         data["points"], data["receiver"]
     )
 
-    # torch implementation
     torch_s_x, torch_s_y = torch_impl.transform_to_uniform_coords(torch_lon, torch_lat)
+    cuda_s_x, cuda_s_y = transform_to_uniform_coords(torch_lon, torch_lat)
 
-    # CUDA implementation - TODO: Implement when CUDA function is available
-    # cuda_s_x, cuda_s_y = ...
-
-    # Assert close
-    # torch.testing.assert_close(torch_s_x, cuda_s_x, rtol=1e-5, atol=1e-5)
-    # torch.testing.assert_close(torch_s_y, cuda_s_y, rtol=1e-5, atol=1e-5)
+    torch.testing.assert_close(torch_s_x, cuda_s_x, rtol=1e-5, atol=1e-5)
+    torch.testing.assert_close(torch_s_y, cuda_s_y, rtol=1e-5, atol=1e-5)
 
 
 @pytest.mark.skipif(not CUDA_AVAILABLE, reason="CUDA implementation not available")
@@ -103,16 +110,14 @@ def test_map_to_channel_matrix():
     )
     torch_s_x, torch_s_y = torch_impl.transform_to_uniform_coords(torch_lon, torch_lat)
 
-    # torch implementation
     torch_uv = torch_impl.map_to_channel_matrix(
         torch_s_x, torch_s_y, data["num_tx"], data["num_rx"]
     )
+    cuda_uv = map_to_channel_matrix(
+        torch_s_x, torch_s_y, data["num_tx"], data["num_rx"]
+    )
 
-    # CUDA implementation - TODO: Implement when CUDA function is available
-    # cuda_uv = ...
-
-    # Assert close
-    # torch.testing.assert_close(torch_uv, cuda_uv, rtol=1e-5, atol=1e-5)
+    torch.testing.assert_close(torch_uv, cuda_uv, rtol=1e-5, atol=1e-5)
 
 
 @pytest.mark.skipif(not CUDA_AVAILABLE, reason="CUDA implementation not available")
@@ -124,16 +129,12 @@ def test_compute_jacobian():
     )
     torch_r = torch_impl.compute_distances_to_receiver(data["points"], data["receiver"])
 
-    # torch implementation
     torch_jacobian = torch_impl.compute_jacobian(
         torch_d, torch_r, data["num_tx"], data["num_rx"]
     )
+    cuda_jacobian = compute_jacobian(torch_d, torch_r, data["num_tx"], data["num_rx"])
 
-    # CUDA implementation - TODO: Implement when CUDA function is available
-    # cuda_jacobian = ...
-
-    # Assert close
-    # torch.testing.assert_close(torch_jacobian, cuda_jacobian, rtol=1e-5, atol=1e-5)
+    torch.testing.assert_close(torch_jacobian, cuda_jacobian, rtol=1e-5, atol=1e-5)
 
 
 @pytest.mark.skipif(not CUDA_AVAILABLE, reason="CUDA implementation not available")
@@ -152,21 +153,16 @@ def test_project_cov3d_to_cov2d():
 
     cov3d_mat = symmetric_matrix(data["cov3d"])
 
-    # torch implementation
     torch_cov2d = torch_impl.project_cov3d_to_cov2d(cov3d_mat, torch_jacobian)
+    cuda_cov2d = project_cov3d_to_cov2d(cov3d_mat, torch_jacobian)
 
-    # CUDA implementation - TODO: Implement when CUDA function is available
-    # cuda_cov2d = ...
-
-    # Assert close
-    # torch.testing.assert_close(torch_cov2d, cuda_cov2d, rtol=1e-5, atol=1e-5)
+    torch.testing.assert_close(torch_cov2d, cuda_cov2d, rtol=1e-5, atol=1e-5)
 
 
 @pytest.mark.skipif(not CUDA_AVAILABLE, reason="CUDA implementation not available")
 def test_project_to_channel_space():
     data = generate_test_data()
 
-    # torch implementation
     torch_distances, torch_uv, torch_cov2d = torch_impl.project_to_channel_space(
         data["points"],
         data["cov3d"],
@@ -174,17 +170,19 @@ def test_project_to_channel_space():
         data["num_tx"],
         data["num_rx"],
     )
+    cuda_distances, cuda_uv, cuda_cov2d = project_to_channel_space(
+        data["points"],
+        data["cov3d"],
+        data["receiver"],
+        data["num_tx"],
+        data["num_rx"],
+    )
 
-    # CUDA implementation - TODO: Implement when CUDA function is available
-    # cuda_distances, cuda_uv, cuda_cov2d = ...
-
-    # Assert close
-    # torch.testing.assert_close(torch_distances, cuda_distances, rtol=1e-5, atol=1e-5)
-    # torch.testing.assert_close(torch_uv, cuda_uv, rtol=1e-5, atol=1e-5)
-    # torch.testing.assert_close(torch_cov2d, cuda_cov2d, rtol=1e-5, atol=1e-5)
+    torch.testing.assert_close(torch_distances, cuda_distances, rtol=1e-5, atol=1e-5)
+    torch.testing.assert_close(torch_uv, cuda_uv, rtol=1e-5, atol=1e-5)
+    torch.testing.assert_close(torch_cov2d, cuda_cov2d, rtol=1e-5, atol=1e-5)
 
 
-# Tests for rasterize functions
 @pytest.mark.skipif(not CUDA_AVAILABLE, reason="CUDA implementation not available")
 def test_compute_gaussian_influence():
     data = generate_test_data()
@@ -193,16 +191,12 @@ def test_compute_gaussian_influence():
         data["points"], data["cov3d"], data["receiver"], data["num_tx"], data["num_rx"]
     )
 
-    # torch implementation
     torch_result = torch_impl.compute_gaussian_influence(
         uv, cov2d, data["num_tx"], data["num_rx"]
     )
+    cuda_result = compute_gaussian_influence(uv, cov2d, data["num_tx"], data["num_rx"])
 
-    # CUDA implementation - TODO: Implement when CUDA function is available
-    # cuda_result = ...
-
-    # Assert close
-    # torch.testing.assert_close(torch_result, cuda_result, rtol=1e-5, atol=1e-5)
+    torch.testing.assert_close(torch_result, cuda_result, rtol=1e-5, atol=1e-5)
 
 
 @pytest.mark.skipif(not CUDA_AVAILABLE, reason="CUDA implementation not available")
@@ -213,20 +207,18 @@ def test_compute_channel():
         data["points"], data["cov3d"], data["receiver"], data["num_tx"], data["num_rx"]
     )
 
-    c = 299792458.0  # Speed of light in m/s
+    c = 299792458.0  # speed of light in m/s
     wavelength = c / data["frequency"]
 
-    # torch implementation
     torch_real, torch_imag = torch_impl.compute_channel(
         data["attenuation"], data["phase_rotation"], distances, wavelength
     )
+    cuda_real, cuda_imag = compute_channel(
+        data["attenuation"], data["phase_rotation"], distances, wavelength
+    )
 
-    # CUDA implementation - TODO: Implement when CUDA function is available
-    # cuda_real, cuda_imag = ...
-
-    # Assert close
-    # torch.testing.assert_close(torch_real, cuda_real, rtol=1e-5, atol=1e-5)
-    # torch.testing.assert_close(torch_imag, cuda_imag, rtol=1e-5, atol=1e-5)
+    torch.testing.assert_close(torch_real, cuda_real, rtol=1e-5, atol=1e-5)
+    torch.testing.assert_close(torch_imag, cuda_imag, rtol=1e-5, atol=1e-5)
 
 
 @pytest.mark.skipif(not CUDA_AVAILABLE, reason="CUDA implementation not available")
@@ -248,7 +240,6 @@ def test_alpha_blending():
     )
     contributions = torch.complex(real, imag)
 
-    # torch implementation
     torch_result = torch_impl.alpha_blending(
         influences,
         contributions,
@@ -257,12 +248,16 @@ def test_alpha_blending():
         data["num_tx"],
         data["num_rx"],
     )
+    cuda_result = alpha_blending(
+        influences,
+        contributions,
+        data["opacity"],
+        sort_indices,
+        data["num_tx"],
+        data["num_rx"],
+    )
 
-    # CUDA implementation - TODO: Implement when CUDA function is available
-    # cuda_result = ...
-
-    # Assert close
-    # torch.testing.assert_close(torch_result, cuda_result, rtol=1e-5, atol=1e-5)
+    torch.testing.assert_close(torch_result, cuda_result, rtol=1e-5, atol=1e-5)
 
 
 if __name__ == "__main__":

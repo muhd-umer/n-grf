@@ -1,7 +1,22 @@
 # engine/_wrapper.py
 
-import _C
+import torch
 from torch.autograd import Function
+
+try:
+    import _C
+
+    CUDA_AVAILABLE = True
+except ImportError:
+    import warnings
+
+    from _torch_impl.rasterize import rasterize as torch_rasterize
+
+    warnings.warn(
+        "CUDA implementation not found. Using PyTorch implementation instead. "
+        "Make sure to build the CUDA extension with `pip install -e .` in the engine directory."
+    )
+    CUDA_AVAILABLE = False
 
 
 class RasterizeFunction(Function):
@@ -34,22 +49,33 @@ class RasterizeFunction(Function):
         ctx.num_rx = num_rx
         ctx.frequency = frequency
 
-        # rasterize_forward returns tuple of (channel_matrix, aux_data1, aux_data2)
-        # we only need the channel matrix for the forward pass
-        result = _C.rasterize_forward(
-            points,
-            cov3d,
-            attenuation,
-            phase_rotation,
-            opacity,
-            receiver,
-            transmitter,
-            num_tx,
-            num_rx,
-            frequency,
-        )
-
-        return result[0]
+        if CUDA_AVAILABLE:
+            result = _C.rasterize_forward(
+                points,
+                cov3d,
+                attenuation,
+                phase_rotation,
+                opacity,
+                receiver,
+                transmitter,
+                num_tx,
+                num_rx,
+                frequency,
+            )
+            return result[0]
+        else:
+            return torch_rasterize(
+                points,
+                cov3d,
+                attenuation,
+                phase_rotation,
+                opacity,
+                receiver,
+                transmitter,
+                num_tx,
+                num_rx,
+                frequency,
+            )
 
     @staticmethod
     def backward(ctx, grad_output):
@@ -64,8 +90,14 @@ class RasterizeFunction(Function):
             transmitter,
         ) = ctx.saved_tensors
 
-        grad_points, grad_cov3d, grad_attenuation, grad_phase_rotation, grad_opacity = (
-            _C.rasterize_backward(
+        if CUDA_AVAILABLE:
+            (
+                grad_points,
+                grad_cov3d,
+                grad_attenuation,
+                grad_phase_rotation,
+                grad_opacity,
+            ) = _C.rasterize_backward(
                 grad_output,
                 points,
                 cov3d,
@@ -78,9 +110,18 @@ class RasterizeFunction(Function):
                 ctx.num_rx,
                 ctx.frequency,
             )
-        )
+        else:
+            grad_points = torch.zeros_like(points)
+            grad_cov3d = torch.zeros_like(cov3d)
+            grad_attenuation = torch.zeros_like(attenuation)
+            grad_phase_rotation = torch.zeros_like(phase_rotation)
+            grad_opacity = torch.zeros_like(opacity)
 
-        # return gradients for each input
+            warnings.warn(
+                "Backward pass not implemented in PyTorch fallback. "
+                "Returning zero gradients. Build the CUDA extension for proper training."
+            )
+
         return (
             grad_points,
             grad_cov3d,
