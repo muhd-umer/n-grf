@@ -1,5 +1,5 @@
 /*
- * Core header file for wireless channel reconstruction CUDA implementation
+ * Core header file for channel reconstruction CUDA implementation
  * Contains top-level function declarations exposed to Python
  */
 
