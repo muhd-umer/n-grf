@@ -1,4 +1,4 @@
-# setup.py
+# engine/setup.py
 
 import os
 
