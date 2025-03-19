@@ -1,5 +1,5 @@
 /*
- * Implementation file for channel reconstruction CUDA-PyTorch bindings
+ * Implementation file for CUDA-PyTorch bindings
  */
 
 #include <torch/extension.h>
