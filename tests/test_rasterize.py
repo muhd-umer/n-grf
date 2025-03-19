@@ -1,4 +1,4 @@
-# r2f_engine/tests/test_rasterize.py
+# engine/tests/test_rasterize.py
 
 # tests/test_pt_cuda.py
 
@@ -13,8 +13,8 @@ import time
 import numpy as np
 import torch
 
-import r2f_engine
-import r2f_engine._torch_impl as torch_impl
+import engine
+import engine._torch_impl as torch_impl
 
 
 def generate_test_data(batch_size=10000, device="cuda"):
@@ -65,7 +65,7 @@ def test_correctness():
     )
 
     # CUDA implementation
-    cuda_result = r2f_engine.rasterize(
+    cuda_result = torch_impl.rasterize(
         data["points"],
         data["cov3d"],
         data["attenuation"],
@@ -121,7 +121,7 @@ def benchmark(batch_sizes=None, num_runs=10):
                 data["frequency"],
             )
 
-            r2f_engine.rasterize(
+            torch_impl.rasterize(
                 data["points"],
                 data["cov3d"],
                 data["attenuation"],
@@ -157,7 +157,7 @@ def benchmark(batch_sizes=None, num_runs=10):
         torch.cuda.synchronize()
         start = time.time()
         for _ in range(num_runs):
-            r2f_engine.rasterize(
+            torch_impl.rasterize(
                 data["points"],
                 data["cov3d"],
                 data["attenuation"],
@@ -199,7 +199,7 @@ def main():
 
     args = parser.parse_args()
 
-    print(f"Using {'CUDA' if r2f_engine.CUSTOM_KERNEL else 'PyTorch'} implementation")
+    print(f"Using {'CUDA' if engine.CUSTOM_KERNEL else 'PyTorch'} implementation")
 
     if args.test or not args.benchmark:
         success = test_correctness()

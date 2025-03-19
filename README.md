@@ -27,5 +27,5 @@ _Note: Current name is temporary and subject to change_
 - Install the submodules as (add the editable `-e` flag as needed):
     ```bash
     uv pip install "simple-knn @ ./submodules/simple-knn"
-    uv pip install "r2f_engine @ ./r2f_engine"
+    uv pip install "engine @ ./engine"
     ```

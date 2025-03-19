@@ -15,7 +15,7 @@ cuda_sources = [
 ]
 
 setup(
-    name="r2f_engine",
+    name="engine",
     version="0.1.0",
     packages=find_packages(),
     ext_modules=[

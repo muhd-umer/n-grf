@@ -1,4 +1,4 @@
-# r2f_engine/_torch_impl/rasterize.py
+# engine/_torch_impl/rasterize.py
 
 from typing import Tuple
 

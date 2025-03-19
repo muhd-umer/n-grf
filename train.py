@@ -9,7 +9,7 @@ import torch
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
-import r2f_engine
+import engine
 from datasets.dataloader import get_dataloaders
 from models.encoder import EncoderConfig
 from models.gaussian_model import GaussianModel
@@ -254,7 +254,7 @@ def evaluate(
             }
             model.embed_features(enc_data)
 
-            pred_channel = r2f_engine.rasterize(
+            pred_channel = engine.rasterize(
                 points=model.get_xyz,
                 cov3d=model.get_covariance(),
                 attenuation=model.get_features[:, 0:1],
@@ -425,7 +425,7 @@ def train(args, logger, writer, log_dir):
         }
         model.embed_features(enc_data)
 
-        pred_channel = r2f_engine.rasterize(
+        pred_channel = engine.rasterize(
             points=model.get_xyz,
             cov3d=model.get_covariance(),
             attenuation=model.get_features[:, 0:1],

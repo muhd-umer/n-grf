@@ -9,10 +9,10 @@ import numpy as np
 import pytest
 import torch
 
-import r2f_engine
-import r2f_engine._torch_impl as torch_impl
+import engine
+import engine._torch_impl as torch_impl
 
-CUDA_AVAILABLE = r2f_engine.CUSTOM_KERNEL
+CUDA_AVAILABLE = engine.CUSTOM_KERNEL
 
 
 def generate_test_data(batch_size=100, device="cuda"):
