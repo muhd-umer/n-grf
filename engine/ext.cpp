@@ -2,6 +2,7 @@
 
 #include <torch/extension.h>
 
+#include "_cuda_impl/forward.h"
 #include "_cuda_impl/rasterize.h"
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
