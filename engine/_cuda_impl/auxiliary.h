@@ -126,45 +126,46 @@ __forceinline__ __device__ void projectCov3DToCov2D(
     const float* J,      // Input: Jacobian 2x3 matrix (6 values)
     float* cov2d)        // Output: symmetric 2D covariance (3 values: xx, xy, yy)
 {
-    // Expand symmetric 3D covariance to full 3x3 matrix
+    // Convert compact 3D covariance to full matrix
     float cov3d_full[9];
     cov3d_full[0] = cov3d[0];  // xx
     cov3d_full[1] = cov3d[1];  // xy
     cov3d_full[2] = cov3d[2];  // xz
-    cov3d_full[3] = cov3d[1];  // xy
+    cov3d_full[3] = cov3d[1];  // xy (symmetric)
     cov3d_full[4] = cov3d[3];  // yy
     cov3d_full[5] = cov3d[4];  // yz
-    cov3d_full[6] = cov3d[2];  // xz
-    cov3d_full[7] = cov3d[4];  // yz
+    cov3d_full[6] = cov3d[2];  // xz (symmetric)
+    cov3d_full[7] = cov3d[4];  // yz (symmetric)
     cov3d_full[8] = cov3d[5];  // zz
 
-    // Compute temp = cov3d * J^T
+    // Compute T = Σ * J^T
     float temp[6];  // 3x2 matrix
     for (int i = 0; i < 3; i++) {
         for (int j = 0; j < 2; j++) {
-            float sum = 0.0f;
+            temp[i * 2 + j] = 0.0f;
             for (int k = 0; k < 3; k++) {
-                sum += cov3d_full[i * 3 + k] * J[j * 3 + k];
+                // J is stored as [J00, J01, J02, J10, J11, J12]
+                // cov3d_full is stored as [Σ00, Σ01, Σ02, Σ10, Σ11, Σ12, Σ20, Σ21, Σ22]
+                // We need to transpose J to get J^T
+                temp[i * 2 + j] += cov3d_full[i * 3 + k] * J[j * 3 + k];
             }
-            temp[i * 2 + j] = sum;
         }
     }
 
-    // Compute cov2d = J * temp
+    // Compute cov2d = J * T
     float cov2d_full[4];  // 2x2 matrix
     for (int i = 0; i < 2; i++) {
         for (int j = 0; j < 2; j++) {
-            float sum = 0.0f;
+            cov2d_full[i * 2 + j] = 0.0f;
             for (int k = 0; k < 3; k++) {
-                sum += J[i * 3 + k] * temp[k * 2 + j];
+                cov2d_full[i * 2 + j] += J[i * 3 + k] * temp[k * 2 + j];
             }
-            cov2d_full[i * 2 + j] = sum;
         }
     }
 
     // Store in symmetric form (xx, xy, yy)
     cov2d[0] = cov2d_full[0];  // xx
-    cov2d[1] = cov2d_full[1];  // xy
+    cov2d[1] = cov2d_full[1];  // xy (same as cov2d_full[2])
     cov2d[2] = cov2d_full[3];  // yy
 
     // Add regularization (as in PyTorch implementation)
@@ -182,12 +183,12 @@ __forceinline__ __device__ void inverseCov2D(
     float yy = cov2d[2];
 
     float det = xx * yy - xy * xy;
-    det = fmaxf(det, 1e-10f);
+    det = fmaxf(det, 1e-10f);  // Ensure numerical stability
     float inv_det = 1.0f / det;
 
-    inv_cov2d[0] = yy * inv_det;   // (inv_cov2d)_xx
-    inv_cov2d[1] = -xy * inv_det;  // (inv_cov2d)_xy
-    inv_cov2d[2] = xx * inv_det;   // (inv_cov2d)_yy
+    inv_cov2d[0] = yy * inv_det;   // xx component of inverse
+    inv_cov2d[1] = -xy * inv_det;  // xy component of inverse
+    inv_cov2d[2] = xx * inv_det;   // yy component of inverse
 }
 
 // Compute wireless channel contribution

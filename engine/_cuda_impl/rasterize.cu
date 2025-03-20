@@ -81,17 +81,12 @@ std::tuple<torch::Tensor, torch::Tensor> transform_to_uniform_coords_cuda(
     auto s_y = torch::empty({P}, longitude.options());
 
     // Call CUDA function
-    FORWARD::transformToChannelSpace(
+    FORWARD::transformToUniformCoords(
         P,
         longitude.data_ptr<float>(),
         latitude.data_ptr<float>(),
-        2,  // Dummy values for num_tx and num_rx since we only care about s_x and s_y
-        2,
-        reinterpret_cast<float*>(s_x.data_ptr<float>()));
-
-    // Extract s_x and s_y from UV coordinates (this is a bit of a hack)
-    s_x = (s_x.index({torch::indexing::Slice(), 0}) * 2.0 - 1.0) * PI;
-    s_y = (s_y.index({torch::indexing::Slice(), 1}) * 2.0 - 1.0) * (PI / 2.0);
+        s_x.data_ptr<float>(),
+        s_y.data_ptr<float>());
 
     return std::make_tuple(s_x, s_y);
 }
@@ -112,7 +107,7 @@ torch::Tensor map_to_channel_matrix_cuda(
     auto uv = torch::empty({P, 2}, s_x.options());
 
     // Call CUDA function
-    FORWARD::transformToChannelSpace(
+    FORWARD::mapToChannelMatrix(
         P,
         s_x.data_ptr<float>(),
         s_y.data_ptr<float>(),
@@ -215,12 +210,14 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> project_to_channel_space
     auto d = torch::empty({P, 3}, points.options());
     auto longitude = torch::empty({P}, points.options());
     auto latitude = torch::empty({P}, points.options());
+    auto s_x = torch::empty({P}, points.options());
+    auto s_y = torch::empty({P}, points.options());
     auto uv = torch::empty({P, 2}, points.options());
     auto jacobians = torch::empty({P, 2, 3}, points.options());
     auto cov2d_compact = torch::empty({P, 3}, points.options());
     auto cov2d = torch::empty({P, 2, 2}, points.options());
 
-    // Call CUDA functions in sequence
+    // Step 1: Compute spherical coordinates, distances, and displacement vectors
     FORWARD::computeSphericalCoords(
         P,
         points.data_ptr<float>(),
@@ -230,14 +227,24 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> project_to_channel_space
         longitude.data_ptr<float>(),
         latitude.data_ptr<float>());
 
-    FORWARD::transformToChannelSpace(
+    // Step 2: Transform to uniform coordinates
+    FORWARD::transformToUniformCoords(
         P,
         longitude.data_ptr<float>(),
         latitude.data_ptr<float>(),
+        s_x.data_ptr<float>(),
+        s_y.data_ptr<float>());
+
+    // Step 3: Map to channel matrix coordinates
+    FORWARD::mapToChannelMatrix(
+        P,
+        s_x.data_ptr<float>(),
+        s_y.data_ptr<float>(),
         num_tx,
         num_rx,
         uv.data_ptr<float>());
 
+    // Step 4: Compute Jacobians
     FORWARD::computeJacobians(
         P,
         d.data_ptr<float>(),
@@ -246,6 +253,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> project_to_channel_space
         num_rx,
         jacobians.data_ptr<float>());
 
+    // Step 5: Project 3D covariance to 2D
     FORWARD::projectCov3Ds(
         P,
         cov3d.data_ptr<float>(),
@@ -274,20 +282,16 @@ torch::Tensor compute_gaussian_influence_cuda(
     int P = uv.size(0);
 
     // Create output tensor
-    auto influences = torch::empty({P, num_tx, num_rx}, uv.options());
+    auto influences = torch::zeros({P, num_tx, num_rx}, uv.options());
 
     // Convert cov2d to compact form
-    auto inv_cov2d = torch::empty({P, 3}, uv.options());
-
-    // Create temporary tensor for compact 2D covariance
     auto cov2d_compact = torch::empty({P, 3}, uv.options());
-
-    // Fill compact form
     cov2d_compact.index({torch::indexing::Slice(), 0}) = cov2d.index({torch::indexing::Slice(), 0, 0});  // xx
     cov2d_compact.index({torch::indexing::Slice(), 1}) = cov2d.index({torch::indexing::Slice(), 0, 1});  // xy
     cov2d_compact.index({torch::indexing::Slice(), 2}) = cov2d.index({torch::indexing::Slice(), 1, 1});  // yy
 
     // Compute inverse covariance
+    auto inv_cov2d = torch::empty({P, 3}, uv.options());
     FORWARD::computeInvCov2Ds(
         P,
         cov2d_compact.data_ptr<float>(),
@@ -355,11 +359,11 @@ torch::Tensor alpha_blending_cuda(
     auto channel = torch::zeros({num_tx, 2 * num_rx}, influences.options());
 
     // Extract real and imaginary parts
-    auto real_contrib = torch::empty({P, 1}, influences.options());
-    auto imag_contrib = torch::empty({P, 1}, influences.options());
+    auto real_contrib = torch::real(contributions).reshape({P, 1});
+    auto imag_contrib = torch::imag(contributions).reshape({P, 1});
 
-    real_contrib.copy_(torch::real(contributions).reshape({P, 1}));
-    imag_contrib.copy_(torch::imag(contributions).reshape({P, 1}));
+    // Convert sort_indices to int32 (this fixes the data type issue)
+    auto sort_indices_int = sort_indices.to(torch::kInt32);
 
     // Call CUDA function
     FORWARD::alphaBlending(
@@ -368,7 +372,7 @@ torch::Tensor alpha_blending_cuda(
         real_contrib.data_ptr<float>(),
         imag_contrib.data_ptr<float>(),
         opacity.data_ptr<float>(),
-        sort_indices.data_ptr<int>(),
+        sort_indices_int.data_ptr<int>(),
         num_tx,
         num_rx,
         channel.data_ptr<float>());

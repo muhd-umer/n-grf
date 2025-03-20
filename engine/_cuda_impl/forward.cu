@@ -70,6 +70,46 @@ __global__ void computeSphericalCoordsCUDA(
     latitude[idx] = lat;
 }
 
+// Transform spherical coordinates to uniform coordinates
+__global__ void transformToUniformCoordsCUDA(
+    int N,                   // Number of Gaussians
+    const float* longitude,  // Longitude angles [N]
+    const float* latitude,   // Latitude angles [N]
+    float* s_x,              // Output: uniform x coordinates [N]
+    float* s_y)              // Output: uniform y coordinates [N]
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= N) return;
+
+    // Convert spherical to uniform coordinates
+    float sx, sy;
+    transformToUniformCoords(longitude[idx], latitude[idx], sx, sy);
+
+    // Store results
+    s_x[idx] = sx;
+    s_y[idx] = sy;
+}
+
+// Map uniform coordinates to channel matrix coordinates
+__global__ void mapToChannelMatrixCUDA(
+    int N,             // Number of Gaussians
+    const float* s_x,  // Uniform x coordinates [N]
+    const float* s_y,  // Uniform y coordinates [N]
+    int num_tx,        // Number of transmit antennas
+    int num_rx,        // Number of receive antennas
+    float* uv)         // Output: channel matrix coordinates [N, 2]
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= N) return;
+
+    // Map to channel matrix coordinates
+    float2 uv_coords = mapToChannelMatrix(s_x[idx], s_y[idx], num_tx, num_rx);
+
+    // Store UV coordinates
+    uv[idx * 2] = uv_coords.x;
+    uv[idx * 2 + 1] = uv_coords.y;
+}
+
 // Transform spherical coordinates to channel matrix space
 __global__ void transformToChannelSpaceCUDA(
     int N,                   // Number of Gaussians
@@ -313,6 +353,41 @@ void computeSphericalCoords(
     }
 }
 
+void transformToUniformCoords(
+    int N,
+    const float* longitude,
+    const float* latitude,
+    float* s_x,
+    float* s_y) {
+    int num_threads = 256;
+    int num_blocks = (N + num_threads - 1) / num_threads;
+    transformToUniformCoordsCUDA<<<num_blocks, num_threads>>>(
+        N, longitude, latitude, s_x, s_y);
+
+    cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        printf("transformToUniformCoords CUDA Error: %s\n", cudaGetErrorString(err));
+    }
+}
+
+void mapToChannelMatrix(
+    int N,
+    const float* s_x,
+    const float* s_y,
+    int num_tx,
+    int num_rx,
+    float* uv) {
+    int num_threads = 256;
+    int num_blocks = (N + num_threads - 1) / num_threads;
+    mapToChannelMatrixCUDA<<<num_blocks, num_threads>>>(
+        N, s_x, s_y, num_tx, num_rx, uv);
+
+    cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        printf("mapToChannelMatrix CUDA Error: %s\n", cudaGetErrorString(err));
+    }
+}
+
 void transformToChannelSpace(
     int N,
     const float* longitude,
@@ -470,8 +545,9 @@ void forward(
     float wavelength = SPEED_OF_LIGHT / frequency;
 
     // Allocate device memory for intermediate results
-    float *d_distances, *d_d, *d_longitude, *d_latitude, *d_uv;
-    float *d_jacobians, *d_cov2ds, *d_inv_cov2ds;
+    float *d_distances, *d_d, *d_longitude, *d_latitude;
+    float *d_s_x, *d_s_y, *d_uv, *d_jacobians;
+    float *d_cov2ds, *d_inv_cov2ds;
     float *d_influences, *d_real_contrib, *d_imag_contrib;
     int* d_sort_indices;
 
@@ -479,6 +555,8 @@ void forward(
     cudaMalloc(&d_d, N * 3 * sizeof(float));
     cudaMalloc(&d_longitude, N * sizeof(float));
     cudaMalloc(&d_latitude, N * sizeof(float));
+    cudaMalloc(&d_s_x, N * sizeof(float));
+    cudaMalloc(&d_s_y, N * sizeof(float));
     cudaMalloc(&d_uv, N * 2 * sizeof(float));
     cudaMalloc(&d_jacobians, N * 6 * sizeof(float));
     cudaMalloc(&d_cov2ds, N * 3 * sizeof(float));
@@ -488,13 +566,17 @@ void forward(
     cudaMalloc(&d_imag_contrib, N * sizeof(float));
     cudaMalloc(&d_sort_indices, N * sizeof(int));
 
-    // Step 1-2: Compute spherical coordinates, distances, and displacement vectors
+    // Step 1: Compute spherical coordinates, distances, and displacement vectors
     computeSphericalCoords(
         N, points, receiver, d_d, d_distances, d_longitude, d_latitude);
 
-    // Step 3: Transform coordinates to channel space
-    transformToChannelSpace(
-        N, d_longitude, d_latitude, num_tx, num_rx, d_uv);
+    // Step 2: Transform to uniform coordinates
+    transformToUniformCoords(
+        N, d_longitude, d_latitude, d_s_x, d_s_y);
+
+    // Step 3: Map to channel matrix coordinates
+    mapToChannelMatrix(
+        N, d_s_x, d_s_y, num_tx, num_rx, d_uv);
 
     // Step 4: Compute Jacobians
     computeJacobians(
@@ -543,6 +625,8 @@ void forward(
     cudaFree(d_d);
     cudaFree(d_longitude);
     cudaFree(d_latitude);
+    cudaFree(d_s_x);
+    cudaFree(d_s_y);
     cudaFree(d_uv);
     cudaFree(d_jacobians);
     cudaFree(d_cov2ds);

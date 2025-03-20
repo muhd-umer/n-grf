@@ -30,6 +30,23 @@ void computeSphericalCoords(
     float* longitude,       // Output: longitude angles [N]
     float* latitude);       // Output: latitude angles [N]
 
+// Transform spherical coordinates to uniform coordinates
+void transformToUniformCoords(
+    int N,                   // Number of Gaussians
+    const float* longitude,  // Longitude angles [N]
+    const float* latitude,   // Latitude angles [N]
+    float* s_x,              // Output: uniform x coordinates [N]
+    float* s_y);             // Output: uniform y coordinates [N]
+
+// Map uniform coordinates to channel matrix coordinates
+void mapToChannelMatrix(
+    int N,             // Number of Gaussians
+    const float* s_x,  // Uniform x coordinates [N]
+    const float* s_y,  // Uniform y coordinates [N]
+    int num_tx,        // Number of transmit antennas
+    int num_rx,        // Number of receive antennas
+    float* uv);        // Output: channel matrix coordinates [N, 2]
+
 // Transform spherical coordinates to channel matrix space
 void transformToChannelSpace(
     int N,                   // Number of Gaussians
