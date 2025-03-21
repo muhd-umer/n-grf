@@ -1,3 +1,4 @@
+// engine/_cuda_impl/rasterize.cu
 /*
  * Implementation file for CUDA-PyTorch bindings
  */
@@ -76,8 +77,8 @@ __global__ void compute_channel_kernel(
     if (idx >= N) return;
 
     float distance = xyz_rx_distance[idx];
-    float att = attenuation[idx * 1];       // [N, 1] tensor
-    float phase = phase_rotation[idx * 1];  // [N, 1] tensor
+    float att = attenuation[idx];
+    float phase = phase_rotation[idx];
 
     float path_loss = wavelength / (4.0f * PI * distance);
     float phase_shift = -2.0f * PI * distance / wavelength;
@@ -85,8 +86,8 @@ __global__ void compute_channel_kernel(
     float total_att = att * path_loss;
     float total_phase = phase + phase_shift;
 
-    real_part[idx * 1] = total_att * cosf(total_phase);
-    imag_part[idx * 1] = total_att * sinf(total_phase);
+    real_part[idx] = total_att * cosf(total_phase);
+    imag_part[idx] = total_att * sinf(total_phase);
 }
 
 // CUDA kernel for alpha blending
@@ -173,12 +174,15 @@ std::tuple<torch::Tensor, torch::Tensor> computeChannelCUDA(
     torch::Tensor real_part = torch::empty({N, 1}, options);
     torch::Tensor imag_part = torch::empty({N, 1}, options);
 
+    torch::Tensor att_contig = attenuation.contiguous();
+    torch::Tensor phase_contig = phase_rotation.contiguous();
+
     int threads = 256;
     int blocks = (N + threads - 1) / threads;
 
     compute_channel_kernel<<<blocks, threads>>>(
-        attenuation.data_ptr<float>(),
-        phase_rotation.data_ptr<float>(),
+        att_contig.data_ptr<float>(),
+        phase_contig.data_ptr<float>(),
         xyz_rx_distance.data_ptr<float>(),
         real_part.data_ptr<float>(),
         imag_part.data_ptr<float>(),
