@@ -9,24 +9,17 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-import time
 
-import numpy as np
 import pytest
 import torch
 
 import engine
 import engine._torch_impl as torch_impl
 from datasets.dataloader import get_dataloaders
-from engine import rasterize
 from models.encoder import EncoderConfig
 from models.gaussian_model import GaussianModel
-from utils.transform_utils import symmetric_matrix
-
-torch.manual_seed(2)
 
 TEST_DATA = None
-DATA_PATH = "datasets/outputs/conf_16x2_414u_5.0ghz_sbrRT_sc104.mat"
 
 
 def load_global_test_data(data_path, batch_size=12_000, device="cuda"):
@@ -91,11 +84,11 @@ def load_global_test_data(data_path, batch_size=12_000, device="cuda"):
 
 
 @pytest.fixture(autouse=True, scope="session")
-def init_test_data():
+def init_test_data(data_path):
     global TEST_DATA
     if engine.CUDA_AVAILABLE:
         try:
-            load_global_test_data(DATA_PATH)
+            load_global_test_data(data_path)
         except Exception as e:
             print(f"Error loading dataset: {e}")
             raise
@@ -151,99 +144,29 @@ def test_rasterize():
         )
 
 
-def benchmark_rasterize(num_runs=10):
-    torch_impl.rasterize(
-        points=TEST_DATA["points"],
-        cov3d=TEST_DATA["cov3d"],
-        attenuation=TEST_DATA["attenuation"],
-        phase_rotation=TEST_DATA["phase_rotation"],
-        opacity=TEST_DATA["opacity"],
-        receiver=TEST_DATA["receiver"],
-        transmitter=TEST_DATA["transmitter"],
-        num_tx=TEST_DATA["num_tx"],
-        num_rx=TEST_DATA["num_rx"],
-        frequency=TEST_DATA["frequency"],
-    )
-
-    torch_times = []
-    for _ in range(num_runs):
-        start_time = time.time()
-        torch_impl.rasterize(
-            points=TEST_DATA["points"],
-            cov3d=TEST_DATA["cov3d"],
-            attenuation=TEST_DATA["attenuation"],
-            phase_rotation=TEST_DATA["phase_rotation"],
-            opacity=TEST_DATA["opacity"],
-            receiver=TEST_DATA["receiver"],
-            transmitter=TEST_DATA["transmitter"],
-            num_tx=TEST_DATA["num_tx"],
-            num_rx=TEST_DATA["num_rx"],
-            frequency=TEST_DATA["frequency"],
-        )
-        torch_times.append(time.time() - start_time)
-
-    avg_torch_time = sum(torch_times) / len(torch_times)
-
-    from engine import rasterize as cuda_rasterize
-
-    cuda_rasterize(
-        points=TEST_DATA["points"],
-        cov3d=TEST_DATA["cov3d"],
-        attenuation=TEST_DATA["attenuation"],
-        phase_rotation=TEST_DATA["phase_rotation"],
-        opacity=TEST_DATA["opacity"],
-        receiver=TEST_DATA["receiver"],
-        transmitter=TEST_DATA["transmitter"],
-        num_tx=TEST_DATA["num_tx"],
-        num_rx=TEST_DATA["num_rx"],
-        frequency=TEST_DATA["frequency"],
-    )
-
-    cuda_times = []
-    for _ in range(num_runs):
-        start_time = time.time()
-        cuda_rasterize(
-            points=TEST_DATA["points"],
-            cov3d=TEST_DATA["cov3d"],
-            attenuation=TEST_DATA["attenuation"],
-            phase_rotation=TEST_DATA["phase_rotation"],
-            opacity=TEST_DATA["opacity"],
-            receiver=TEST_DATA["receiver"],
-            transmitter=TEST_DATA["transmitter"],
-            num_tx=TEST_DATA["num_tx"],
-            num_rx=TEST_DATA["num_rx"],
-            frequency=TEST_DATA["frequency"],
-        )
-        cuda_times.append(time.time() - start_time)
-
-    avg_cuda_time = sum(cuda_times) / len(cuda_times)
-
-    speedup = avg_torch_time / avg_cuda_time if avg_cuda_time > 0 else float("inf")
-
-    print(
-        f"Torch implementation: {avg_torch_time:.6f} seconds (avg of {num_runs} runs)"
-    )
-    print(f"CUDA implementation: {avg_cuda_time:.6f} seconds (avg of {num_runs} runs)")
-    print(f"Speedup: {speedup:.2f}x")
-
-    return avg_torch_time, avg_cuda_time, speedup
-
-
 def main():
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Test rasterize function")
+    parser.add_argument(
+        "--data_path",
+        type=str,
+        default="datasets/outputs/conf_16x2_414u_5.0ghz_sbrRT_sc104.mat",
+        help="Path to the dataset file",
+    )
+    args = parser.parse_args()
+
     if engine.CUDA_AVAILABLE:
         try:
-            load_global_test_data(DATA_PATH)
+            load_global_test_data(args.data_path)
         except Exception as e:
             print(f"Error loading dataset: {e}")
             raise
 
         print("\n--- Testing rasterize function ---")
         test_rasterize()
-
-        print("\n--- Benchmarking rasterize function ---")
-        benchmark_rasterize(num_runs=10)
     else:
-        print("CUDA implementation not available. Skipping tests and benchmarks.")
+        print("CUDA implementation not available. Skipping tests.")
 
 
 if __name__ == "__main__":

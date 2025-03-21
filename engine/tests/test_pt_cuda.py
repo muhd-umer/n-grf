@@ -9,7 +9,6 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-import numpy as np
 import pytest
 import torch
 
@@ -32,11 +31,8 @@ from models.encoder import EncoderConfig
 from models.gaussian_model import GaussianModel
 from utils.transform_utils import symmetric_matrix
 
-torch.manual_seed(2)
-
 TEST_DATA = None
 INTERMEDIATE_VALUES = {}
-DATA_PATH = "datasets/outputs/conf_16x2_414u_5.0ghz_sbrRT_sc104.mat"
 
 
 def load_global_test_data(data_path, batch_size=12_000, device="cuda"):
@@ -101,11 +97,11 @@ def load_global_test_data(data_path, batch_size=12_000, device="cuda"):
 
 
 @pytest.fixture(autouse=True, scope="session")
-def init_test_data():
+def init_test_data(data_path):
     global TEST_DATA
     if CUDA_AVAILABLE:
         try:
-            load_global_test_data(DATA_PATH)
+            load_global_test_data(data_path)
         except Exception as e:
             print(f"Error loading dataset: {e}")
             raise
@@ -347,9 +343,20 @@ def test_alpha_blending():
 
 
 if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Test PyTorch CUDA implementations")
+    parser.add_argument(
+        "--data_path",
+        type=str,
+        default="datasets/outputs/conf_16x2_414u_5.0ghz_sbrRT_sc104.mat",
+        help="Path to the dataset file",
+    )
+    args = parser.parse_args()
+
     if CUDA_AVAILABLE:
         try:
-            load_global_test_data(DATA_PATH)
+            load_global_test_data(args.data_path)
         except Exception as e:
             print(f"Error loading dataset: {e}")
             raise
