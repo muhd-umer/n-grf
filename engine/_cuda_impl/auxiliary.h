@@ -15,19 +15,19 @@
 #define PI 3.14159265358979323846f
 
 // CUDA kernel helpers
-#define CUDA_CHECK(call)                                            \
-    do {                                                            \
-        cudaError_t status = call;                                  \
-        if (status != cudaSuccess) {                                \
-            printf("CUDA error in %s at line %d: %s\n",             \
-                   __FILE__, __LINE__, cudaGetErrorString(status)); \
-            exit(1);                                                \
-        }                                                           \
+#define CUDA_CHECK(call)                                                    \
+    do {                                                                    \
+        cudaError_t status = call;                                          \
+        if (status != cudaSuccess) {                                        \
+            printf("CUDA error in %s at line %d: %s\n", __FILE__, __LINE__, \
+                   cudaGetErrorString(status));                             \
+            exit(1);                                                        \
+        }                                                                   \
     } while (0)
 
 // Convert symmetric 6D vector to full 3x3 matrix
-__host__ __device__ inline void symmetric_to_full(
-    const float* cov_compact, float* cov_full) {
+__host__ __device__ inline void symmetric_to_full(const float* cov_compact,
+                                                  float* cov_full) {
     cov_full[0] = cov_compact[0];  // xx
     cov_full[1] = cov_compact[1];  // xy
     cov_full[2] = cov_compact[2];  // xz
@@ -40,8 +40,9 @@ __host__ __device__ inline void symmetric_to_full(
 }
 
 // Matrix multiplication 3x3 * 3x2 = 3x2
-__host__ __device__ inline void mat_mul_3x3_3x2(
-    const float* mat1, const float* mat2, float* result) {
+__host__ __device__ inline void mat_mul_3x3_3x2(const float* mat1,
+                                                const float* mat2,
+                                                float* result) {
     // mat1: 3x3, mat2: 3x2, result: 3x2
     for (int i = 0; i < 3; i++) {
         for (int j = 0; j < 2; j++) {
@@ -54,8 +55,9 @@ __host__ __device__ inline void mat_mul_3x3_3x2(
 }
 
 // Matrix multiplication 2x3 * 3x2 = 2x2
-__host__ __device__ inline void mat_mul_2x3_3x2(
-    const float* mat1, const float* mat2, float* result) {
+__host__ __device__ inline void mat_mul_2x3_3x2(const float* mat1,
+                                                const float* mat2,
+                                                float* result) {
     // mat1: 2x3, mat2: 3x2, result: 2x2
     for (int i = 0; i < 2; i++) {
         for (int j = 0; j < 2; j++) {
@@ -68,8 +70,8 @@ __host__ __device__ inline void mat_mul_2x3_3x2(
 }
 
 // Invert 2x2 matrix
-__host__ __device__ inline bool invert_2x2(
-    const float* mat, float* inv, float* det) {
+__host__ __device__ inline bool invert_2x2(const float* mat, float* inv,
+                                           float* det) {
     // mat: 2x2, inv: 2x2, det: scalar
     *det = mat[0] * mat[3] - mat[1] * mat[2];
     if (fabs(*det) < 1e-10f) {
@@ -84,9 +86,11 @@ __host__ __device__ inline bool invert_2x2(
 }
 
 // Compute Mahalanobis distance: d^T * inv_cov * d
-__host__ __device__ inline float mahalanobis_distance(
-    const float* inv_cov, const float dx, const float dy) {
-    return inv_cov[0] * dx * dx + 2 * inv_cov[1] * dx * dy + inv_cov[3] * dy * dy;
+__host__ __device__ inline float mahalanobis_distance(const float* inv_cov,
+                                                      const float dx,
+                                                      const float dy) {
+    return inv_cov[0] * dx * dx + 2 * inv_cov[1] * dx * dy +
+           inv_cov[3] * dy * dy;
 }
 
 #endif  // ENGINE_CUDA_AUXILIARY_H
