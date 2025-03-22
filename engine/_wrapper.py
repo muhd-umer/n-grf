@@ -138,22 +138,25 @@ class RasterizeFunction(Function):
 
 def rasterize(
     points,
-    cov3d,
-    attenuation,
-    phase_rotation,
-    opacity,
-    receiver,
-    transmitter,
-    num_tx,
-    num_rx,
-    frequency,
+    cov3d=None,
+    attenuation=None,
+    phase_rotation=None,
+    opacity=None,
+    receiver=None,
+    transmitter=None,
+    num_tx=None,
+    num_rx=None,
+    frequency=None,
+    scaling=None,
+    rotation=None,
+    scale_modifier=1.0,
 ):
     """
     Rasterize the channel matrix for a specific receiver position
 
     Args:
         points: Gaussian centers [N, 3]
-        cov3d: 3D covariance matrices in compact form [N, 6]
+        cov3d: 3D covariance matrices in compact form [N, 6]. If None, computed from scaling and rotation using CUDA.
         attenuation: Learned attenuation amplitude from neural network [N, 1]
         phase_rotation: Learned phase rotation from neural network [N, 1]
         opacity: Opacity of each Gaussian [N, 1]
@@ -162,11 +165,28 @@ def rasterize(
         num_tx: Number of transmit antennas
         num_rx: Number of receive antennas
         frequency: Signal frequency in Hz
+        scaling: Scaling factors for each Gaussian [N, 3]. Required if cov3d is None.
+        rotation: Rotation quaternions for each Gaussian [N, 4]. Required if cov3d is None.
+        scale_modifier: Global scaling factor modifier. Used if cov3d is None.
 
     Returns:
         Channel matrix of shape [num_tx, 2*num_rx] with real and imaginary parts
         concatenated
     """
+    if cov3d is None:
+        assert (
+            CUDA_AVAILABLE
+        ), "CUDA implementation required for computing covariance in the forward pass"
+        assert (
+            scaling is not None and rotation is not None
+        ), "Scaling and rotation must be provided when cov3d is None"
+
+        cov3d = _C.compute_cov3d_from_scaling_rotation(
+            scaling,
+            rotation,
+            scale_modifier,
+        )
+
     return RasterizeFunction.apply(
         points,
         cov3d,

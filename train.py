@@ -9,8 +9,9 @@ import torch
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
-import engine
 from datasets.dataloader import get_dataloaders
+from engine import _torch_impl as torch_impl
+from engine import rasterize
 from models.encoder import EncoderConfig
 from models.gaussian_model import GaussianModel
 from models.loss import (
@@ -160,7 +161,7 @@ def parse_args():
     parser.add_argument(
         "--log_freq",
         type=int,
-        default=1,
+        default=50,
         help="Log metrics every N iterations",
     )
     parser.add_argument(
@@ -178,6 +179,16 @@ def parse_args():
     )
     parser.add_argument(
         "--clip_value", type=float, default=1.0, help="Value for gradient clipping"
+    )
+    parser.add_argument(
+        "--disable_cuda",
+        action="store_true",
+        help="Disable CUDA implementation and use PyTorch fallback for rasterization",
+    )
+    parser.add_argument(
+        "--cuda_cov3d",
+        action="store_true",
+        help="Compute covariance matrices using CUDA in the forward pass",
     )
     parser.add_argument("--seed", type=int, default=17, help="Random seed")
     parser.add_argument("--device", type=str, default="cuda", help="Device to use")
@@ -197,6 +208,52 @@ def parse_args():
 
     args = parser.parse_args()
     return args
+
+
+def rasterize_channel(
+    model, rx_position, tx_position, num_tx_ant, num_rx_ant, frequency, args
+):
+    """Helper function to rasterize the channel based on command-line arguments"""
+    if args.disable_cuda:
+        return torch_impl.rasterize(
+            points=model.get_xyz,
+            cov3d=model.get_covariance(),
+            attenuation=model.get_features[:, 0:1],
+            phase_rotation=model.get_features[:, 1:2],
+            opacity=model.get_opacity,
+            receiver=rx_position,
+            transmitter=tx_position,
+            num_tx=num_tx_ant,
+            num_rx=num_rx_ant,
+            frequency=frequency,
+        )
+    else:
+        if args.cuda_cov3d:
+            cov3d = None
+            scaling = model.get_scaling
+            rotation = model.get_rotation
+            scale_modifier = 1.0
+        else:
+            cov3d = model.get_covariance()
+            scaling = None
+            rotation = None
+            scale_modifier = 1.0
+
+        return rasterize(
+            points=model.get_xyz,
+            cov3d=cov3d,
+            attenuation=model.get_features[:, 0:1],
+            phase_rotation=model.get_features[:, 1:2],
+            opacity=model.get_opacity,
+            receiver=rx_position,
+            transmitter=tx_position,
+            num_tx=num_tx_ant,
+            num_rx=num_rx_ant,
+            frequency=frequency,
+            scaling=scaling,
+            rotation=rotation,
+            scale_modifier=scale_modifier,
+        )
 
 
 def setup_experiment(args):
@@ -232,6 +289,7 @@ def evaluate(
     writer,
     iteration,
     loss_type,
+    args,
 ):
     """Evaluate model on validation set"""
     model.eval()
@@ -254,17 +312,8 @@ def evaluate(
             }
             model.embed_features(enc_data)
 
-            pred_channel = engine.rasterize(
-                points=model.get_xyz,
-                cov3d=model.get_covariance(),
-                attenuation=model.get_features[:, 0:1],
-                phase_rotation=model.get_features[:, 1:2],
-                opacity=model.get_opacity,
-                receiver=rx_position,
-                transmitter=tx_position,
-                num_tx=num_tx_ant,
-                num_rx=num_rx_ant,
-                frequency=frequency,
+            pred_channel = rasterize_channel(
+                model, rx_position, tx_position, num_tx_ant, num_rx_ant, frequency, args
             )
 
             if loss_type == "nmse":
@@ -425,17 +474,8 @@ def train(args, logger, writer, log_dir):
         }
         model.embed_features(enc_data)
 
-        pred_channel = engine.rasterize(
-            points=model.get_xyz,
-            cov3d=model.get_covariance(),
-            attenuation=model.get_features[:, 0:1],
-            phase_rotation=model.get_features[:, 1:2],
-            opacity=model.get_opacity,
-            receiver=rx_position,
-            transmitter=tx_position,
-            num_tx=num_tx_ant,
-            num_rx=num_rx_ant,
-            frequency=frequency,
+        pred_channel = rasterize_channel(
+            model, rx_position, tx_position, num_tx_ant, num_rx_ant, frequency, args
         )
 
         if args.loss_type == "nmse":
@@ -504,6 +544,7 @@ def train(args, logger, writer, log_dir):
                 writer,
                 iteration,
                 loss_type=args.loss_type,
+                args=args,
             )
 
             # save best model

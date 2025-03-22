@@ -15,6 +15,7 @@ import torch
 import engine._torch_impl as torch_impl
 from datasets.dataloader import get_dataloaders
 from engine import (
+    _C,
     CUDA_AVAILABLE,
     alpha_blending,
     compute_channel,
@@ -200,6 +201,41 @@ def test_compute_jacobian():
 
 
 @pytest.mark.skipif(not CUDA_AVAILABLE, reason="CUDA implementation not available")
+def test_compute_cov3d_from_scaling_rotation():
+    """Test CUDA implementation of covariance computation against PyTorch"""
+    global TEST_DATA
+
+    scaling = TEST_DATA["points"].new_zeros((TEST_DATA["points"].shape[0], 3)) + 0.1
+    rotation = torch.zeros(
+        (TEST_DATA["points"].shape[0], 4), device=TEST_DATA["points"].device
+    )
+    rotation[:, 0] = 1.0
+    scale_modifier = 1.0
+
+    from utils.transform_utils import build_scaling_rotation, strip_symmetric
+
+    torch_L = build_scaling_rotation(scale_modifier * scaling, rotation)
+    torch_cov = torch.bmm(torch_L, torch_L.transpose(1, 2))
+    torch_cov3d = strip_symmetric(torch_cov)
+
+    cuda_cov3d = _C.compute_cov3d_from_scaling_rotation(
+        scaling, rotation, scale_modifier
+    )
+
+    has_nan_torch = torch.isnan(torch_cov3d).any().item()
+    has_inf_torch = torch.isinf(torch_cov3d).any().item()
+    has_nan_cuda = torch.isnan(cuda_cov3d).any().item()
+    has_inf_cuda = torch.isinf(cuda_cov3d).any().item()
+
+    assert not has_nan_torch, "PyTorch implementation produced NaN values"
+    assert not has_inf_torch, "PyTorch implementation produced Inf values"
+    assert not has_nan_cuda, "CUDA implementation produced NaN values"
+    assert not has_inf_cuda, "CUDA implementation produced Inf values"
+
+    torch.testing.assert_close(torch_cov3d, cuda_cov3d, rtol=1e-4, atol=1e-4)
+
+
+@pytest.mark.skipif(not CUDA_AVAILABLE, reason="CUDA implementation not available")
 def test_project_cov3d_to_cov2d():
     global INTERMEDIATE_VALUES
 
@@ -366,6 +402,7 @@ if __name__ == "__main__":
         test_transform_to_uniform_coords()
         test_map_to_channel_matrix()
         test_compute_jacobian()
+        test_compute_cov3d_from_scaling_rotation()
         test_project_cov3d_to_cov2d()
         test_project_to_channel_space()
         test_compute_gaussian_influence()
