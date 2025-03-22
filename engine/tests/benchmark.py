@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 import numpy as np
 import torch
+from tqdm import tqdm
 
 import engine
 import engine._torch_impl as torch_impl
@@ -22,7 +23,7 @@ from models.encoder import EncoderConfig
 from models.gaussian_model import GaussianModel
 from utils.transform_utils import build_scaling_rotation, strip_symmetric
 
-NUM_RUNS = 10
+NUM_RUNS = 50
 
 TEST_DATA = None
 LOG_PATH = f"{Path(__file__).parent}/benchmark_res.log"
@@ -112,7 +113,7 @@ def benchmark_pytorch_impl():
     scale_modifier = TEST_DATA["scale_modifier"]
 
     times = []
-    for i in range(NUM_RUNS):
+    for _ in tqdm(range(NUM_RUNS), desc="PyTorch Implementation"):
         start = time.time()
 
         L = build_scaling_rotation(scale_modifier * scaling, rotation)
@@ -135,7 +136,6 @@ def benchmark_pytorch_impl():
         torch.cuda.synchronize()
         end = time.time()
         times.append(end - start)
-        print(f"PyTorch run {i+1}/{NUM_RUNS} completed: {times[-1]:.6f}s")
 
     avg_time = np.mean(times)
     std_time = np.std(times)
@@ -158,7 +158,7 @@ def benchmark_cuda_impl():
     scale_modifier = TEST_DATA["scale_modifier"]
 
     times = []
-    for i in range(NUM_RUNS):
+    for _ in tqdm(range(NUM_RUNS), desc="CUDA Implementation"):
         start = time.time()
 
         engine.rasterize(
@@ -180,7 +180,6 @@ def benchmark_cuda_impl():
         torch.cuda.synchronize()
         end = time.time()
         times.append(end - start)
-        print(f"CUDA run {i+1}/{NUM_RUNS} completed: {times[-1]:.6f}s")
 
     avg_time = np.mean(times)
     std_time = np.std(times)
@@ -204,7 +203,7 @@ def benchmark_cuda_parts():
     scale_modifier = TEST_DATA["scale_modifier"]
 
     cov_times = []
-    for i in range(NUM_RUNS):
+    for _ in tqdm(range(NUM_RUNS), desc="CUDA Covariance Computation"):
         torch.cuda.synchronize()
         start = time.time()
 
@@ -221,7 +220,7 @@ def benchmark_cuda_parts():
     rast_times = []
     cov3d = TEST_DATA["cov3d_precomp"]
 
-    for i in range(NUM_RUNS):
+    for _ in tqdm(range(NUM_RUNS), desc="CUDA Rasterization"):
         torch.cuda.synchronize()
         start = time.time()
 
@@ -295,7 +294,7 @@ def benchmark_rasterize():
 def format_results(result):
     """Format benchmark results as a string"""
     lines = []
-    lines.append("Channel Rasterization Benchmark Results:")
+    lines.append("Rasterization Benchmarks:")
     lines.append("-" * 60)
     lines.append(
         f"PyTorch Implementation: {result['torch_avg']:.6f} ± {result['torch_std']:.6f} seconds"
@@ -307,6 +306,7 @@ def format_results(result):
     lines.append(f"Speedup:                {result['speedup']:.2f}x")
 
     lines.append("\nCUDA Implementation Breakdown:")
+    lines.append("-" * 60)
     lines.append(
         f"Covariance Computation: {result['detailed']['cuda_cov_time']:.6f} seconds "
         + f"({result['detailed']['cuda_cov_percent']:.1f}% of total)"
@@ -404,7 +404,7 @@ def main():
             f"Dataset: {args.data_path}",
             f"Device: {torch.cuda.get_device_name(0)}",
             f"PyTorch version: {torch.__version__}",
-            "-" * 80,
+            "-" * 60,
             "",
         ]
 
