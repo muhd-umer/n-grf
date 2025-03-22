@@ -18,7 +18,7 @@ from .encoder import EncoderConfig, FeatureEncoder
 
 
 class GaussianModel(nn.Module):
-    """Gaussian model for wireless channel reconstruction.
+    """Gaussian model for channel reconstruction.
 
     Each Gaussian primitive captures a point in the environment that affects
     wireless signal propagation. The Gaussians are initialized from point clouds

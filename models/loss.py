@@ -5,7 +5,7 @@ import torch.nn.functional as F
 
 
 def nmse_loss(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-    """Normalized Mean Square Error loss for complex wireless channel matrices.
+    """Normalized Mean Square Error loss for complex channel matrices.
 
     Args:
         pred: Predicted channel tensor
@@ -22,7 +22,7 @@ def nmse_loss(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
 
 
 def l1_loss(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-    """L1 loss for wireless channel matrices.
+    """L1 loss for channel matrices.
 
     Args:
         pred: Predicted channel tensor
@@ -37,7 +37,7 @@ def l1_loss(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
 def ssim(
     pred: torch.Tensor, target: torch.Tensor, size_average: bool = True
 ) -> torch.Tensor:
-    """Calculate SSIM (structural similarity) for wireless channel matrices.
+    """Calculate SSIM (structural similarity) for channel matrices.
 
     Args:
         pred: Predicted channel tensor of shape [num_tx, 2*num_rx]
@@ -91,7 +91,7 @@ def ssim(
 def l1_ssim_loss(
     pred: torch.Tensor, target: torch.Tensor, lambda_dssim: float = 0.2
 ) -> torch.Tensor:
-    """Combined L1 and SSIM loss for wireless channel matrices.
+    """Combined L1 and SSIM loss for channel matrices.
 
     Args:
         pred: Predicted channel tensor
@@ -111,7 +111,7 @@ def l1_ssim_loss(
 
 
 def complex_mse_loss(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-    """Complex MSE loss for MIMO wireless channels.
+    """Complex MSE loss for MIMO channels.
 
     This function converts real-valued tensors to complex representation
     and computes MSE in the complex domain. The input tensors are assumed
@@ -165,7 +165,7 @@ def channel_corr_loss(
 def mse_corr_loss(
     pred: torch.Tensor, target: torch.Tensor, lambda_mse=0.5, lambda_corr=0.5
 ) -> torch.Tensor:
-    """Combined channel loss for MIMO wireless channel estimation.
+    """Combined channel loss for MIMO channel estimation.
 
     This loss combines complex MSE and correlation metrics for more
     effective channel estimation. The weighting between MSE and

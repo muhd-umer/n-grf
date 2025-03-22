@@ -12,7 +12,7 @@ from .embedder import get_embedder
 
 @dataclass
 class EncoderConfig:
-    """Configuration for wireless channel encoder
+    """Configuration for encoder
 
     Args:
         hidden_size: Size of hidden layers
@@ -30,7 +30,7 @@ class EncoderConfig:
 
 
 class FeatureEncoder(nn.Module):
-    """Encoder network for wireless channel reconstruction.
+    """Encoder network for channel reconstruction.
 
     Maps environment geometry and wireless properties to features for Gaussian
     splatting, specifically attenuation and phase rotation.

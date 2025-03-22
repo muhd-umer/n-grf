@@ -58,7 +58,7 @@ def compute_channel(
     xyz_rx_distance: torch.Tensor,
     wavelength: float,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    """Compute wireless channel of Gaussians based on wireless physics
+    """Compute channel from features of Gaussians based on physics
 
     Args:
         attenuation: Learned attenuation amplitude from neural network [N, 1]

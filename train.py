@@ -29,7 +29,7 @@ torch.set_float32_matmul_precision("highest")
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Train wireless channel Gaussian model"
+        description="Train Gaussian model for channel reconstruction"
     )
 
     # dataset params

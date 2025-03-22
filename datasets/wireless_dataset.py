@@ -11,7 +11,7 @@ from torch.utils.data import Dataset, random_split
 
 
 class WirelessDataset(Dataset):
-    """A dataset class for wireless channel data.
+    """A dataset class for MIMO channel data.
 
     This dataset handles loading and processing of wireless channel data from
     .mat files, including point cloud, channel matrix, path loss, angles of
