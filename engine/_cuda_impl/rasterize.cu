@@ -1,4 +1,3 @@
-// engine/_cuda_impl/rasterize.cu
 /*
  * Implementation file for CUDA-PyTorch bindings
  */
