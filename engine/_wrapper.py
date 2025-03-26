@@ -50,7 +50,7 @@ class RasterizeFunction(Function):
         ctx.frequency = frequency
 
         if CUDA_AVAILABLE:
-            result = _C.rasterize_forward(
+            outputs = _C.rasterize_forward(
                 points,
                 cov3d,
                 attenuation,
@@ -62,7 +62,7 @@ class RasterizeFunction(Function):
                 num_rx,
                 frequency,
             )
-            return result[0]
+            return outputs[0]  # Return channel matrix
         else:
             return torch_rasterize(
                 points,
@@ -123,11 +123,11 @@ class RasterizeFunction(Function):
             )
 
         return (
-            grad_points,
-            grad_cov3d,
-            grad_attenuation,
-            grad_phase_rotation,
-            grad_opacity,
+            grad_points,  # points
+            grad_cov3d,  # cov3d
+            grad_attenuation,  # attenuation
+            grad_phase_rotation,  # phase_rotation
+            grad_opacity,  # opacity
             None,  # receiver
             None,  # transmitter
             None,  # num_tx
@@ -156,7 +156,7 @@ def rasterize(
 
     Args:
         points: Gaussian centers [N, 3]
-        cov3d: 3D covariance matrices in compact form [N, 6]. If None, computed from scaling and rotation using CUDA.
+        cov3d: 3D covariance matrices in compact form [N, 6]. If None, computed from scaling and rotation.
         attenuation: Learned attenuation amplitude from neural network [N, 1]
         phase_rotation: Learned phase rotation from neural network [N, 1]
         opacity: Opacity of each Gaussian [N, 1]

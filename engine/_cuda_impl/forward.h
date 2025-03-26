@@ -1,6 +1,5 @@
 /*
  * Forward pass header file for channel reconstruction CUDA kernels
- * Contains function declarations for the forward pass operations
  */
 
 #ifndef ENGINE_CUDA_FORWARD_H
@@ -8,7 +7,6 @@
 
 #include <torch/extension.h>
 
-// Transform functions
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor>
 computeSphericalCoordsCUDA(const torch::Tensor &points,
                            const torch::Tensor &receiver);
@@ -39,5 +37,19 @@ projectToChannelSpaceCUDA(const torch::Tensor &points,
                           const torch::Tensor &cov3d,
                           const torch::Tensor &receiver, int num_tx,
                           int num_rx);
+
+torch::Tensor computeGaussianInfluenceCUDA(const torch::Tensor &uv,
+                                           const torch::Tensor &cov2d,
+                                           int num_tx, int num_rx);
+
+std::tuple<torch::Tensor, torch::Tensor> computeChannelCUDA(
+    const torch::Tensor &attenuation, const torch::Tensor &phase_rotation,
+    const torch::Tensor &xyz_rx_distance, float wavelength);
+
+torch::Tensor alphaBlendingCUDA(const torch::Tensor &influences,
+                                const torch::Tensor &contributions,
+                                const torch::Tensor &opacity,
+                                const torch::Tensor &sort_indices, int num_tx,
+                                int num_rx);
 
 #endif  // ENGINE_CUDA_FORWARD_H

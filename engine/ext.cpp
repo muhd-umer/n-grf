@@ -2,6 +2,7 @@
 
 #include <torch/extension.h>
 
+#include "_cuda_impl/backward.h"
 #include "_cuda_impl/forward.h"
 #include "_cuda_impl/rasterize.h"
 
@@ -9,23 +10,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     // Main functions used by the autograd wrapper
     m.def("rasterize_forward", &rasterizeForwardCUDA,
           "Forward pass for channel rasterization");
-    m.def(
-        "rasterize_backward",
-        [](torch::Tensor grad_output, torch::Tensor points, torch::Tensor cov3d,
-           torch::Tensor attenuation, torch::Tensor phase_rotation,
-           torch::Tensor opacity, torch::Tensor receiver,
-           torch::Tensor transmitter, int num_tx, int num_rx, float frequency) {
-            // Return placeholder gradients for now (to be properly implemented)
-            auto grad_points = torch::zeros_like(points);
-            auto grad_cov3d = torch::zeros_like(cov3d);
-            auto grad_attenuation = torch::zeros_like(attenuation);
-            auto grad_phase_rotation = torch::zeros_like(phase_rotation);
-            auto grad_opacity = torch::zeros_like(opacity);
-
-            return std::make_tuple(grad_points, grad_cov3d, grad_attenuation,
-                                   grad_phase_rotation, grad_opacity);
-        },
-        "Backward pass for channel rasterization");
+    m.def("rasterize_backward", &rasterizeBackwardCUDA,
+          "Backward pass for channel rasterization");
 
     // Individual transform functions (for testing)
     m.def("compute_distances_to_receiver", &computeDistancesToReceiverCUDA,
