@@ -59,24 +59,10 @@ def parse_args():
         help="Method to initialize Gaussian points (point_cloud or random)",
     )
     parser.add_argument(
-        "--physics_init",
-        action="store_true",
-        dest="physics_init",
-        default=True,
-        help="Use physics-based initialization for Gaussian features",
-    )
-    parser.add_argument(
         "--no_physics_init",
         action="store_false",
         dest="physics_init",
         help="Disable physics-based initialization",
-    )
-    parser.add_argument(
-        "--use_positional_encoding",
-        action="store_true",
-        dest="use_positional_encoding",
-        default=True,
-        help="Enable positional encoding in the encoder",
     )
     parser.add_argument(
         "--no_positional_encoding",
@@ -512,6 +498,7 @@ def train(args, logger, writer, log_dir):
                 f"Time: {iter_time:.2f}s, "
                 f"Gaussians: {model.get_xyz.shape[0]}"
             )
+            print("pred_channel: ", pred_channel)
 
             if writer is not None:
                 writer.add_scalar("train/loss", loss.item(), iteration)
