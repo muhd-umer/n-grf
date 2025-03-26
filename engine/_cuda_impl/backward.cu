@@ -60,6 +60,8 @@ __global__ void alphaBlendingBackwardKernel(
     // Backward scan through sorted Gaussians
     for (int k = 0; k < N; k++) {
         int idx = sort_indices[k];
+        if (idx < 0 || idx >= N) continue;  // Skip invalid indices
+
         float infl = influences[idx * num_tx * num_rx + i * num_rx + j];
         float effective_opacity = opacity[idx] * infl;
 
@@ -504,11 +506,11 @@ __global__ void computeChannelBackwardKernel(
     // Compute gradient w.r.t. attenuation
     float real_contrib = path_loss * cosf(total_phase);
     float imag_contrib = path_loss * sinf(total_phase);
-    float grad_att = grad_real * real_contrib + grad_imag * imag_contrib;
+    float grad_att = real_contrib * grad_real + imag_contrib * grad_imag;
     atomicAdd(grad_attenuation + idx, grad_att);
 
     // Compute gradient w.r.t. phase rotation
-    float grad_phase = -grad_real * imag_contrib + grad_imag * real_contrib;
+    float grad_phase = -imag_contrib * grad_real + real_contrib * grad_imag;
     atomicAdd(grad_phase_rotation + idx, grad_phase);
 
     // Compute gradient w.r.t. distance
@@ -1100,6 +1102,9 @@ rasterizeBackwardCUDA(const torch::Tensor& grad_output,
          5},
         grad_cov3d_mat.select(1, 2).select(1, 2));  // [2,2]
 
+    torch::Tensor grad_opacity_reshaped =
+        grad_opacity.view({grad_opacity.size(0), 1});
+
     return std::make_tuple(grad_points, grad_cov3d_compact, grad_attenuation,
-                           grad_phase_rotation, grad_opacity);
+                           grad_phase_rotation, grad_opacity_reshaped);
 }
