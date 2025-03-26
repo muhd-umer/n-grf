@@ -412,16 +412,11 @@ class GaussianModel(nn.Module):
                 }
             )
 
-        self.optimizer = torch.optim.Adam(
-            param_groups,
-            lr=0.0,
-            fused=True,
-        )
+        self.optimizer = torch.optim.Adam(param_groups, lr=0.0)
         self.encoder_optimizer = torch.optim.Adam(
             self.encoder.parameters(),
             lr=training_args.encoder_lr,
             weight_decay=training_args.weight_decay,
-            fused=True,
         )
 
         from utils.train_utils import get_expon_lr_func
