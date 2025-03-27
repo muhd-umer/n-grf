@@ -329,6 +329,35 @@ def evaluate(
     return avg_loss
 
 
+def compute_grad_stats(model):
+    """Compute statistics about gradients for model parameters."""
+    grad_stats = {
+        "mean_abs": 0.0,
+        "min": float("inf"),
+        "max": float("-inf"),
+        "mean_norm": 0.0,
+        "param_count": 0,
+    }
+
+    total_params = 0
+    for name, param in model.named_parameters():
+        if param.grad is not None:
+            grad_stats["mean_abs"] += param.grad.abs().mean().item() * param.numel()
+            grad_stats["min"] = min(grad_stats["min"], param.grad.min().item())
+            grad_stats["max"] = max(grad_stats["max"], param.grad.max().item())
+            grad_stats["mean_norm"] += param.grad.norm().item()
+            grad_stats["param_count"] += 1
+            total_params += param.numel()
+
+    if total_params > 0:
+        grad_stats["mean_abs"] /= total_params
+
+    if grad_stats["param_count"] > 0:
+        grad_stats["mean_norm"] /= grad_stats["param_count"]
+
+    return grad_stats
+
+
 def train(args, logger, writer, log_dir):
     """Main training loop"""
     device = torch.device(args.device)
@@ -482,6 +511,8 @@ def train(args, logger, writer, log_dir):
 
         loss.backward()
 
+        grad_stats = compute_grad_stats(model)
+
         model.update_learning_rate(iteration)
         model.optimizer.step()
         model.encoder_optimizer.step()
@@ -498,6 +529,12 @@ def train(args, logger, writer, log_dir):
                 f"Time: {iter_time:.2f}s, "
                 f"Gaussians: {model.get_xyz.shape[0]}"
             )
+            logger.info(
+                f"Grad stats: Mean abs: {grad_stats['mean_abs']:.6e}, "
+                f"Min: {grad_stats['min']:.6e}, "
+                f"Max: {grad_stats['max']:.6e}, "
+                f"Mean norm: {grad_stats['mean_norm']:.6e}"
+            )
             print("pred_channel: ", pred_channel)
 
             if writer is not None:
@@ -507,10 +544,10 @@ def train(args, logger, writer, log_dir):
                     "train/num_gaussians", model.get_xyz.shape[0], iteration
                 )
 
-                for i, param_group in enumerate(model.optimizer.param_groups):
-                    writer.add_scalar(
-                        f"lr/{param_group['name']}", param_group["lr"], iteration
-                    )
+                writer.add_scalar("grad/mean_abs", grad_stats["mean_abs"], iteration)
+                writer.add_scalar("grad/min", grad_stats["min"], iteration)
+                writer.add_scalar("grad/max", grad_stats["max"], iteration)
+                writer.add_scalar("grad/mean_norm", grad_stats["mean_norm"], iteration)
 
             progress_bar.set_description(
                 f"Loss: {loss.item():.6f}, Gaussians: {model.get_xyz.shape[0]}"
