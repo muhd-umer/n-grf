@@ -10,8 +10,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     // Bindings for rasterize_forward and rasterize_backward
     m.def("rasterize_forward", &rasterizeForwardCUDA,
           "Forward pass for channel rasterization");
-//     m.def("rasterize_backward", &rasterizeBackwardCUDA,
-//           "Backward pass for channel rasterization");
+    m.def("rasterize_backward", &rasterizeBackwardCUDA,
+          "Backward pass for channel rasterization");
 
     // Individual transform functions
     m.def("compute_distances_to_receiver", &computeDistancesToReceiverCUDA,

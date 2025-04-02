@@ -85,11 +85,11 @@ class RasterizeFunction(Function):
 
         (
             grad_points,
-            grad_scaling,
-            grad_rotation,
             grad_attenuation,
             grad_phase_rotation,
             grad_opacity,
+            grad_scaling,
+            grad_rotation,
         ) = _C.rasterize_backward(
             grad_output,
             points,
