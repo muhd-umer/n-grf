@@ -133,7 +133,7 @@ torch::Tensor computeGaussianInfluenceCUDA(const torch::Tensor& uv,
 
     torch::Tensor influences = torch::empty({N, num_tx, num_rx}, options);
 
-    int threads = 256;
+    int threads = 32;
     int blocks = (N + threads - 1) / threads;
 
     compute_gaussian_influence_kernel<<<blocks, threads>>>(
@@ -160,7 +160,7 @@ std::tuple<torch::Tensor, torch::Tensor> computeChannelCUDA(
     torch::Tensor att_contig = attenuation.contiguous();
     torch::Tensor phase_contig = phase_rotation.contiguous();
 
-    int threads = 256;
+    int threads = 32;
     int blocks = (N + threads - 1) / threads;
 
     compute_channel_kernel<<<blocks, threads>>>(
@@ -197,7 +197,7 @@ torch::Tensor alphaBlendingCUDA(const torch::Tensor& influences,
 
     // Make sure we're not launching too many threads
     if (threads > 1024) {
-        threads = 256;
+        threads = 32;
         blocks = (num_tx * num_rx + threads - 1) / threads;
     }
 
@@ -215,15 +215,20 @@ torch::Tensor alphaBlendingCUDA(const torch::Tensor& influences,
 
 // Main function for rasterizing channel matrix
 std::vector<torch::Tensor> rasterizeForwardCUDA(
-    const torch::Tensor& points, const torch::Tensor& cov3d,
-    const torch::Tensor& attenuation, const torch::Tensor& phase_rotation,
-    const torch::Tensor& opacity, const torch::Tensor& receiver,
-    const torch::Tensor& transmitter, int num_tx, int num_rx, float frequency) {
+    const torch::Tensor& points, const torch::Tensor& scaling,
+    const torch::Tensor& rotation, const torch::Tensor& attenuation,
+    const torch::Tensor& phase_rotation, const torch::Tensor& opacity,
+    const torch::Tensor& receiver, const torch::Tensor& transmitter, int num_tx,
+    int num_rx, float frequency, float scale_modifier) {
     const at::cuda::CUDAGuard device_guard(points.device());
 
     // Constants
     float c = 299792458.0f;
     float wavelength = c / frequency;
+
+    // Compute covariance matrix from scaling and rotation
+    torch::Tensor cov3d =
+        computeCov3dFromScalingRotationCUDA(scaling, rotation, scale_modifier);
 
     // Step 1: Project to channel space
     auto [distances, uv, cov2d] =

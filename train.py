@@ -167,14 +167,15 @@ def parse_args():
         "--clip_value", type=float, default=1.0, help="Value for gradient clipping"
     )
     parser.add_argument(
+        "--scale_modifier",
+        type=float,
+        default=1.0,
+        help="Scale modifier for Gaussian scaling",
+    )
+    parser.add_argument(
         "--disable_cuda",
         action="store_true",
         help="Disable CUDA implementation and use PyTorch fallback for rasterization",
-    )
-    parser.add_argument(
-        "--cuda_cov3d",
-        action="store_true",
-        help="Compute covariance matrices using CUDA in the forward pass",
     )
     parser.add_argument("--seed", type=int, default=17, help="Random seed")
     parser.add_argument("--device", type=str, default="cuda", help="Device to use")
@@ -214,20 +215,12 @@ def rasterize_channel(
             frequency=frequency,
         )
     else:
-        if args.cuda_cov3d:
-            cov3d = None
-            scaling = model.get_scaling
-            rotation = model.get_rotation
-            scale_modifier = 1.0
-        else:
-            cov3d = model.get_covariance()
-            scaling = None
-            rotation = None
-            scale_modifier = 1.0
+        scaling = model.get_scaling
+        rotation = model.get_rotation
+        scale_modifier = args.scale_modifier
 
         return rasterize(
             points=model.get_xyz,
-            cov3d=cov3d,
             attenuation=model.get_features[:, 0:1],
             phase_rotation=model.get_features[:, 1:2],
             opacity=model.get_opacity,

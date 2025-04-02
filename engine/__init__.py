@@ -36,7 +36,6 @@ if CUDA_AVAILABLE:
             map_to_channel_matrix,
             project_cov3d_to_cov2d,
             project_to_channel_space,
-            rasterize_backward,
             transform_to_uniform_coords,
         )
 
@@ -52,7 +51,6 @@ if CUDA_AVAILABLE:
                 "project_cov3d_to_cov2d",
                 "project_to_channel_space",
                 "transform_to_uniform_coords",
-                "rasterize_backward",  # testing
             ]
         )
     except (ImportError, AttributeError):

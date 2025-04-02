@@ -232,7 +232,7 @@ torch::Tensor computeDistancesToReceiverCUDA(const torch::Tensor &points,
 
     torch::Tensor distances = torch::empty({N}, options);
 
-    int threads = 256;
+    int threads = 32;
     int blocks = (N + threads - 1) / threads;
 
     compute_distances_kernel<<<blocks, threads>>>(
@@ -255,7 +255,7 @@ computeSphericalCoordsCUDA(const torch::Tensor &points,
     torch::Tensor longitude = torch::empty({N}, options);
     torch::Tensor latitude = torch::empty({N}, options);
 
-    int threads = 256;
+    int threads = 32;
     int blocks = (N + threads - 1) / threads;
 
     compute_spherical_coords_kernel<<<blocks, threads>>>(
@@ -278,7 +278,7 @@ std::tuple<torch::Tensor, torch::Tensor> transformToUniformCoordsCUDA(
     torch::Tensor s_x = torch::empty({N}, options);
     torch::Tensor s_y = torch::empty({N}, options);
 
-    int threads = 256;
+    int threads = 32;
     int blocks = (N + threads - 1) / threads;
 
     transform_to_uniform_coords_kernel<<<blocks, threads>>>(
@@ -301,7 +301,7 @@ torch::Tensor computeCov3dFromScalingRotationCUDA(const torch::Tensor &scaling,
 
     torch::Tensor cov3d = torch::empty({N, 6}, options);
 
-    int threads = 256;
+    int threads = 32;
     int blocks = (N + threads - 1) / threads;
 
     compute_cov3d_from_scaling_rotation_kernel<<<blocks, threads>>>(
@@ -322,7 +322,7 @@ torch::Tensor mapToChannelMatrixCUDA(const torch::Tensor &s_x,
 
     torch::Tensor uv = torch::empty({N, 2}, options);
 
-    int threads = 256;
+    int threads = 32;
     int blocks = (N + threads - 1) / threads;
 
     map_to_channel_matrix_kernel<<<blocks, threads>>>(
@@ -343,7 +343,7 @@ torch::Tensor computeJacobianCUDA(const torch::Tensor &d,
 
     torch::Tensor jacobian = torch::empty({N, 2, 3}, options);
 
-    int threads = 256;
+    int threads = 32;
     int blocks = (N + threads - 1) / threads;
 
     compute_jacobian_kernel<<<blocks, threads>>>(
@@ -364,7 +364,7 @@ torch::Tensor projectCov3dToCov2dCUDA(const torch::Tensor &cov3d_mat,
 
     torch::Tensor cov2d = torch::empty({N, 2, 2}, options);
 
-    int threads = 256;
+    int threads = 32;
     int blocks = (N + threads - 1) / threads;
 
     project_cov3d_to_cov2d_kernel<<<blocks, threads>>>(
@@ -413,7 +413,7 @@ projectToChannelSpaceCUDA(const torch::Tensor &points,
     // Step 6: Convert compact covariance to full matrix
     torch::Tensor cov3d_mat = torch::empty({N, 3, 3}, options);
 
-    int threads = 256;
+    int threads = 32;
     int blocks = (N + threads - 1) / threads;
 
     convert_compact_to_full_kernel<<<blocks, threads>>>(

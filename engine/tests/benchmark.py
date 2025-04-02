@@ -163,7 +163,8 @@ def benchmark_cuda_impl():
 
         engine.rasterize(
             points=TEST_DATA["points"],
-            cov3d=None,
+            scaling=scaling,
+            rotation=rotation,
             attenuation=TEST_DATA["attenuation"],
             phase_rotation=TEST_DATA["phase_rotation"],
             opacity=TEST_DATA["opacity"],
@@ -172,8 +173,6 @@ def benchmark_cuda_impl():
             num_tx=TEST_DATA["num_tx"],
             num_rx=TEST_DATA["num_rx"],
             frequency=TEST_DATA["frequency"],
-            scaling=scaling,
-            rotation=rotation,
             scale_modifier=scale_modifier,
         )
 
@@ -218,7 +217,6 @@ def benchmark_cuda_parts():
     cov_avg = np.mean(cov_times)
 
     rast_times = []
-    cov3d = TEST_DATA["cov3d_precomp"]
 
     for _ in tqdm(range(NUM_RUNS), desc="CUDA Rasterization"):
         torch.cuda.synchronize()
@@ -226,7 +224,8 @@ def benchmark_cuda_parts():
 
         engine.rasterize(
             points=TEST_DATA["points"],
-            cov3d=cov3d,
+            scaling=scaling,
+            rotation=rotation,
             attenuation=TEST_DATA["attenuation"],
             phase_rotation=TEST_DATA["phase_rotation"],
             opacity=TEST_DATA["opacity"],
@@ -235,6 +234,7 @@ def benchmark_cuda_parts():
             num_tx=TEST_DATA["num_tx"],
             num_rx=TEST_DATA["num_rx"],
             frequency=TEST_DATA["frequency"],
+            scale_modifier=scale_modifier,
         )
 
         torch.cuda.synchronize()

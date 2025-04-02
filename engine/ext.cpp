@@ -7,13 +7,13 @@
 #include "_cuda_impl/rasterize.h"
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
-    // Main functions used by the autograd wrapper
+    // Bindings for rasterize_forward and rasterize_backward
     m.def("rasterize_forward", &rasterizeForwardCUDA,
           "Forward pass for channel rasterization");
-    m.def("rasterize_backward", &rasterizeBackwardCUDA,
-          "Backward pass for channel rasterization");
+//     m.def("rasterize_backward", &rasterizeBackwardCUDA,
+//           "Backward pass for channel rasterization");
 
-    // Individual transform functions (for testing)
+    // Individual transform functions
     m.def("compute_distances_to_receiver", &computeDistancesToReceiverCUDA,
           "Compute distances from points to receiver");
     m.def("compute_spherical_coords", &computeSphericalCoordsCUDA,
@@ -32,7 +32,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("project_to_channel_space", &projectToChannelSpaceCUDA,
           "Project to channel space");
 
-    // Individual rasterization functions (for testing)
+    // Individual rasterization functions
     m.def("compute_gaussian_influence", &computeGaussianInfluenceCUDA,
           "Compute Gaussian influence");
     m.def("compute_channel", &computeChannelCUDA,

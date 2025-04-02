@@ -68,6 +68,8 @@ def load_global_test_data(data_path, batch_size=12_000, device="cuda"):
 
     TEST_DATA = {
         "points": model.get_xyz,
+        "scaling": model.get_scaling,
+        "rotation": model.get_rotation,
         "cov3d": model.get_covariance(),
         "attenuation": model.get_features[:, 0:1],
         "phase_rotation": model.get_features[:, 1:2],
@@ -78,6 +80,7 @@ def load_global_test_data(data_path, batch_size=12_000, device="cuda"):
         "num_rx": num_rx_ant,
         "frequency": frequency,
         "wavelength": 299792458.0 / frequency,
+        "scale_modifier": 1.0,
     }
 
     return TEST_DATA
@@ -120,7 +123,8 @@ def test_rasterize():
 
         cuda_result = cuda_rasterize(
             points=TEST_DATA["points"],
-            cov3d=TEST_DATA["cov3d"],
+            scaling=TEST_DATA["scaling"],
+            rotation=TEST_DATA["rotation"],
             attenuation=TEST_DATA["attenuation"],
             phase_rotation=TEST_DATA["phase_rotation"],
             opacity=TEST_DATA["opacity"],
@@ -129,6 +133,7 @@ def test_rasterize():
             num_tx=TEST_DATA["num_tx"],
             num_rx=TEST_DATA["num_rx"],
             frequency=TEST_DATA["frequency"],
+            scale_modifier=TEST_DATA["scale_modifier"],
         )
 
         has_nan = torch.isnan(cuda_result).any().item()
