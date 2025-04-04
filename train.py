@@ -157,16 +157,6 @@ def parse_args():
         help="Reset opacity every N iterations",
     )
     parser.add_argument(
-        "--clip_type",
-        type=str,
-        default="none",
-        choices=["none", "norm", "value"],
-        help="Type of gradient clipping to apply",
-    )
-    parser.add_argument(
-        "--clip_value", type=float, default=1.0, help="Value for gradient clipping"
-    )
-    parser.add_argument(
         "--scale_modifier",
         type=float,
         default=1.0,
@@ -413,33 +403,6 @@ def train(args, logger, writer, log_dir):
         logger.info(f"Initialized model with {args.num_points} random Gaussians")
 
     model.training_setup(args)
-
-    def grad_clipping(model, clip_type, clip_value):
-        if clip_type == "none":
-            return
-
-        logger.info(
-            f"Setting up gradient clipping: {clip_type} with value {clip_value}"
-        )
-
-        def clip_grad_hook(grad):
-            if grad is None:
-                return None
-
-            if clip_type == "value":
-                return torch.clamp(grad, -clip_value, clip_value)
-            elif clip_type == "norm":
-                grad_norm = torch.norm(grad)
-                if grad_norm > clip_value:
-                    return grad * clip_value / grad_norm
-            return grad
-
-        for p in model.parameters():
-            if p.requires_grad:
-                p.register_hook(clip_grad_hook)
-
-    if args.clip_type != "none":
-        grad_clipping(model, args.clip_type, args.clip_value)
 
     # resume from checkpoint if specified
     start_iteration = 0
