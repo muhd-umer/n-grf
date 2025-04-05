@@ -318,7 +318,6 @@ def compute_grad_stats(model):
         "mean_abs": 0.0,
         "min": float("inf"),
         "max": float("-inf"),
-        "mean_norm": 0.0,
         "param_count": 0,
     }
 
@@ -328,15 +327,11 @@ def compute_grad_stats(model):
             grad_stats["mean_abs"] += param.grad.abs().mean().item() * param.numel()
             grad_stats["min"] = min(grad_stats["min"], param.grad.min().item())
             grad_stats["max"] = max(grad_stats["max"], param.grad.max().item())
-            grad_stats["mean_norm"] += param.grad.norm().item()
             grad_stats["param_count"] += 1
             total_params += param.numel()
 
     if total_params > 0:
         grad_stats["mean_abs"] /= total_params
-
-    if grad_stats["param_count"] > 0:
-        grad_stats["mean_norm"] /= grad_stats["param_count"]
 
     return grad_stats
 
@@ -488,8 +483,7 @@ def train(args, logger, writer, log_dir):
             logger.info(
                 f"Grad stats: Mean abs: {grad_stats['mean_abs']:.6e}, "
                 f"Min: {grad_stats['min']:.6e}, "
-                f"Max: {grad_stats['max']:.6e}, "
-                f"Mean norm: {grad_stats['mean_norm']:.6e}"
+                f"Max: {grad_stats['max']:.6e}"
             )
             print("pred_channel: ", pred_channel)
 
@@ -503,7 +497,6 @@ def train(args, logger, writer, log_dir):
                 writer.add_scalar("grad/mean_abs", grad_stats["mean_abs"], iteration)
                 writer.add_scalar("grad/min", grad_stats["min"], iteration)
                 writer.add_scalar("grad/max", grad_stats["max"], iteration)
-                writer.add_scalar("grad/mean_norm", grad_stats["mean_norm"], iteration)
 
             progress_bar.set_description(
                 f"Loss: {loss.item():.6f}, Gaussians: {model.get_xyz.shape[0]}"
