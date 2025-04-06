@@ -1,426 +1,432 @@
-/*
- * Forward pass implementation for channel reconstruction CUDA kernels
- */
+// engine/_cuda_impl/forward.cu
 
-#include <c10/cuda/CUDAGuard.h>
+#include <cooperative_groups.h>
+#include <cooperative_groups/reduce.h>
 #include <cuda.h>
-#include <cuda_runtime.h>
-#include <torch/extension.h>
+
+#include <cub/cub.cuh>
 
 #include "auxiliary.h"
+#include "cuda_runtime.h"
+#include "device_launch_parameters.h"
 #include "forward.h"
+namespace cg = cooperative_groups;
 
-// CUDA kernel for computing distances from points to receiver
-__global__ void compute_distances_kernel(const float *points,
-                                         const float *receiver,
-                                         float *distances, int N) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= N) return;
+// Forward method for converting the input spherical harmonics
+// coefficients of each Gaussian to a simple RGB color.
+__device__ glm::vec3 computeColorFromSH(int idx, int deg, int max_coeffs,
+                                        const glm::vec3* means,
+                                        glm::vec3 campos, const float* dc,
+                                        const float* shs, bool* clamped) {
+    // The implementation is loosely based on code for
+    // "Differentiable Point-Based Radiance Fields for
+    // Efficient View Synthesis" by Zhang et al. (2022)
+    glm::vec3 pos = means[idx];
+    glm::vec3 dir = pos - campos;
+    dir = dir / glm::length(dir);
 
-    float dx = points[idx * 3] - receiver[0];
-    float dy = points[idx * 3 + 1] - receiver[1];
-    float dz = points[idx * 3 + 2] - receiver[2];
+    glm::vec3* direct_color = ((glm::vec3*)dc) + idx;
+    glm::vec3* sh = ((glm::vec3*)shs) + idx * max_coeffs;
+    glm::vec3 result = SH_C0 * direct_color[0];
 
-    distances[idx] = sqrtf(dx * dx + dy * dy + dz * dz);
-}
+    if (deg > 0) {
+        float x = dir.x;
+        float y = dir.y;
+        float z = dir.z;
+        result =
+            result - SH_C1 * y * sh[0] + SH_C1 * z * sh[1] - SH_C1 * x * sh[2];
 
-// CUDA kernel for computing spherical coordinates
-__global__ void compute_spherical_coords_kernel(const float *points,
-                                                const float *receiver,
-                                                float *displacement,
-                                                float *longitude,
-                                                float *latitude, int N) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= N) return;
+        if (deg > 1) {
+            float xx = x * x, yy = y * y, zz = z * z;
+            float xy = x * y, yz = y * z, xz = x * z;
+            result = result + SH_C2[0] * xy * sh[3] + SH_C2[1] * yz * sh[4] +
+                     SH_C2[2] * (2.0f * zz - xx - yy) * sh[5] +
+                     SH_C2[3] * xz * sh[6] + SH_C2[4] * (xx - yy) * sh[7];
 
-    float dx = points[idx * 3] - receiver[0];
-    float dy = points[idx * 3 + 1] - receiver[1];
-    float dz = points[idx * 3 + 2] - receiver[2];
-
-    displacement[idx * 3] = dx;
-    displacement[idx * 3 + 1] = dy;
-    displacement[idx * 3 + 2] = dz;
-
-    float r = sqrtf(dx * dx + dy * dy + dz * dz);
-
-    longitude[idx] = atan2f(dy, dx);
-    latitude[idx] = asinf(fminf(fmaxf(dz / r, -1.0f), 1.0f));
-}
-
-// CUDA kernel for transforming spherical to uniform coordinates
-__global__ void transform_to_uniform_coords_kernel(const float *longitude,
-                                                   const float *latitude,
-                                                   float *s_x, float *s_y,
-                                                   int N) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= N) return;
-
-    s_x[idx] = longitude[idx] / PI;
-    s_y[idx] = 2.0f * latitude[idx] / PI;
-}
-
-// CUDA kernel for computing 3D covariance matrix from scaling and rotation
-__global__ void compute_cov3d_from_scaling_rotation_kernel(
-    const float *scaling, const float *rotation, float *cov3d,
-    float scale_modifier, int N) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= N) return;
-
-    // Create scaling matrix (diagonal matrix with scaling values)
-    float S[9] = {0};
-    S[0] = scale_modifier * scaling[idx * 3];      // S[0][0]
-    S[4] = scale_modifier * scaling[idx * 3 + 1];  // S[1][1]
-    S[8] = scale_modifier * scaling[idx * 3 + 2];  // S[2][2]
-
-    // Extract quaternion
-    float r = rotation[idx * 4];
-    float x = rotation[idx * 4 + 1];
-    float y = rotation[idx * 4 + 2];
-    float z = rotation[idx * 4 + 3];
-
-    // Compute rotation matrix
-    float R[9];
-    R[0] = 1.0f - 2.0f * (y * y + z * z);
-    R[1] = 2.0f * (x * y - r * z);
-    R[2] = 2.0f * (x * z + r * y);
-    R[3] = 2.0f * (x * y + r * z);
-    R[4] = 1.0f - 2.0f * (x * x + z * z);
-    R[5] = 2.0f * (y * z - r * x);
-    R[6] = 2.0f * (x * z - r * y);
-    R[7] = 2.0f * (y * z + r * x);
-    R[8] = 1.0f - 2.0f * (x * x + y * y);
-
-    // Compute product M = R * S
-    float M[9] = {0};
-    for (int i = 0; i < 3; i++) {
-        for (int j = 0; j < 3; j++) {
-            for (int k = 0; k < 3; k++) {
-                M[i * 3 + j] += R[i * 3 + k] * S[k * 3 + j];
+            if (deg > 2) {
+                result = result + SH_C3[0] * y * (3.0f * xx - yy) * sh[8] +
+                         SH_C3[1] * xy * z * sh[9] +
+                         SH_C3[2] * y * (4.0f * zz - xx - yy) * sh[10] +
+                         SH_C3[3] * z * (2.0f * zz - 3.0f * xx - 3.0f * yy) *
+                             sh[11] +
+                         SH_C3[4] * x * (4.0f * zz - xx - yy) * sh[12] +
+                         SH_C3[5] * z * (xx - yy) * sh[13] +
+                         SH_C3[6] * x * (xx - 3.0f * yy) * sh[14];
             }
         }
     }
+    result += 0.5f;
 
-    // Compute covariance matrix Sigma = transpose(M) * M
-    float Sigma[9] = {0};
-    for (int i = 0; i < 3; i++) {
-        for (int j = 0; j < 3; j++) {
-            for (int k = 0; k < 3; k++) {
-                Sigma[i * 3 + j] += M[k * 3 + i] * M[k * 3 + j];
-            }
+    // RGB colors are clamped to positive values. If values are
+    // clamped, we need to keep track of this for the backward pass.
+    clamped[3 * idx + 0] = (result.x < 0);
+    clamped[3 * idx + 1] = (result.y < 0);
+    clamped[3 * idx + 2] = (result.z < 0);
+    return glm::max(result, 0.0f);
+}
+
+// Forward version of 2D covariance matrix computation
+__device__ float3 computeCov2D(const float3& mean, float focal_x, float focal_y,
+                               float tan_fovx, float tan_fovy,
+                               const float* cov3D, const float* viewmatrix) {
+    // The following models the steps outlined by equations 29
+    // and 31 in "EWA Splatting" (Zwicker et al., 2002).
+    // Additionally considers aspect / scaling of viewport.
+    // Transposes used to account for row-/column-major conventions.
+    float3 t = transformPoint4x3(mean, viewmatrix);
+
+    const float limx = 1.3f * tan_fovx;
+    const float limy = 1.3f * tan_fovy;
+    const float txtz = t.x / t.z;
+    const float tytz = t.y / t.z;
+    t.x = min(limx, max(-limx, txtz)) * t.z;
+    t.y = min(limy, max(-limy, tytz)) * t.z;
+
+    glm::mat3 J =
+        glm::mat3(focal_x / t.z, 0.0f, -(focal_x * t.x) / (t.z * t.z), 0.0f,
+                  focal_y / t.z, -(focal_y * t.y) / (t.z * t.z), 0, 0, 0);
+
+    glm::mat3 W = glm::mat3(viewmatrix[0], viewmatrix[4], viewmatrix[8],
+                            viewmatrix[1], viewmatrix[5], viewmatrix[9],
+                            viewmatrix[2], viewmatrix[6], viewmatrix[10]);
+
+    glm::mat3 T = W * J;
+
+    glm::mat3 Vrk = glm::mat3(cov3D[0], cov3D[1], cov3D[2], cov3D[1], cov3D[3],
+                              cov3D[4], cov3D[2], cov3D[4], cov3D[5]);
+
+    glm::mat3 cov = glm::transpose(T) * glm::transpose(Vrk) * T;
+
+    return {float(cov[0][0]), float(cov[0][1]), float(cov[1][1])};
+}
+
+// Forward method for converting scale and rotation properties of each
+// Gaussian to a 3D covariance matrix in world space. Also takes care
+// of quaternion normalization.
+__device__ void computeCov3D(const glm::vec3 scale, float mod,
+                             const glm::vec4 rot, float* cov3D) {
+    // Create scaling matrix
+    glm::mat3 S = glm::mat3(1.0f);
+    S[0][0] = mod * scale.x;
+    S[1][1] = mod * scale.y;
+    S[2][2] = mod * scale.z;
+
+    // Normalize quaternion to get valid rotation
+    glm::vec4 q = rot;  // / glm::length(rot);
+    float r = q.x;
+    float x = q.y;
+    float y = q.z;
+    float z = q.w;
+
+    // Compute rotation matrix from quaternion
+    glm::mat3 R = glm::mat3(1.f - 2.f * (y * y + z * z), 2.f * (x * y - r * z),
+                            2.f * (x * z + r * y), 2.f * (x * y + r * z),
+                            1.f - 2.f * (x * x + z * z), 2.f * (y * z - r * x),
+                            2.f * (x * z - r * y), 2.f * (y * z + r * x),
+                            1.f - 2.f * (x * x + y * y));
+
+    glm::mat3 M = S * R;
+
+    // Compute 3D world covariance matrix Sigma
+    glm::mat3 Sigma = glm::transpose(M) * M;
+
+    // Covariance is symmetric, only store upper right
+    cov3D[0] = Sigma[0][0];
+    cov3D[1] = Sigma[0][1];
+    cov3D[2] = Sigma[0][2];
+    cov3D[3] = Sigma[1][1];
+    cov3D[4] = Sigma[1][2];
+    cov3D[5] = Sigma[2][2];
+}
+
+// Perform initial steps for each Gaussian prior to rasterization.
+template <int C>
+__global__ void preprocessCUDA(
+    int P, int D, int M, const float* orig_points, const glm::vec3* scales,
+    const float scale_modifier, const glm::vec4* rotations,
+    const float* opacities, const float* dc, const float* shs, bool* clamped,
+    const float* cov3D_precomp, const float* colors_precomp,
+    const float* viewmatrix, const float* projmatrix, const glm::vec3* cam_pos,
+    const int W, int H, const float tan_fovx, float tan_fovy,
+    const float focal_x, float focal_y, int* radii, float2* points_xy_image,
+    float* depths, float* cov3Ds, float* rgb, float4* conic_opacity,
+    const dim3 grid, uint32_t* tiles_touched, bool prefiltered,
+    bool antialiasing) {
+    auto idx = cg::this_grid().thread_rank();
+    if (idx >= P) return;
+
+    // Initialize radius and touched tiles to 0. If this isn't changed,
+    // this Gaussian will not be processed further.
+    radii[idx] = 0;
+    tiles_touched[idx] = 0;
+
+    // Perform near culling, quit if outside.
+    float3 p_view;
+    if (!in_frustum(idx, orig_points, viewmatrix, projmatrix, prefiltered,
+                    p_view))
+        return;
+
+    // Transform point by projecting
+    float3 p_orig = {orig_points[3 * idx], orig_points[3 * idx + 1],
+                     orig_points[3 * idx + 2]};
+    float4 p_hom = transformPoint4x4(p_orig, projmatrix);
+    float p_w = 1.0f / (p_hom.w + 0.0000001f);
+    float3 p_proj = {p_hom.x * p_w, p_hom.y * p_w, p_hom.z * p_w};
+
+    // If 3D covariance matrix is precomputed, use it, otherwise compute
+    // from scaling and rotation parameters.
+    const float* cov3D;
+    if (cov3D_precomp != nullptr) {
+        cov3D = cov3D_precomp + idx * 6;
+    } else {
+        computeCov3D(scales[idx], scale_modifier, rotations[idx],
+                     cov3Ds + idx * 6);
+        cov3D = cov3Ds + idx * 6;
+    }
+
+    // Compute 2D screen-space covariance matrix
+    float3 cov = computeCov2D(p_orig, focal_x, focal_y, tan_fovx, tan_fovy,
+                              cov3D, viewmatrix);
+
+    constexpr float h_var = 0.3f;
+    const float det_cov = cov.x * cov.z - cov.y * cov.y;
+    cov.x += h_var;
+    cov.z += h_var;
+    const float det_cov_plus_h_cov = cov.x * cov.z - cov.y * cov.y;
+    float h_convolution_scaling = 1.0f;
+
+    if (antialiasing)
+        h_convolution_scaling = sqrt(
+            max(0.000025f,
+                det_cov / det_cov_plus_h_cov));  // max for numerical stability
+
+    // Invert covariance (EWA algorithm)
+    const float det = det_cov_plus_h_cov;
+
+    if (det == 0.0f) return;
+    float det_inv = 1.f / det;
+    float3 conic = {cov.z * det_inv, -cov.y * det_inv, cov.x * det_inv};
+
+    // Compute extent in screen space (by finding eigenvalues of
+    // 2D covariance matrix). Use extent to compute a bounding rectangle
+    // of screen-space tiles that this Gaussian overlaps with. Quit if
+    // rectangle covers 0 tiles.
+    float mid = 0.5f * (cov.x + cov.z);
+    float lambda1 = mid + sqrt(max(0.1f, mid * mid - det));
+    float lambda2 = mid - sqrt(max(0.1f, mid * mid - det));
+    float my_radius = ceil(3.f * sqrt(max(lambda1, lambda2)));
+    float2 point_image = {ndc2Pix(p_proj.x, W), ndc2Pix(p_proj.y, H)};
+    uint2 rect_min, rect_max;
+    getRect(point_image, my_radius, rect_min, rect_max, grid);
+    if ((rect_max.x - rect_min.x) * (rect_max.y - rect_min.y) == 0) return;
+
+    // If colors have been precomputed, use them, otherwise convert
+    // spherical harmonics coefficients to RGB color.
+    if (colors_precomp == nullptr) {
+        glm::vec3 result = computeColorFromSH(
+            idx, D, M, (glm::vec3*)orig_points, *cam_pos, dc, shs, clamped);
+        rgb[idx * C + 0] = result.x;
+        rgb[idx * C + 1] = result.y;
+        rgb[idx * C + 2] = result.z;
+    }
+
+    // Store some useful helper data for the next steps.
+    depths[idx] = p_view.z;
+    radii[idx] = my_radius;
+    points_xy_image[idx] = point_image;
+
+    // Inverse 2D covariance and opacity neatly pack into one float4
+    float opacity = opacities[idx];
+
+    conic_opacity[idx] = {conic.x, conic.y, conic.z,
+                          opacity * h_convolution_scaling};
+
+    tiles_touched[idx] = (rect_max.y - rect_min.y) * (rect_max.x - rect_min.x);
+}
+
+// Main rasterization method. Collaboratively works on one tile per
+// block, each thread treats one pixel. Alternates between fetching
+// and rasterizing data.
+template <uint32_t CHANNELS>
+__global__ void __launch_bounds__(BLOCK_X* BLOCK_Y) renderCUDA(
+    const uint2* __restrict__ ranges, const uint32_t* __restrict__ point_list,
+    const uint32_t* __restrict__ per_tile_bucket_offset,
+    uint32_t* __restrict__ bucket_to_tile, float* __restrict__ sampled_T,
+    float* __restrict__ sampled_ar, float* __restrict__ sampled_ard, int W,
+    int H, const float2* __restrict__ points_xy_image,
+    const float* __restrict__ features,
+    const float4* __restrict__ conic_opacity, float* __restrict__ final_T,
+    uint32_t* __restrict__ n_contrib, uint32_t* __restrict__ max_contrib,
+    const float* __restrict__ bg_color, float* __restrict__ out_color,
+    const float* __restrict__ depths, float* __restrict__ invdepth) {
+    // Identify current tile and associated min/max pixel range.
+    auto block = cg::this_thread_block();
+    uint32_t horizontal_blocks = (W + BLOCK_X - 1) / BLOCK_X;
+    uint2 pix_min = {block.group_index().x * BLOCK_X,
+                     block.group_index().y * BLOCK_Y};
+    uint2 pix_max = {min(pix_min.x + BLOCK_X, W), min(pix_min.y + BLOCK_Y, H)};
+    uint2 pix = {pix_min.x + block.thread_index().x,
+                 pix_min.y + block.thread_index().y};
+    uint32_t pix_id = W * pix.y + pix.x;
+    float2 pixf = {(float)pix.x, (float)pix.y};
+
+    // Check if this thread is associated with a valid pixel or outside.
+    bool inside = pix.x < W && pix.y < H;
+    // Done threads can help with fetching, but don't rasterize
+    bool done = !inside;
+
+    // Load start/end range of IDs to process in bit sorted list.
+    uint32_t tile_id =
+        block.group_index().y * horizontal_blocks + block.group_index().x;
+    uint2 range = ranges[tile_id];
+    const int rounds = ((range.y - range.x + BLOCK_SIZE - 1) / BLOCK_SIZE);
+    int toDo = range.y - range.x;
+
+    // what is the number of buckets before me? what is my offset?
+    uint32_t bbm = tile_id == 0 ? 0 : per_tile_bucket_offset[tile_id - 1];
+    // let's first quickly also write the bucket-to-tile mapping
+    int num_buckets = (toDo + 31) / 32;
+    for (int i = 0; i < (num_buckets + BLOCK_SIZE - 1) / BLOCK_SIZE; ++i) {
+        int bucket_idx = i * BLOCK_SIZE + block.thread_rank();
+        if (bucket_idx < num_buckets) {
+            bucket_to_tile[bbm + bucket_idx] = tile_id;
         }
     }
 
-    // Store only the upper triangular part (since it's symmetric)
-    cov3d[idx * 6] = Sigma[0];      // [0, 0]
-    cov3d[idx * 6 + 1] = Sigma[1];  // [0, 1]
-    cov3d[idx * 6 + 2] = Sigma[2];  // [0, 2]
-    cov3d[idx * 6 + 3] = Sigma[4];  // [1, 1]
-    cov3d[idx * 6 + 4] = Sigma[5];  // [1, 2]
-    cov3d[idx * 6 + 5] = Sigma[8];  // [2, 2]
-}
+    // Allocate storage for batches of collectively fetched data.
+    __shared__ int collected_id[BLOCK_SIZE];
+    __shared__ float2 collected_xy[BLOCK_SIZE];
+    __shared__ float4 collected_conic_opacity[BLOCK_SIZE];
 
-// CUDA kernel for mapping uniform coords to channel matrix
-__global__ void map_to_channel_matrix_kernel(const float *s_x, const float *s_y,
-                                             float *uv, int num_tx, int num_rx,
-                                             int N) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= N) return;
+    // Initialize helper variables
+    float T = 1.0f;
+    uint32_t contributor = 0;
+    uint32_t last_contributor = 0;
+    float C[CHANNELS] = {0};
+    float expected_invdepth = 0.0f;
 
-    float u = ((s_x[idx] + 1.0f) / 2.0f) * (num_tx - 1) + 0.5f;
-    float v = ((s_y[idx] + 1.0f) / 2.0f) * (num_rx - 1) + 0.5f;
+    // Iterate over batches until all done or range is complete
+    for (int i = 0; i < rounds; i++, toDo -= BLOCK_SIZE) {
+        // End if entire block votes that it is done rasterizing
+        int num_done = __syncthreads_count(done);
+        if (num_done == BLOCK_SIZE) break;
 
-    uv[idx * 2] = u;
-    uv[idx * 2 + 1] = v;
-}
+        // Collectively fetch per-Gaussian data from global to shared
+        int progress = i * BLOCK_SIZE + block.thread_rank();
+        if (range.x + progress < range.y) {
+            int coll_id = point_list[range.x + progress];
+            collected_id[block.thread_rank()] = coll_id;
+            collected_xy[block.thread_rank()] = points_xy_image[coll_id];
+            collected_conic_opacity[block.thread_rank()] =
+                conic_opacity[coll_id];
+        }
+        block.sync();
 
-// CUDA kernel for computing Jacobian matrices
-__global__ void compute_jacobian_kernel(const float *d, const float *r,
-                                        float *jacobian, int num_tx, int num_rx,
-                                        int N) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= N) return;
-
-    float x = d[idx * 3];
-    float y = d[idx * 3 + 1];
-    float z = d[idx * 3 + 2];
-    float r_val = r[idx];
-
-    float xy_squared = x * x + y * y;
-    xy_squared = fmaxf(xy_squared, 1e-10f);
-
-    float cos_lat = sqrtf(1.0f - (z / r_val) * (z / r_val));
-    cos_lat = fmaxf(cos_lat, 1e-10f);
-
-    float tx_factor = float(num_tx - 1) / (2.0f * PI);
-    float rx_factor = float(num_rx - 1) / PI;
-
-    // J[0,0]: du/dx
-    jacobian[idx * 6] = tx_factor * (-y / xy_squared);
-
-    // J[0,1]: du/dy
-    jacobian[idx * 6 + 1] = tx_factor * (x / xy_squared);
-
-    // J[0,2]: du/dz
-    jacobian[idx * 6 + 2] = 0.0f;
-
-    float r_cos_lat_xy = r_val * cos_lat * xy_squared;
-    r_cos_lat_xy = fmaxf(r_cos_lat_xy, 1e-10f);
-
-    // J[1,0]: dv/dx
-    jacobian[idx * 6 + 3] = rx_factor * (z * x) / r_cos_lat_xy;
-
-    // J[1,1]: dv/dy
-    jacobian[idx * 6 + 4] = rx_factor * (z * y) / r_cos_lat_xy;
-
-    // J[1,2]: dv/dz
-    jacobian[idx * 6 + 5] = rx_factor / (r_val * cos_lat);
-}
-
-// CUDA kernel for projecting 3D covariance to 2D
-__global__ void project_cov3d_to_cov2d_kernel(const float *cov3d_mat,
-                                              const float *jacobian,
-                                              float *cov2d, int N) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= N) return;
-
-    // Extract 3x3 covariance matrix for this Gaussian
-    float cov3d[9];
-    for (int i = 0; i < 9; i++) {
-        cov3d[i] = cov3d_mat[idx * 9 + i];
-    }
-
-    // Extract 2x3 Jacobian for this Gaussian
-    float J[6];
-    for (int i = 0; i < 6; i++) {
-        J[i] = jacobian[idx * 6 + i];
-    }
-
-    // Compute intermediate product: temp = cov3d * J^T
-    float temp[6];  // 3x2 matrix
-    for (int i = 0; i < 3; i++) {
-        for (int j = 0; j < 2; j++) {
-            temp[i * 2 + j] = 0.0f;
-            for (int k = 0; k < 3; k++) {
-                temp[i * 2 + j] += cov3d[i * 3 + k] * J[j * 3 + k];
+        // Iterate over current batch
+        for (int j = 0; !done && j < min(BLOCK_SIZE, toDo); j++) {
+            // add incoming T value for every 32nd gaussian
+            if (j % 32 == 0) {
+                sampled_T[(bbm * BLOCK_SIZE) + block.thread_rank()] = T;
+                for (int ch = 0; ch < CHANNELS; ++ch) {
+                    sampled_ar[(bbm * BLOCK_SIZE * CHANNELS) + ch * BLOCK_SIZE +
+                               block.thread_rank()] = C[ch];
+                }
+                sampled_ard[(bbm * BLOCK_SIZE) + block.thread_rank()] =
+                    expected_invdepth;
+                ++bbm;
             }
+
+            // Keep track of current position in range
+            contributor++;
+
+            // Resample using conic matrix (cf. "Surface
+            // Splatting" by Zwicker et al., 2001)
+            float2 xy = collected_xy[j];
+            float2 d = {xy.x - pixf.x, xy.y - pixf.y};
+            float4 con_o = collected_conic_opacity[j];
+            float power = -0.5f * (con_o.x * d.x * d.x + con_o.z * d.y * d.y) -
+                          con_o.y * d.x * d.y;
+            if (power > 0.0f) continue;
+
+            // Eq. (2) from 3D Gaussian splatting paper.
+            // Obtain alpha by multiplying with Gaussian opacity
+            // and its exponential falloff from mean.
+            // Avoid numerical instabilities (see paper appendix).
+            float alpha = min(0.99f, con_o.w * exp(power));
+            if (alpha < 1.0f / 255.0f) continue;
+            float test_T = T * (1 - alpha);
+            if (test_T < 0.0001f) {
+                done = true;
+                continue;
+            }
+
+            // Eq. (3) from 3D Gaussian splatting paper.
+            for (int ch = 0; ch < CHANNELS; ch++)
+                C[ch] += features[collected_id[j] * CHANNELS + ch] * alpha * T;
+
+            expected_invdepth += (1.f / depths[collected_id[j]]) * alpha * T;
+
+            T = test_T;
+
+            // Keep track of last range entry to update this
+            // pixel.
+            last_contributor = contributor;
         }
     }
 
-    // Compute final product: cov2d = J * temp
-    for (int i = 0; i < 2; i++) {
-        for (int j = 0; j < 2; j++) {
-            float sum = 0.0f;
-            for (int k = 0; k < 3; k++) {
-                sum += J[i * 3 + k] * temp[k * 2 + j];
-            }
-            cov2d[idx * 4 + i * 2 + j] = sum;
-        }
+    // All threads that treat valid pixel write out their final
+    // rendering data to the frame and auxiliary buffers.
+    if (inside) {
+        final_T[pix_id] = T;
+        n_contrib[pix_id] = last_contributor;
+        for (int ch = 0; ch < CHANNELS; ch++)
+            out_color[ch * H * W + pix_id] = C[ch] + T * bg_color[ch];
+        invdepth[pix_id] = expected_invdepth;
     }
 
-    // Add regularization
-    cov2d[idx * 4 + 0] += 0.3f;  // xx
-    cov2d[idx * 4 + 3] += 0.3f;  // yy
+    // max reduce the last contributor
+    typedef cub::BlockReduce<uint32_t, BLOCK_SIZE> BlockReduce;
+    __shared__ typename BlockReduce::TempStorage temp_storage;
+    last_contributor =
+        BlockReduce(temp_storage).Reduce(last_contributor, cub::Max());
+    if (block.thread_rank() == 0) {
+        max_contrib[tile_id] = last_contributor;
+    }
 }
 
-// Wrapper function for computing distances to receiver
-torch::Tensor computeDistancesToReceiverCUDA(const torch::Tensor &points,
-                                             const torch::Tensor &receiver) {
-    int N = points.size(0);
-
-    auto options =
-        torch::TensorOptions().dtype(torch::kFloat32).device(points.device());
-
-    torch::Tensor distances = torch::empty({N}, options);
-
-    int threads = 32;
-    int blocks = (N + threads - 1) / threads;
-
-    compute_distances_kernel<<<blocks, threads>>>(
-        points.data_ptr<float>(), receiver.data_ptr<float>(),
-        distances.data_ptr<float>(), N);
-
-    return distances;
+void FORWARD::render(const dim3 grid, dim3 block, const uint2* ranges,
+                     const uint32_t* point_list,
+                     const uint32_t* per_tile_bucket_offset,
+                     uint32_t* bucket_to_tile, float* sampled_T,
+                     float* sampled_ar, float* sampled_ard, int W, int H,
+                     const float2* means2D, const float* colors,
+                     const float4* conic_opacity, float* final_T,
+                     uint32_t* n_contrib, uint32_t* max_contrib,
+                     const float* bg_color, float* out_color, float* depths,
+                     float* depth) {
+    renderCUDA<NUM_CHANNELS_3DGS><<<grid, block>>>(
+        ranges, point_list, per_tile_bucket_offset, bucket_to_tile, sampled_T,
+        sampled_ar, sampled_ard, W, H, means2D, colors, conic_opacity, final_T,
+        n_contrib, max_contrib, bg_color, out_color, depths, depth);
 }
 
-// Wrapper function for computing spherical coordinates
-std::tuple<torch::Tensor, torch::Tensor, torch::Tensor>
-computeSphericalCoordsCUDA(const torch::Tensor &points,
-                           const torch::Tensor &receiver) {
-    int N = points.size(0);
-
-    auto options =
-        torch::TensorOptions().dtype(torch::kFloat32).device(points.device());
-
-    torch::Tensor displacement = torch::empty({N, 3}, options);
-    torch::Tensor longitude = torch::empty({N}, options);
-    torch::Tensor latitude = torch::empty({N}, options);
-
-    int threads = 32;
-    int blocks = (N + threads - 1) / threads;
-
-    compute_spherical_coords_kernel<<<blocks, threads>>>(
-        points.data_ptr<float>(), receiver.data_ptr<float>(),
-        displacement.data_ptr<float>(), longitude.data_ptr<float>(),
-        latitude.data_ptr<float>(), N);
-
-    return std::make_tuple(displacement, longitude, latitude);
-}
-
-// Wrapper function for transforming spherical to uniform coordinates
-std::tuple<torch::Tensor, torch::Tensor> transformToUniformCoordsCUDA(
-    const torch::Tensor &longitude, const torch::Tensor &latitude) {
-    int N = longitude.size(0);
-
-    auto options = torch::TensorOptions()
-                       .dtype(torch::kFloat32)
-                       .device(longitude.device());
-
-    torch::Tensor s_x = torch::empty({N}, options);
-    torch::Tensor s_y = torch::empty({N}, options);
-
-    int threads = 32;
-    int blocks = (N + threads - 1) / threads;
-
-    transform_to_uniform_coords_kernel<<<blocks, threads>>>(
-        longitude.data_ptr<float>(), latitude.data_ptr<float>(),
-        s_x.data_ptr<float>(), s_y.data_ptr<float>(), N);
-
-    return std::make_tuple(s_x, s_y);
-}
-
-// Wrapper function for computing 3D covariance matrix from scaling and rotation
-torch::Tensor computeCov3dFromScalingRotationCUDA(const torch::Tensor &scaling,
-                                                  const torch::Tensor &rotation,
-                                                  float scale_modifier) {
-    const at::cuda::CUDAGuard device_guard(scaling.device());
-
-    int N = scaling.size(0);
-
-    auto options =
-        torch::TensorOptions().dtype(torch::kFloat32).device(scaling.device());
-
-    torch::Tensor cov3d = torch::empty({N, 6}, options);
-
-    int threads = 32;
-    int blocks = (N + threads - 1) / threads;
-
-    compute_cov3d_from_scaling_rotation_kernel<<<blocks, threads>>>(
-        scaling.data_ptr<float>(), rotation.data_ptr<float>(),
-        cov3d.data_ptr<float>(), scale_modifier, N);
-
-    return cov3d;
-}
-
-// Wrapper function for mapping uniform coords to channel matrix
-torch::Tensor mapToChannelMatrixCUDA(const torch::Tensor &s_x,
-                                     const torch::Tensor &s_y, int num_tx,
-                                     int num_rx) {
-    int N = s_x.size(0);
-
-    auto options =
-        torch::TensorOptions().dtype(torch::kFloat32).device(s_x.device());
-
-    torch::Tensor uv = torch::empty({N, 2}, options);
-
-    int threads = 32;
-    int blocks = (N + threads - 1) / threads;
-
-    map_to_channel_matrix_kernel<<<blocks, threads>>>(
-        s_x.data_ptr<float>(), s_y.data_ptr<float>(), uv.data_ptr<float>(),
-        num_tx, num_rx, N);
-
-    return uv;
-}
-
-// Wrapper function for computing Jacobian matrices
-torch::Tensor computeJacobianCUDA(const torch::Tensor &d,
-                                  const torch::Tensor &r, int num_tx,
-                                  int num_rx) {
-    int N = d.size(0);
-
-    auto options =
-        torch::TensorOptions().dtype(torch::kFloat32).device(d.device());
-
-    torch::Tensor jacobian = torch::empty({N, 2, 3}, options);
-
-    int threads = 32;
-    int blocks = (N + threads - 1) / threads;
-
-    compute_jacobian_kernel<<<blocks, threads>>>(
-        d.data_ptr<float>(), r.data_ptr<float>(), jacobian.data_ptr<float>(),
-        num_tx, num_rx, N);
-
-    return jacobian;
-}
-
-// Wrapper function for projecting 3D covariance to 2D
-torch::Tensor projectCov3dToCov2dCUDA(const torch::Tensor &cov3d_mat,
-                                      const torch::Tensor &jacobian) {
-    int N = cov3d_mat.size(0);
-
-    auto options = torch::TensorOptions()
-                       .dtype(torch::kFloat32)
-                       .device(cov3d_mat.device());
-
-    torch::Tensor cov2d = torch::empty({N, 2, 2}, options);
-
-    int threads = 32;
-    int blocks = (N + threads - 1) / threads;
-
-    project_cov3d_to_cov2d_kernel<<<blocks, threads>>>(
-        cov3d_mat.data_ptr<float>(), jacobian.data_ptr<float>(),
-        cov2d.data_ptr<float>(), N);
-
-    return cov2d;
-}
-
-// CUDA kernel for converting compact 6D covariance to full 3x3 matrix
-__global__ void convert_compact_to_full_kernel(const float *cov_compact,
-                                               float *cov_full, int N) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= N) return;
-
-    symmetric_to_full(&cov_compact[idx * 6], &cov_full[idx * 9]);
-}
-
-// Wrapper function for projecting to channel space
-std::tuple<torch::Tensor, torch::Tensor, torch::Tensor>
-projectToChannelSpaceCUDA(const torch::Tensor &points,
-                          const torch::Tensor &cov3d,
-                          const torch::Tensor &receiver, int num_tx,
-                          int num_rx) {
-    int N = points.size(0);
-
-    auto options =
-        torch::TensorOptions().dtype(torch::kFloat32).device(points.device());
-
-    // Step 1: Compute distances
-    torch::Tensor distances = computeDistancesToReceiverCUDA(points, receiver);
-
-    // Step 2: Compute spherical coordinates
-    auto [d, longitude, latitude] =
-        computeSphericalCoordsCUDA(points, receiver);
-
-    // Step 3: Transform to uniform coordinates
-    auto [s_x, s_y] = transformToUniformCoordsCUDA(longitude, latitude);
-
-    // Step 4: Map to channel matrix
-    torch::Tensor uv = mapToChannelMatrixCUDA(s_x, s_y, num_tx, num_rx);
-
-    // Step 5: Compute Jacobian
-    torch::Tensor jacobian = computeJacobianCUDA(d, distances, num_tx, num_rx);
-
-    // Step 6: Convert compact covariance to full matrix
-    torch::Tensor cov3d_mat = torch::empty({N, 3, 3}, options);
-
-    int threads = 32;
-    int blocks = (N + threads - 1) / threads;
-
-    convert_compact_to_full_kernel<<<blocks, threads>>>(
-        cov3d.data_ptr<float>(), cov3d_mat.data_ptr<float>(), N);
-
-    // Step 7: Project 3D covariance to 2D
-    torch::Tensor cov2d = projectCov3dToCov2dCUDA(cov3d_mat, jacobian);
-
-    return std::make_tuple(distances, uv, cov2d);
+void FORWARD::preprocess(int P, int D, int M, const float* means3D,
+                         const glm::vec3* scales, const float scale_modifier,
+                         const glm::vec4* rotations, const float* opacities,
+                         const float* dc, const float* shs, bool* clamped,
+                         const float* cov3D_precomp,
+                         const float* colors_precomp, const float* viewmatrix,
+                         const float* projmatrix, const glm::vec3* cam_pos,
+                         const int W, int H, const float focal_x, float focal_y,
+                         const float tan_fovx, float tan_fovy, int* radii,
+                         float2* means2D, float* depths, float* cov3Ds,
+                         float* rgb, float4* conic_opacity, const dim3 grid,
+                         uint32_t* tiles_touched, bool prefiltered,
+                         bool antialiasing) {
+    preprocessCUDA<NUM_CHANNELS_3DGS><<<(P + 255) / 256, 256>>>(
+        P, D, M, means3D, scales, scale_modifier, rotations, opacities, dc, shs,
+        clamped, cov3D_precomp, colors_precomp, viewmatrix, projmatrix, cam_pos,
+        W, H, tan_fovx, tan_fovy, focal_x, focal_y, radii, means2D, depths,
+        cov3Ds, rgb, conic_opacity, grid, tiles_touched, prefiltered,
+        antialiasing);
 }

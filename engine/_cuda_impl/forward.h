@@ -1,55 +1,39 @@
-/*
- * Forward pass header file for channel reconstruction CUDA kernels
- */
+// engine/_cuda_impl/forward.h
 
-#ifndef ENGINE_CUDA_FORWARD_H
-#define ENGINE_CUDA_FORWARD_H
+#ifndef CUDA_RASTERIZER_FORWARD_H_INCLUDED
+#define CUDA_RASTERIZER_FORWARD_H_INCLUDED
 
-#include <torch/extension.h>
+#include <cuda.h>
 
-std::tuple<torch::Tensor, torch::Tensor, torch::Tensor>
-computeSphericalCoordsCUDA(const torch::Tensor &points,
-                           const torch::Tensor &receiver);
+#include "cuda_runtime.h"
+#include "device_launch_parameters.h"
+#define GLM_FORCE_CUDA
+#include <functional>
+#include <glm/glm.hpp>
 
-torch::Tensor computeDistancesToReceiverCUDA(const torch::Tensor &points,
-                                             const torch::Tensor &receiver);
+namespace FORWARD {
+// Perform initial steps for each Gaussian prior to rasterization.
+void preprocess(int P, int D, int M, const float* orig_points,
+                const glm::vec3* scales, const float scale_modifier,
+                const glm::vec4* rotations, const float* opacities,
+                const float* dc, const float* shs, bool* clamped,
+                const float* cov3D_precomp, const float* colors_precomp,
+                const float* viewmatrix, const float* projmatrix,
+                const glm::vec3* cam_pos, const int W, int H,
+                const float focal_x, float focal_y, const float tan_fovx,
+                float tan_fovy, int* radii, float2* points_xy_image,
+                float* depths, float* cov3Ds, float* colors,
+                float4* conic_opacity, const dim3 grid, uint32_t* tiles_touched,
+                bool prefiltered, bool antialiasing);
 
-std::tuple<torch::Tensor, torch::Tensor> transformToUniformCoordsCUDA(
-    const torch::Tensor &longitude, const torch::Tensor &latitude);
+// Main rasterization method.
+void render(const dim3 grid, dim3 block, const uint2* ranges,
+            const uint32_t* point_list, const uint32_t* per_tile_bucket_offset,
+            uint32_t* bucket_to_tile, float* sampled_T, float* sampled_ar,
+            float* sampled_ard, int W, int H, const float2* points_xy_image,
+            const float* features, const float4* conic_opacity, float* final_T,
+            uint32_t* n_contrib, uint32_t* max_contrib, const float* bg_color,
+            float* out_color, float* depths, float* depth);
+}  // namespace FORWARD
 
-torch::Tensor computeCov3dFromScalingRotationCUDA(const torch::Tensor &scaling,
-                                                  const torch::Tensor &rotation,
-                                                  float scale_modifier);
-
-torch::Tensor mapToChannelMatrixCUDA(const torch::Tensor &s_x,
-                                     const torch::Tensor &s_y, int num_tx,
-                                     int num_rx);
-
-torch::Tensor computeJacobianCUDA(const torch::Tensor &d,
-                                  const torch::Tensor &r, int num_tx,
-                                  int num_rx);
-
-torch::Tensor projectCov3dToCov2dCUDA(const torch::Tensor &cov3d_mat,
-                                      const torch::Tensor &jacobian);
-
-std::tuple<torch::Tensor, torch::Tensor, torch::Tensor>
-projectToChannelSpaceCUDA(const torch::Tensor &points,
-                          const torch::Tensor &cov3d,
-                          const torch::Tensor &receiver, int num_tx,
-                          int num_rx);
-
-torch::Tensor computeGaussianInfluenceCUDA(const torch::Tensor &uv,
-                                           const torch::Tensor &cov2d,
-                                           int num_tx, int num_rx);
-
-std::tuple<torch::Tensor, torch::Tensor> computeChannelCUDA(
-    const torch::Tensor &attenuation, const torch::Tensor &phase_rotation,
-    const torch::Tensor &xyz_rx_distance, float wavelength);
-
-torch::Tensor alphaBlendingCUDA(const torch::Tensor &influences,
-                                const torch::Tensor &contributions,
-                                const torch::Tensor &opacity,
-                                const torch::Tensor &sort_indices, int num_tx,
-                                int num_rx);
-
-#endif  // ENGINE_CUDA_FORWARD_H
+#endif

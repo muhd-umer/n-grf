@@ -1,178 +1,262 @@
 # engine/_wrapper.py
 
-from torch.autograd import Function
+from typing import NamedTuple
 
-try:
-    import _C
+import torch
+import torch.nn as nn
 
-    CUDA_AVAILABLE = True
-except ImportError:
-    import warnings
+from . import _C
 
-    warnings.warn(
-        "CUDA implementation not found. Using PyTorch implementation instead. "
-        "Make sure to build the CUDA extension with `pip install -e .` in the engine directory."
+
+def cpu_deep_copy_tuple(input_tuple):
+    copied_tensors = [
+        item.cpu().clone() if isinstance(item, torch.Tensor) else item
+        for item in input_tuple
+    ]
+    return tuple(copied_tensors)
+
+
+def rasterize_gaussians(
+    means3D,
+    means2D,
+    sh,
+    colors_precomp,
+    opacities,
+    scales,
+    rotations,
+    cov3Ds_precomp,
+    raster_settings,
+):
+    return _RasterizeGaussians.apply(
+        means3D,
+        means2D,
+        sh,
+        colors_precomp,
+        opacities,
+        scales,
+        rotations,
+        cov3Ds_precomp,
+        raster_settings,
     )
-    CUDA_AVAILABLE = False
 
 
-class RasterizeFunction(Function):
+class _RasterizeGaussians(torch.autograd.Function):
     @staticmethod
     def forward(
         ctx,
-        points,
-        scaling,
-        rotation,
-        attenuation,
-        phase_rotation,
-        opacity,
-        receiver,
-        transmitter,
-        num_tx,
-        num_rx,
-        frequency,
-        scale_modifier,
+        means3D,
+        means2D,
+        sh,
+        colors_precomp,
+        opacities,
+        scales,
+        rotations,
+        cov3Ds_precomp,
+        raster_settings,
     ):
-        """Forward pass of rasterization using CUDA"""
-        assert CUDA_AVAILABLE, "CUDA implementation required for rasterization"
 
+        # Restructure arguments the way that the C++ lib expects them
+        args = (
+            raster_settings.bg,
+            means3D,
+            colors_precomp,
+            opacities,
+            scales,
+            rotations,
+            raster_settings.scale_modifier,
+            cov3Ds_precomp,
+            raster_settings.viewmatrix,
+            raster_settings.projmatrix,
+            raster_settings.tanfovx,
+            raster_settings.tanfovy,
+            raster_settings.image_height,
+            raster_settings.image_width,
+            sh,
+            raster_settings.sh_degree,
+            raster_settings.campos,
+            raster_settings.prefiltered,
+            raster_settings.antialiasing,
+            raster_settings.debug,
+        )
+
+        # Invoke C++/CUDA rasterizer
+        num_rendered, color, radii, geomBuffer, binningBuffer, imgBuffer, invdepths = (
+            _C.rasterize_gaussians(*args)
+        )
+
+        # Keep relevant tensors for backward
+        ctx.raster_settings = raster_settings
+        ctx.num_rendered = num_rendered
         ctx.save_for_backward(
-            points,
-            scaling,
-            rotation,
-            attenuation,
-            phase_rotation,
-            opacity,
-            receiver,
-            transmitter,
+            colors_precomp,
+            means3D,
+            scales,
+            rotations,
+            cov3Ds_precomp,
+            radii,
+            sh,
+            opacities,
+            geomBuffer,
+            binningBuffer,
+            imgBuffer,
         )
-        ctx.num_tx = num_tx
-        ctx.num_rx = num_rx
-        ctx.frequency = frequency
-        ctx.scale_modifier = scale_modifier
-
-        outputs = _C.rasterize_forward(
-            points,
-            scaling,
-            rotation,
-            attenuation,
-            phase_rotation,
-            opacity,
-            receiver,
-            transmitter,
-            num_tx,
-            num_rx,
-            frequency,
-            scale_modifier,
-        )
-        return outputs[0]
+        return color, radii, invdepths
 
     @staticmethod
-    def backward(ctx, grad_output):
-        """Backward pass of rasterization using CUDA"""
-        assert CUDA_AVAILABLE, "CUDA implementation required for rasterization backward"
+    def backward(ctx, grad_out_color, _, grad_out_depth):
 
+        # Restore necessary values from context
+        num_rendered = ctx.num_rendered
+        raster_settings = ctx.raster_settings
         (
-            points,
-            scaling,
-            rotation,
-            attenuation,
-            phase_rotation,
-            opacity,
-            receiver,
-            transmitter,
+            colors_precomp,
+            means3D,
+            scales,
+            rotations,
+            cov3Ds_precomp,
+            radii,
+            sh,
+            opacities,
+            geomBuffer,
+            binningBuffer,
+            imgBuffer,
         ) = ctx.saved_tensors
 
+        # Restructure args as C++ method expects them
+        args = (
+            raster_settings.bg,
+            means3D,
+            radii,
+            colors_precomp,
+            opacities,
+            scales,
+            rotations,
+            raster_settings.scale_modifier,
+            cov3Ds_precomp,
+            raster_settings.viewmatrix,
+            raster_settings.projmatrix,
+            raster_settings.tanfovx,
+            raster_settings.tanfovy,
+            grad_out_color,
+            grad_out_depth,
+            sh,
+            raster_settings.sh_degree,
+            raster_settings.campos,
+            geomBuffer,
+            num_rendered,
+            binningBuffer,
+            imgBuffer,
+            raster_settings.antialiasing,
+            raster_settings.debug,
+        )
+
+        # Compute gradients for relevant tensors by invoking backward method
         (
-            grad_points,
-            grad_attenuation,
-            grad_phase_rotation,
-            grad_opacity,
-            grad_scaling,
-            grad_rotation,
-        ) = _C.rasterize_backward(
-            grad_output,
-            points,
-            scaling,
-            rotation,
-            attenuation,
-            phase_rotation,
-            opacity,
-            receiver,
-            transmitter,
-            ctx.num_tx,
-            ctx.num_rx,
-            ctx.frequency,
-            ctx.scale_modifier,
+            grad_means2D,
+            grad_colors_precomp,
+            grad_opacities,
+            grad_means3D,
+            grad_cov3Ds_precomp,
+            grad_sh,
+            grad_scales,
+            grad_rotations,
+        ) = _C.rasterize_gaussians_backward(*args)
+
+        grads = (
+            grad_means3D,
+            grad_means2D,
+            grad_sh,
+            grad_colors_precomp,
+            grad_opacities,
+            grad_scales,
+            grad_rotations,
+            grad_cov3Ds_precomp,
+            None,
         )
 
-        return (
-            grad_points,  # points
-            grad_scaling,  # scaling
-            grad_rotation,  # rotation
-            grad_attenuation,  # attenuation
-            grad_phase_rotation,  # phase_rotation
-            grad_opacity,  # opacity
-            None,  # receiver
-            None,  # transmitter
-            None,  # num_tx
-            None,  # num_rx
-            None,  # frequency
-            None,  # scale_modifier
+        return grads
+
+
+class GaussianRasterizationSettings(NamedTuple):
+    image_height: int
+    image_width: int
+    tanfovx: float
+    tanfovy: float
+    bg: torch.Tensor
+    scale_modifier: float
+    viewmatrix: torch.Tensor
+    projmatrix: torch.Tensor
+    sh_degree: int
+    campos: torch.Tensor
+    prefiltered: bool
+    debug: bool
+    antialiasing: bool
+
+
+class GaussianRasterizer(nn.Module):
+    def __init__(self, raster_settings):
+        super().__init__()
+        self.raster_settings = raster_settings
+
+    def markVisible(self, positions):
+        # Mark visible points (based on frustum culling for camera) with a boolean
+        with torch.no_grad():
+            raster_settings = self.raster_settings
+            visible = _C.mark_visible(
+                positions, raster_settings.viewmatrix, raster_settings.projmatrix
+            )
+
+        return visible
+
+    def forward(
+        self,
+        means3D,
+        means2D,
+        opacities,
+        shs=None,
+        colors_precomp=None,
+        scales=None,
+        rotations=None,
+        cov3D_precomp=None,
+    ):
+
+        raster_settings = self.raster_settings
+
+        if (shs is None and colors_precomp is None) or (
+            shs is not None and colors_precomp is not None
+        ):
+            raise Exception(
+                "Please provide excatly one of either SHs or precomputed colors!"
+            )
+
+        if ((scales is None or rotations is None) and cov3D_precomp is None) or (
+            (scales is not None or rotations is not None) and cov3D_precomp is not None
+        ):
+            raise Exception(
+                "Please provide exactly one of either scale/rotation pair or precomputed 3D covariance!"
+            )
+
+        if shs is None:
+            shs = torch.Tensor([])
+        if colors_precomp is None:
+            colors_precomp = torch.Tensor([])
+
+        if scales is None:
+            scales = torch.Tensor([])
+        if rotations is None:
+            rotations = torch.Tensor([])
+        if cov3D_precomp is None:
+            cov3D_precomp = torch.Tensor([])
+
+        # Invoke C++/CUDA rasterization routine
+        return rasterize_gaussians(
+            means3D,
+            means2D,
+            shs,
+            colors_precomp,
+            opacities,
+            scales,
+            rotations,
+            cov3D_precomp,
+            raster_settings,
         )
-
-
-def rasterize(
-    points,
-    scaling=None,
-    rotation=None,
-    attenuation=None,
-    phase_rotation=None,
-    opacity=None,
-    receiver=None,
-    transmitter=None,
-    num_tx=None,
-    num_rx=None,
-    frequency=None,
-    scale_modifier=1.0,
-):
-    """
-    Rasterize the channel matrix for a specific receiver position
-
-    Args:
-        points: Gaussian centers [N, 3]
-        scaling: Scaling factors for each Gaussian [N, 3]
-        rotation: Rotation quaternions for each Gaussian [N, 4]
-        attenuation: Learned attenuation amplitude from neural network [N, 1]
-        phase_rotation: Learned phase rotation from neural network [N, 1]
-        opacity: Opacity of each Gaussian [N, 1]
-        receiver: Receiver position [3]
-        transmitter: Transmitter position [3]
-        num_tx: Number of transmit antennas
-        num_rx: Number of receive antennas
-        frequency: Signal frequency in Hz
-        scale_modifier: Global scaling factor modifier
-
-    Returns:
-        Channel matrix of shape [num_tx, 2*num_rx] with real and imaginary parts
-        concatenated
-    """
-    assert CUDA_AVAILABLE, "CUDA implementation required for rasterization"
-    assert (
-        scaling is not None and rotation is not None
-    ), "Scaling and rotation must be provided"
-
-    return RasterizeFunction.apply(
-        points,
-        scaling,
-        rotation,
-        attenuation,
-        phase_rotation,
-        opacity,
-        receiver,
-        transmitter,
-        num_tx,
-        num_rx,
-        frequency,
-        scale_modifier,
-    )
