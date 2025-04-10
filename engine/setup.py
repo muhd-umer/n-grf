@@ -15,6 +15,10 @@ cuda_sources = [
     os.path.join(root_dir, "ext.cpp"),
 ]
 
+c_flags = ["-O3", "-std=c++17"]
+nvcc_flags = ["-O3", "-std=c++17"]
+
+
 setup(
     name="engine",
     version="0.1.0",
@@ -24,7 +28,8 @@ setup(
             name="_C",
             sources=cuda_sources,
             extra_compile_args={
-                "cxx": ["-O3"],
+                "cxx": c_flags,
+                "nvcc": nvcc_flags,
             },
         )
     ],
