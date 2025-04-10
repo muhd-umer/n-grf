@@ -14,9 +14,7 @@ from engine import _torch_impl as torch_impl
 from engine import rasterize
 from models.encoder import EncoderConfig
 from models.gaussian_model import GaussianModel
-from models.loss import (
-    TODO
-)
+from models.loss import get_loss_function
 from utils.general_utils import set_random_seed
 from utils.train_utils import setup_logging
 
@@ -112,9 +110,15 @@ def parse_args():
     parser.add_argument(
         "--loss_type",
         type=str,
-        default=...,
+        default="log_mse",
         choices=[
-            ...
+            "mse",
+            "l1",
+            "nmse",
+            "log_mse",
+            "charbonnier",
+            "polar_mse",
+            "cosine",
         ],
         help="Loss function to use for training",
     )
@@ -166,6 +170,20 @@ def parse_args():
         type=str,
         default=None,
         help="Path to checkpoint for resuming training",
+    )
+
+    # loss-specific arguments
+    parser.add_argument(
+        "--loss_scale", type=float, default=1e4, help="Scale factor for scaled_mse loss"
+    )
+    parser.add_argument(
+        "--loss_eps", type=float, default=1e-8, help="Epsilon value for loss functions"
+    )
+    parser.add_argument(
+        "--phase_weight",
+        type=float,
+        default=1.0,
+        help="Weight for phase term in polar_mse loss",
     )
 
     # visualization params
@@ -238,7 +256,7 @@ def evaluate(
     logger,
     writer,
     iteration,
-    loss_type,
+    loss_fn,
     args,
 ):
     """Evaluate model on validation set"""
@@ -266,16 +284,13 @@ def evaluate(
                 model, rx_position, tx_position, num_tx_ant, num_rx_ant, frequency, args
             )
 
-            if loss_type == ...
-            else:
-                raise ValueError(f"Unknown loss type: {loss_type}")
-
+            loss = loss_fn(pred_channel, gt_channel)
             total_loss += loss.item()
             num_samples += 1
 
     avg_loss = total_loss / max(num_samples, 1)
 
-    logger.info(f"Evaluation Loss ({loss_type}): {avg_loss:.6f}")
+    logger.info(f"Evaluation Loss ({args.loss_type}): {avg_loss:.6f}")
 
     if writer is not None:
         writer.add_scalar("eval/loss", avg_loss, iteration)
@@ -371,6 +386,14 @@ def train(args, logger, writer, log_dir):
 
     model.training_setup(args)
 
+    loss_kwargs = {
+        "scale": args.loss_scale,
+        "eps": args.loss_eps,
+        "phase_weight": args.phase_weight,
+    }
+    loss_fn = get_loss_function(args.loss_type, **loss_kwargs)
+    logger.info(f"Using {args.loss_type} loss function with params: {loss_kwargs}")
+
     # resume from checkpoint if specified
     start_iteration = 0
     best_val_loss = float("inf")
@@ -416,20 +439,18 @@ def train(args, logger, writer, log_dir):
             model, rx_position, tx_position, num_tx_ant, num_rx_ant, frequency, args
         )
 
-        if args.loss_type == ...
-        else:
-            raise ValueError(f"Unknown loss type: {args.loss_type}")
+        loss = loss_fn(pred_channel, gt_channel)
 
-        model.optimizer.zero_grad()
         model.encoder_optimizer.zero_grad()
+        model.optimizer.zero_grad()
 
         loss.backward()
 
         grad_stats = compute_grad_stats(model)
 
         model.update_learning_rate(iteration)
-        model.optimizer.step()
         model.encoder_optimizer.step()
+        model.optimizer.step()
 
         if iteration % args.opacity_reset_interval == 0:
             model.reset_opacity()
@@ -479,7 +500,7 @@ def train(args, logger, writer, log_dir):
                 logger,
                 writer,
                 iteration,
-                loss_type=args.loss_type,
+                loss_fn=loss_fn,
                 args=args,
             )
 
