@@ -69,13 +69,13 @@ def parse_args():
     parser.add_argument(
         "--position_lr_init",
         type=float,
-        default=0.00016,
+        default=0.0016,
         help="Initial position learning rate",
     )
     parser.add_argument(
         "--position_lr_final",
         type=float,
-        default=0.0000016,
+        default=0.000016,
         help="Final position learning rate",
     )
     parser.add_argument(
