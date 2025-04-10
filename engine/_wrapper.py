@@ -1,3 +1,5 @@
+# engine/_wrapper.py
+
 import torch
 from torch.autograd import Function
 
@@ -30,7 +32,7 @@ class QuaternionToRotation(Function):
         quaternion = ctx.saved_tensors[0]
         grad_quaternion = torch.empty_like(quaternion)
         _C.quaternion_to_rotation_backward_cuda(
-            quaternion, grad_rotation, grad_quaternion
+            quaternion, grad_rotation.contiguous(), grad_quaternion
         )
         return grad_quaternion
 
@@ -51,7 +53,7 @@ class ComputeScalingMatrix(Function):
         scaling = ctx.saved_tensors[0]
         grad_scaling = torch.empty_like(scaling)
         _C.compute_scaling_matrix_backward_cuda(
-            scaling, grad_scaling_matrix, ctx.scale_modifier, grad_scaling
+            scaling, grad_scaling_matrix.contiguous(), ctx.scale_modifier, grad_scaling
         )
         return grad_scaling, None
 
@@ -71,7 +73,7 @@ class MatrixMultiply(Function):
         A, B = ctx.saved_tensors
         grad_A = torch.empty_like(A)
         grad_B = torch.empty_like(B)
-        _C.matrix_multiply_backward_cuda(A, B, grad_C, grad_A, grad_B)
+        _C.matrix_multiply_backward_cuda(A, B, grad_C.contiguous(), grad_A, grad_B)
         return grad_A, grad_B
 
 
@@ -87,7 +89,7 @@ class CovarianceMatrix(Function):
     def backward(ctx, grad_cov3d):
         RS = ctx.saved_tensors[0]
         grad_RS = torch.empty_like(RS)
-        _C.covariance_matrix_backward_cuda(RS, grad_cov3d, grad_RS)
+        _C.covariance_matrix_backward_cuda(RS, grad_cov3d.contiguous(), grad_RS)
         return grad_RS
 
 
@@ -118,9 +120,9 @@ class ProjectToChannelCoords(Function):
             receiver,
             distances,
             displacement,
-            grad_distances,
-            grad_displacement,
-            grad_uv,
+            grad_distances.contiguous(),
+            grad_displacement.contiguous(),
+            grad_uv.contiguous(),
             ctx.num_tx,
             ctx.num_rx,
             grad_points,
@@ -142,7 +144,9 @@ class ComputeJacobian(Function):
     def backward(ctx, grad_J):
         d = ctx.saved_tensors[0]
         grad_d = torch.empty_like(d)
-        _C.compute_jacobian_backward_cuda(d, grad_J, ctx.num_tx, ctx.num_rx, grad_d)
+        _C.compute_jacobian_backward_cuda(
+            d, grad_J.contiguous(), ctx.num_tx, ctx.num_rx, grad_d
+        )
         return grad_d, None, None
 
 
@@ -162,7 +166,7 @@ class ProjectCov3dToCov2d(Function):
         grad_cov3d = torch.empty_like(cov3d)
         grad_jacobian = torch.empty_like(jacobian)
         _C.project_cov3d_to_cov2d_backward_cuda(
-            cov3d, jacobian, grad_cov2d, grad_cov3d, grad_jacobian
+            cov3d, jacobian, grad_cov2d.contiguous(), grad_cov3d, grad_jacobian
         )
         return grad_cov3d, grad_jacobian
 
@@ -188,7 +192,7 @@ class ComputeGaussianInfluence(Function):
             uv,
             cov2d,
             influences,
-            grad_influences,
+            grad_influences.contiguous(),
             ctx.num_tx,
             ctx.num_rx,
             grad_uv,
@@ -212,7 +216,10 @@ class ComputeWirelessChannel(Function):
         )
         ctx.save_for_backward(attenuation, phase_rotation, distances)
         ctx.wavelength = wavelength
-        return real_contributions, imag_contributions
+        return (
+            real_contributions,
+            imag_contributions,
+        )
 
     @staticmethod
     def backward(ctx, grad_real, grad_imag):
@@ -225,8 +232,8 @@ class ComputeWirelessChannel(Function):
             phase_rotation,
             distances,
             ctx.wavelength,
-            grad_real,
-            grad_imag,
+            grad_real.contiguous(),
+            grad_imag.contiguous(),
             grad_attenuation,
             grad_phase_rotation,
             grad_distances,
@@ -249,6 +256,10 @@ class AlphaBlending(Function):
         channel_matrix = torch.empty(
             num_tx, 2 * num_rx, dtype=influences.dtype, device=influences.device
         )
+
+        if sort_indices.dtype != torch.int32:
+            sort_indices = sort_indices.to(dtype=torch.int32)
+
         _C.alpha_blending_cuda(
             influences,
             real_contributions,
@@ -275,13 +286,14 @@ class AlphaBlending(Function):
         grad_real_contributions = torch.empty_like(real_contributions)
         grad_imag_contributions = torch.empty_like(imag_contributions)
         grad_opacity = torch.empty_like(opacity)
+
         _C.alpha_blending_backward_cuda(
             influences,
             real_contributions,
             imag_contributions,
             opacity,
             sort_indices,
-            grad_channel_matrix,
+            grad_channel_matrix.contiguous(),
             ctx.num_tx,
             ctx.num_rx,
             grad_influences,
@@ -343,11 +355,13 @@ def rasterize(
     distances, d, uv = ProjectToChannelCoords.apply(points, receiver, num_tx, num_rx)
     jacobian = ComputeJacobian.apply(d, num_tx, num_rx)
     cov2d = ProjectCov3dToCov2d.apply(cov3d, jacobian)
-    sort_indices = torch.argsort(distances)
+
+    sort_indices = torch.argsort(distances).to(dtype=torch.int32)
+
     influences = ComputeGaussianInfluence.apply(uv, cov2d, num_tx, num_rx)
 
     real_contributions, imag_contributions = ComputeWirelessChannel.apply(
-        attenuation, phase_rotation, distances, wavelength
+        attenuation.contiguous(), phase_rotation.contiguous(), distances, wavelength
     )
 
     cat_channel = AlphaBlending.apply(

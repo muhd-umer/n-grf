@@ -197,6 +197,29 @@ class CovarianceMatrix(Function):
         return grad_RS
 
 
+# %%
+print("Testing covariance computation...")
+scaling = torch.rand(100, 3, requires_grad=True, dtype=torch.float64)
+rotation = torch.rand(100, 4, requires_grad=True, dtype=torch.float64)
+scale_modifier = 1.0
+norm = torch.norm(rotation, dim=1, keepdim=True)
+q_norm = rotation / norm
+
+
+test_scaling = gradcheck(
+    lambda s: ComputeScalingMatrix.apply(s, scale_modifier), (scaling,)
+)
+print(f"ComputeScalingMatrix gradcheck: {test_scaling}")
+
+R = QuaternionToRotation.apply(q_norm)
+S = ComputeScalingMatrix.apply(scaling, scale_modifier)
+test_matrix_multiply = gradcheck(MatrixMultiply.apply, (R, S))
+print(f"MatrixMultiply gradcheck: {test_matrix_multiply}")
+
+RS = MatrixMultiply.apply(R, S)
+test_covariance = gradcheck(CovarianceMatrix.apply, (RS,))
+print(f"CovarianceMatrix gradcheck: {test_covariance}")
+
 # %% [markdown]
 # ## `ProjectToChannelCoordinates`
 #
@@ -331,6 +354,16 @@ class ProjectToChannelCoordinates(Function):
 
         return grad_points, None, None, None
 
+
+# %%
+print("Testing ProjectToChannelCoordinates...")
+points = torch.rand(100, 3, requires_grad=True, dtype=torch.float64)
+receiver = torch.rand(3, requires_grad=False, dtype=torch.float64)
+num_tx = 16
+num_rx = 2
+
+test = gradcheck(ProjectToChannelCoordinates.apply, (points, receiver, num_tx, num_rx))
+print(f"ProjectToChannelCoordinates gradcheck: {test}")
 
 # %% [markdown]
 # ## `ComputeJacobian`
@@ -470,6 +503,15 @@ class ComputeJacobian(Function):
         return grad_d, None, None
 
 
+# %%
+print("Testing ComputeJacobian...")
+N = 10
+num_tx = 16
+num_rx = 2
+d = torch.rand(N, 3, requires_grad=True, dtype=torch.float64)
+test = torch.autograd.gradcheck(ComputeJacobian.apply, (d, num_tx, num_rx))
+print(f"ComputeJacobian gradcheck: {test}")
+
 # %% [markdown]
 # ## `ProjectCov3dToCov2d`
 #
@@ -530,6 +572,17 @@ class ProjectCov3dToCov2d(Function):
 
         return grad_cov3d, grad_J
 
+
+# %%
+print("Testing ProjectCov3dToCov2d...")
+cov3d = torch.rand(100, 3, 3, requires_grad=True, dtype=torch.float64)
+
+# make cov3d symmetric
+cov3d = 0.5 * (cov3d + cov3d.transpose(1, 2))
+jacobian = torch.rand(100, 2, 3, requires_grad=True, dtype=torch.float64)
+
+test = gradcheck(ProjectCov3dToCov2d.apply, (cov3d, jacobian), eps=1e-6, atol=1e-5)
+print(f"ProjectCov3dToCov2d gradcheck: {test}")
 
 # %% [markdown]
 # ## `ComputeGaussianInfluence`
@@ -642,6 +695,26 @@ class ComputeGaussianInfluence(Function):
 
         return grad_uv, grad_cov2d, None, None
 
+
+# %%
+print("Testing ComputeGaussianInfluence...")
+
+uv = torch.rand(100, 2, requires_grad=True, dtype=torch.float64)
+cov2d = torch.rand(100, 2, 2, requires_grad=True, dtype=torch.float64)
+
+new_cov2d = []
+for i in range(100):
+    new_cov = torch.matmul(cov2d[i], cov2d[i].T) + torch.eye(
+        2, dtype=torch.float64, device=cov2d.device
+    )
+    new_cov2d.append(new_cov)
+cov2d = torch.stack(new_cov2d)
+
+num_tx = 16
+num_rx = 2
+
+test = gradcheck(ComputeGaussianInfluence.apply, (uv, cov2d, num_tx, num_rx))
+print(f"ComputeGaussianInfluence gradcheck: {test}")
 
 # %% [markdown]
 # ## `ComputeWirelessChannel`
@@ -758,6 +831,22 @@ class ComputeWirelessChannel(Function):
 
         return grad_attenuation, grad_phase_rotation, grad_distance, None
 
+
+# %%
+print("Testing ComputeWirelessChannel...")
+attenuation = torch.rand(100, 1, requires_grad=True, dtype=torch.float64)
+phase_rotation = (
+    torch.rand(100, 1, requires_grad=True, dtype=torch.float64) * 2 * math.pi
+)
+distance = (
+    torch.rand(100, requires_grad=True, dtype=torch.float64) * 10 + 1.0
+)  # avoid zero
+wavelength = 0.1
+
+test = gradcheck(
+    ComputeWirelessChannel.apply, (attenuation, phase_rotation, distance, wavelength)
+)
+print(f"ComputeWirelessChannel gradcheck: {test}")
 
 # %% [markdown]
 # ## `AlphaBlending`
@@ -946,6 +1035,33 @@ class AlphaBlending(Function):
         )
 
 
+# %%
+print("Testing AlphaBlending...")
+N = 100
+num_tx = 4
+num_rx = 2
+influences = torch.rand(N, num_tx, num_rx, requires_grad=True, dtype=torch.float64)
+contributions_real = torch.rand(N, 1, requires_grad=True, dtype=torch.float64)
+contributions_imag = torch.rand(N, 1, requires_grad=True, dtype=torch.float64)
+opacity = (
+    torch.rand(N, 1, requires_grad=True, dtype=torch.float64) * 0.5
+)  # keep < 1 for stability
+sort_indices = torch.arange(N)
+
+test = gradcheck(
+    AlphaBlending.apply,
+    (
+        influences,
+        contributions_real,
+        contributions_imag,
+        opacity,
+        sort_indices,
+        num_tx,
+        num_rx,
+    ),
+)
+print(f"AlphaBlending gradcheck: {test}")
+
 # %% [markdown]
 # ## **Tests**
 #
@@ -1028,3 +1144,339 @@ def rasterize_channel(
     )
 
     return cat_channel
+
+
+# %%
+def test_agf_rasterize_channel():
+    print("Testing end-to-end rasterize_channel function...")
+    torch.manual_seed(0)  # for reproducibility
+
+    N = 25  # number of Gaussians
+    num_tx = 4
+    num_rx = 2
+    frequency = 2.4e9  # 2.4 GHz
+    scale_modifier = 1.0  # not trainable
+
+    points = torch.rand(N, 3, requires_grad=True)
+
+    scaling = torch.exp(torch.rand(N, 3, requires_grad=False) - 0.5)
+    scaling.requires_grad_(True)
+
+    rotation = F.normalize(torch.rand(N, 4, requires_grad=False), dim=1)
+    rotation.requires_grad_(True)
+
+    attenuation = torch.rand(N, 1, requires_grad=True)
+    phase_rotation = torch.rand(N, 1, requires_grad=True) * 2 * math.pi
+
+    opacity = torch.sigmoid(torch.rand(N, 1, requires_grad=False))
+    opacity.requires_grad_(True)
+
+    receiver = torch.rand(3)
+
+    channel = rasterize_channel(
+        points,
+        scaling,
+        rotation,
+        attenuation,
+        phase_rotation,
+        opacity,
+        receiver,
+        num_tx,
+        num_rx,
+        frequency,
+        scale_modifier,
+    )
+
+    print(f"Channel matrix shape: {channel.shape}")
+    print(f"Channel matrix type: {channel.dtype}")
+    print("First few values of channel matrix:")
+    print(channel[:2, :])
+
+    # check if gradients can be computed
+    loss = channel.sum()
+    loss.backward()
+
+    print("Gradients computed successfully!")
+    print(f"points.grad shape: {points.grad.shape}")
+    print(f"scaling.grad shape: {scaling.grad.shape}")
+    print(f"rotation.grad shape: {rotation.grad.shape}")
+    print(f"attenuation.grad shape: {attenuation.grad.shape}")
+    print(f"opacity.grad shape: {opacity.grad.shape}")
+
+    return True
+
+
+test_agf_rasterize_channel()
+
+# %%
+torch.autograd.set_detect_anomaly(True)
+
+
+def test_rasterize_func():
+    print("Testing _torch_impl.rasterize/rasterize function...")
+    torch.manual_seed(0)  # for reproducibility
+
+    N = 25  # number of Gaussians
+    num_tx = 4
+    num_rx = 2
+    frequency = 2.4e9  # 2.4 GHz
+    scale_modifier = 1.0  # not trainable
+
+    points = torch.rand(N, 3, requires_grad=True)
+
+    scaling = torch.exp(torch.rand(N, 3, requires_grad=False) - 0.5)
+    scaling.requires_grad_(True)
+
+    rotation = F.normalize(torch.rand(N, 4, requires_grad=False), dim=1)
+    rotation.requires_grad_(True)
+
+    attenuation = torch.rand(N, 1, requires_grad=True)
+    phase_rotation = torch.rand(N, 1, requires_grad=True) * 2 * math.pi
+
+    opacity = torch.sigmoid(torch.rand(N, 1, requires_grad=False))
+    opacity.requires_grad_(True)
+
+    receiver = torch.rand(3)
+
+    # forward pass
+    channel = rasterize(
+        points,
+        scaling,
+        rotation,
+        attenuation,
+        phase_rotation,
+        opacity,
+        receiver,
+        None,
+        num_tx,
+        num_rx,
+        frequency,
+        scale_modifier,
+    )
+
+    print(f"Channel matrix shape: {channel.shape}")
+    print(f"Channel matrix type: {channel.dtype}")
+    print("First few values of channel matrix:")
+    print(channel[:2, :])
+
+    # check if gradients can be computed
+    loss = channel.sum()
+    loss.backward()
+
+    print("Gradients computed successfully!")
+    print(f"points.grad shape: {points.grad.shape}")
+    print(f"attenuation.grad shape: {attenuation.grad.shape}")
+
+    return True
+
+
+test_rasterize_func()
+
+# %% [markdown]
+# ### Comparison
+
+# %%
+torch.manual_seed(0)  # for reproducibility
+
+N = 1000
+num_tx = 16
+num_rx = 2
+frequency = 2.4e9
+scale_modifier = 1.0  # not trainable
+
+points = torch.rand(N, 3) * 20
+scaling = torch.exp(torch.rand(N, 3) - 0.5)
+rotation = F.normalize(torch.rand(N, 4), dim=1)
+attenuation = torch.rand(N, 1) * 1e-3
+phase_rotation = torch.rand(N, 1) * 2 * math.pi
+opacity = torch.sigmoid(torch.rand(N, 1))
+receiver = torch.rand(3)
+
+points_orig = points.clone().requires_grad_()
+scaling_orig = scaling.clone().requires_grad_()
+rotation_orig = rotation.clone().requires_grad_()
+attenuation_orig = attenuation.clone().requires_grad_()
+phase_rotation_orig = phase_rotation.clone().requires_grad_()
+opacity_orig = opacity.clone().requires_grad_()
+
+points_autograd = points.clone().requires_grad_()
+scaling_autograd = scaling.clone().requires_grad_()
+rotation_autograd = rotation.clone().requires_grad_()
+attenuation_autograd = attenuation.clone().requires_grad_()
+phase_rotation_autograd = phase_rotation.clone().requires_grad_()
+opacity_autograd = opacity.clone().requires_grad_()
+
+channel_orig = rasterize(
+    points_orig,
+    scaling_orig,
+    rotation_orig,
+    attenuation_orig,
+    phase_rotation_orig,
+    opacity_orig,
+    receiver,
+    None,
+    num_tx,
+    num_rx,
+    frequency,
+    scale_modifier,
+)
+
+channel_autograd = rasterize_channel(
+    points_autograd,
+    scaling_autograd,
+    rotation_autograd,
+    attenuation_autograd,
+    phase_rotation_autograd,
+    opacity_autograd,
+    receiver,
+    num_tx,
+    num_rx,
+    frequency,
+    scale_modifier,
+)
+
+max_diff = torch.max(torch.abs(channel_orig - channel_autograd))
+print(f"Forward Pass - Maximum difference: {max_diff.item()}")
+
+if max_diff > 1e-6:
+    print("❌ Forward outputs don't match!")
+    print("Original (first few elements):", channel_orig[0, :4])
+    print("Autograd (first few elements):", channel_autograd[0, :4])
+else:
+    print("✅ Forward outputs match within tolerance.")
+
+target_channel = channel_orig.detach() + torch.randn_like(channel_orig) * 0.1
+
+loss_orig = mse_corr_loss(channel_orig, target_channel)
+loss_autograd = mse_corr_loss(channel_autograd, target_channel)
+
+loss_orig.backward()
+loss_autograd.backward()
+
+print(f"Loss value - Original: {loss_orig.item()}, Autograd: {loss_autograd.item()}")
+
+print("\n=== Gradient Comparison ===")
+
+if points_orig.grad is not None and points_autograd.grad is not None:
+    points_grad_diff = torch.max(torch.abs(points_orig.grad - points_autograd.grad))
+    print(f"Points gradients - Maximum difference: {points_grad_diff.item()}")
+    if points_grad_diff > 1e-5:
+        print("❌ Points gradients don't match!")
+        print("Original (first 3):")
+        print(points_orig.grad[:3])
+        print("Autograd (first 3):")
+        print(points_autograd.grad[:3])
+    else:
+        print("✅ Points gradients match within tolerance.")
+else:
+    print("⚠️ Points gradients - One or both gradients are None")
+
+if scaling_orig.grad is not None and scaling_autograd.grad is not None:
+    scaling_grad_diff = torch.max(torch.abs(scaling_orig.grad - scaling_autograd.grad))
+    print(f"Scaling gradients - Maximum difference: {scaling_grad_diff.item()}")
+    if scaling_grad_diff > 1e-5:
+        print("❌ Scaling gradients don't match!")
+        print("Original (first 3):")
+        print(scaling_orig.grad[:3])
+        print("Autograd (first 3):")
+        print(scaling_autograd.grad[:3])
+    else:
+        print("✅ Scaling gradients match within tolerance.")
+else:
+    print("⚠️ Scaling gradients - One or both gradients are None")
+
+if rotation_orig.grad is not None and rotation_autograd.grad is not None:
+    rotation_grad_diff = torch.max(
+        torch.abs(rotation_orig.grad - rotation_autograd.grad)
+    )
+    print(f"Rotation gradients - Maximum difference: {rotation_grad_diff.item()}")
+    if rotation_grad_diff > 1e-5:
+        print("❌ Rotation gradients don't match!")
+        print("Original (first 3):")
+        print(rotation_orig.grad[:3])
+        print("Autograd (first 3):")
+        print(rotation_autograd.grad[:3])
+    else:
+        print("✅ Rotation gradients match within tolerance.")
+else:
+    print("⚠️ Rotation gradients - One or both gradients are None")
+
+if attenuation_orig.grad is not None and attenuation_autograd.grad is not None:
+    att_grad_diff = torch.max(
+        torch.abs(attenuation_orig.grad - attenuation_autograd.grad)
+    )
+    print(f"Attenuation gradients - Maximum difference: {att_grad_diff.item()}")
+    if att_grad_diff > 1e-5:
+        print("❌ Attenuation gradients don't match!")
+        print("Original (first 3):")
+        print(attenuation_orig.grad[:3])
+        print("Autograd (first 3):")
+        print(attenuation_autograd.grad[:3])
+    else:
+        print("✅ Attenuation gradients match within tolerance.")
+else:
+    print("⚠️ Attenuation gradients - One or both gradients are None")
+
+if phase_rotation_orig.grad is not None and phase_rotation_autograd.grad is not None:
+    phase_grad_diff = torch.max(
+        torch.abs(phase_rotation_orig.grad - phase_rotation_autograd.grad)
+    )
+    print(f"Phase rotation gradients - Maximum difference: {phase_grad_diff.item()}")
+    if phase_grad_diff > 1e-5:
+        print("❌ Phase rotation gradients don't match!")
+        print("Original (first 3):")
+        print(phase_rotation_orig.grad[:3])
+        print("Autograd (first 3):")
+        print(phase_rotation_autograd.grad[:3])
+    else:
+        print("✅ Phase rotation gradients match within tolerance.")
+else:
+    print("⚠️ Phase rotation gradients - One or both gradients are None")
+
+if opacity_orig.grad is not None and opacity_autograd.grad is not None:
+    opacity_grad_diff = torch.max(torch.abs(opacity_orig.grad - opacity_autograd.grad))
+    print(f"Opacity gradients - Maximum difference: {opacity_grad_diff.item()}")
+    if opacity_grad_diff > 1e-5:
+        print("❌ Opacity gradients don't match!")
+        print("Original (first 3):")
+        print(opacity_orig.grad[:3])
+        print("Autograd (first 3):")
+        print(opacity_autograd.grad[:3])
+    else:
+        print("✅ Opacity gradients match within tolerance.")
+else:
+    print("⚠️ Opacity gradients - One or both gradients are None")
+
+all_pass = True
+if points_orig.grad is not None and points_autograd.grad is not None:
+    all_pass = all_pass and (
+        torch.max(torch.abs(points_orig.grad - points_autograd.grad)) <= 1e-5
+    )
+if scaling_orig.grad is not None and scaling_autograd.grad is not None:
+    all_pass = all_pass and (
+        torch.max(torch.abs(scaling_orig.grad - scaling_autograd.grad)) <= 1e-5
+    )
+if rotation_orig.grad is not None and rotation_autograd.grad is not None:
+    all_pass = all_pass and (
+        torch.max(torch.abs(rotation_orig.grad - rotation_autograd.grad)) <= 1e-5
+    )
+if attenuation_orig.grad is not None and attenuation_autograd.grad is not None:
+    all_pass = all_pass and (
+        torch.max(torch.abs(attenuation_orig.grad - attenuation_autograd.grad)) <= 1e-5
+    )
+if phase_rotation_orig.grad is not None and phase_rotation_autograd.grad is not None:
+    all_pass = all_pass and (
+        torch.max(torch.abs(phase_rotation_orig.grad - phase_rotation_autograd.grad))
+        <= 1e-5
+    )
+if opacity_orig.grad is not None and opacity_autograd.grad is not None:
+    all_pass = all_pass and (
+        torch.max(torch.abs(opacity_orig.grad - opacity_autograd.grad)) <= 1e-5
+    )
+
+print("\n" + "=" * 50)
+if all_pass:
+    print("✅ SUCCESS: All gradients match within tolerance!")
+else:
+    print("❌ FAILURE: Some gradients don't match. See details above.")
+print("=" * 50)
