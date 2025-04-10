@@ -15,11 +15,7 @@ from engine import rasterize
 from models.encoder import EncoderConfig
 from models.gaussian_model import GaussianModel
 from models.loss import (
-    channel_corr_loss,
-    complex_mse_loss,
-    l1_ssim_loss,
-    mse_corr_loss,
-    nmse_loss,
+    TODO
 )
 from utils.general_utils import set_random_seed
 from utils.train_utils import setup_logging
@@ -116,13 +112,9 @@ def parse_args():
     parser.add_argument(
         "--loss_type",
         type=str,
-        default="mse_corr",
+        default=...,
         choices=[
-            "mse_corr",
-            "complex_mse",
-            "channel_corr",
-            "nmse",
-            "l1_ssim",
+            ...
         ],
         help="Loss function to use for training",
     )
@@ -194,7 +186,8 @@ def rasterize_channel(
     if args.disable_cuda:
         return torch_impl.rasterize(
             points=model.get_xyz,
-            cov3d=model.get_covariance(),
+            scaling=model.get_scaling,
+            rotation=model.get_rotation,
             attenuation=model.get_features[:, 0:1],
             phase_rotation=model.get_features[:, 1:2],
             opacity=model.get_opacity,
@@ -203,6 +196,7 @@ def rasterize_channel(
             num_tx=num_tx_ant,
             num_rx=num_rx_ant,
             frequency=frequency,
+            scale_modifier=args.scale_modifier,
         )
     else:
         scaling = model.get_scaling
@@ -272,16 +266,7 @@ def evaluate(
                 model, rx_position, tx_position, num_tx_ant, num_rx_ant, frequency, args
             )
 
-            if loss_type == "nmse":
-                loss = nmse_loss(pred_channel, gt_channel)
-            elif loss_type == "l1_ssim":
-                loss = l1_ssim_loss(pred_channel, gt_channel)
-            elif loss_type == "complex_mse":
-                loss = complex_mse_loss(pred_channel, gt_channel)
-            elif loss_type == "channel_corr":
-                loss = channel_corr_loss(pred_channel, gt_channel)
-            elif loss_type == "mse_corr":
-                loss = mse_corr_loss(pred_channel, gt_channel)
+            if loss_type == ...
             else:
                 raise ValueError(f"Unknown loss type: {loss_type}")
 
@@ -431,16 +416,7 @@ def train(args, logger, writer, log_dir):
             model, rx_position, tx_position, num_tx_ant, num_rx_ant, frequency, args
         )
 
-        if args.loss_type == "nmse":
-            loss = nmse_loss(pred_channel, gt_channel)
-        elif args.loss_type == "l1_ssim":
-            loss = l1_ssim_loss(pred_channel, gt_channel)
-        elif args.loss_type == "complex_mse":
-            loss = complex_mse_loss(pred_channel, gt_channel)
-        elif args.loss_type == "channel_corr":
-            loss = channel_corr_loss(pred_channel, gt_channel)
-        elif args.loss_type == "mse_corr":
-            loss = mse_corr_loss(pred_channel, gt_channel)
+        if args.loss_type == ...
         else:
             raise ValueError(f"Unknown loss type: {args.loss_type}")
 
