@@ -33,29 +33,3 @@ __device__ void matrix_multiply(const T* A, const T* B, T* C, int num_rows_A,
         }
     }
 }
-
-// Utility function to strip symmetric matrix to compact form [a, b, c, d, e, f]
-// (upper triangular)
-template <typename T>
-__device__ void strip_symmetric(const T* full_matrix, T* compact_form) {
-    compact_form[0] = full_matrix[0];  // [0,0]
-    compact_form[1] = full_matrix[1];  // [0,1]
-    compact_form[2] = full_matrix[2];  // [0,2]
-    compact_form[3] = full_matrix[4];  // [1,1]
-    compact_form[4] = full_matrix[5];  // [1,2]
-    compact_form[5] = full_matrix[8];  // [2,2]
-}
-
-// Utility function to expand compact form to full 3x3 matrix
-template <typename T>
-__device__ void expand_symmetric(const T* compact_form, T* full_matrix) {
-    full_matrix[0] = compact_form[0];  // [0,0]
-    full_matrix[1] = compact_form[1];  // [0,1]
-    full_matrix[2] = compact_form[2];  // [0,2]
-    full_matrix[3] = compact_form[1];  // [1,0]
-    full_matrix[4] = compact_form[3];  // [1,1]
-    full_matrix[5] = compact_form[4];  // [1,2]
-    full_matrix[6] = compact_form[2];  // [2,0]
-    full_matrix[7] = compact_form[4];  // [2,1]
-    full_matrix[8] = compact_form[5];  // [2,2]
-}

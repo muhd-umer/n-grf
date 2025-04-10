@@ -12,7 +12,7 @@ cuda_sources = [
     os.path.join(root_dir, "_cuda_impl/projection_backward.cu"),
     os.path.join(root_dir, "_cuda_impl/rasterize.cu"),
     os.path.join(root_dir, "_cuda_impl/rasterize_backward.cu"),
-    os.path.join(root_dir, "ext.cpp"),
+    os.path.join(root_dir, "_cuda_impl/ext.cpp"),
 ]
 
 c_flags = ["-O3", "-std=c++17"]

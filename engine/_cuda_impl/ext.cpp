@@ -2,13 +2,6 @@
 
 #include <torch/extension.h>
 
-#include "_cuda_impl/matrix.cuh"
-#include "_cuda_impl/projection.cu"
-#include "_cuda_impl/projection_backward.cu"
-#include "_cuda_impl/rasterize.cu"
-#include "_cuda_impl/rasterize_backward.cu"
-
-// Forward pass functions
 void quaternion_to_rotation_cuda(torch::Tensor quaternion,
                                  torch::Tensor rotation);
 void compute_scaling_matrix_cuda(torch::Tensor scaling, float scale_modifier,
@@ -38,7 +31,6 @@ void alpha_blending_cuda(torch::Tensor influences,
                          torch::Tensor opacity, torch::Tensor sort_indices,
                          int num_tx, int num_rx, torch::Tensor channel_matrix);
 
-// Backward pass functions
 void quaternion_to_rotation_backward_cuda(torch::Tensor quaternion,
                                           torch::Tensor grad_rotation,
                                           torch::Tensor grad_quaternion);
