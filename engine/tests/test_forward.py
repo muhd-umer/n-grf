@@ -1,3 +1,5 @@
+# engine/tests/test_forward.py
+
 import math
 import os
 import sys
@@ -83,9 +85,9 @@ class TestForward(unittest.TestCase):
 
         from _wrapper import ComputeScalingMatrix
 
-        scaling = torch.rand(self.num_gaussians, 3, device=self.device)
+        scaling = torch.exp(torch.rand(self.num_gaussians, 3, device=self.device))
 
-        scaled_scaling = torch.exp(scaling) * self.scale_modifier
+        scaled_scaling = scaling * self.scale_modifier
         S_torch = torch.diag_embed(scaled_scaling)
 
         S_cuda = ComputeScalingMatrix.apply(scaling, self.scale_modifier)
