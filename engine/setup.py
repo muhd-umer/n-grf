@@ -7,8 +7,13 @@ from torch.utils.cpp_extension import BuildExtension, CUDAExtension
 
 root_dir = os.path.dirname(os.path.abspath(__file__))
 
-cuda_sources = []
-
+cuda_sources = [
+    os.path.join(root_dir, "_cuda_impl/projection.cu"),
+    os.path.join(root_dir, "_cuda_impl/projection_backward.cu"),
+    os.path.join(root_dir, "_cuda_impl/rasterize.cu"),
+    os.path.join(root_dir, "_cuda_impl/rasterize_backward.cu"),
+    os.path.join(root_dir, "ext.cpp"),
+]
 
 setup(
     name="engine",
@@ -20,12 +25,6 @@ setup(
             sources=cuda_sources,
             extra_compile_args={
                 "cxx": ["-O3"],
-                "nvcc": [
-                    "-I"
-                    + os.path.join(
-                        os.path.dirname(os.path.abspath(__file__)), "third_party/glm/"
-                    )
-                ],
             },
         )
     ],

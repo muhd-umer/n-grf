@@ -7,9 +7,6 @@
 #include "checks.cuh"
 #include "matrix.cuh"
 
-// --------------------------------
-// QuaternionToRotation
-// --------------------------------
 template <typename T>
 __global__ void quaternion_to_rotation_kernel(const T* __restrict__ quaternion,
                                               const int N, T* rotation) {
@@ -73,9 +70,6 @@ void quaternion_to_rotation_cuda(torch::Tensor quaternion,
     cudaDeviceSynchronize();
 }
 
-// --------------------------------
-// ComputeScalingMatrix
-// --------------------------------
 template <typename T>
 __global__ void compute_scaling_matrix_kernel(const T* __restrict__ scaling,
                                               const T scale_modifier,
@@ -139,9 +133,6 @@ void compute_scaling_matrix_cuda(torch::Tensor scaling, float scale_modifier,
     cudaDeviceSynchronize();
 }
 
-// --------------------------------
-// MatrixMultiply
-// --------------------------------
 template <typename T>
 __global__ void matrix_multiply_kernel(const T* __restrict__ A,
                                        const T* __restrict__ B, const int N,
@@ -190,9 +181,6 @@ void matrix_multiply_cuda(torch::Tensor A, torch::Tensor B, torch::Tensor C) {
     cudaDeviceSynchronize();
 }
 
-// --------------------------------
-// CovarianceMatrix
-// --------------------------------
 template <typename T>
 __global__ void covariance_matrix_kernel(const T* __restrict__ RS, const int N,
                                          T* __restrict__ cov3d) {
@@ -238,9 +226,6 @@ void covariance_matrix_cuda(torch::Tensor RS, torch::Tensor cov3d) {
     cudaDeviceSynchronize();
 }
 
-// --------------------------------
-// ProjectToChannelCoordinates
-// --------------------------------
 template <typename T>
 __global__ void project_to_channel_coords_kernel(
     const T* __restrict__ points, const T* __restrict__ receiver,
@@ -335,9 +320,6 @@ void project_to_channel_coords_cuda(torch::Tensor points,
     cudaDeviceSynchronize();
 }
 
-// --------------------------------
-// ComputeJacobian
-// --------------------------------
 template <typename T>
 __global__ void compute_jacobian_kernel(const T* __restrict__ d,
                                         const int num_tx, const int num_rx,
@@ -411,9 +393,6 @@ void compute_jacobian_cuda(torch::Tensor d, int num_tx, int num_rx,
     cudaDeviceSynchronize();
 }
 
-// --------------------------------
-// ProjectCov3dToCov2d
-// --------------------------------
 template <typename T>
 __global__ void project_cov3d_to_cov2d_kernel(const T* __restrict__ cov3d,
                                               const T* __restrict__ J,

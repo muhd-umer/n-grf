@@ -7,9 +7,6 @@
 #include "checks.cuh"
 #include "matrix.cuh"
 
-// --------------------------------
-// QuaternionToRotation Backward
-// --------------------------------
 template <typename T>
 __global__ void quaternion_to_rotation_backward_kernel(
     const T* __restrict__ quaternion, const T* __restrict__ grad_rotation,
@@ -125,9 +122,6 @@ void quaternion_to_rotation_backward_cuda(torch::Tensor quaternion,
     cudaDeviceSynchronize();
 }
 
-// --------------------------------
-// ComputeScalingMatrix Backward
-// --------------------------------
 template <typename T>
 __global__ void compute_scaling_matrix_backward_kernel(
     const T* __restrict__ scaling, const T* __restrict__ grad_scaling_matrix,
@@ -189,9 +183,6 @@ void compute_scaling_matrix_backward_cuda(torch::Tensor scaling,
     cudaDeviceSynchronize();
 }
 
-// --------------------------------
-// MatrixMultiply Backward
-// --------------------------------
 template <typename T>
 __global__ void matrix_multiply_backward_kernel(const T* __restrict__ A,
                                                 const T* __restrict__ B,
@@ -271,9 +262,6 @@ void matrix_multiply_backward_cuda(torch::Tensor A, torch::Tensor B,
     cudaDeviceSynchronize();
 }
 
-// --------------------------------
-// CovarianceMatrix Backward
-// --------------------------------
 template <typename T>
 __global__ void covariance_matrix_backward_kernel(
     const T* __restrict__ RS, const T* __restrict__ grad_cov3d, const int N,
@@ -335,9 +323,6 @@ void covariance_matrix_backward_cuda(torch::Tensor RS, torch::Tensor grad_cov3d,
     cudaDeviceSynchronize();
 }
 
-// --------------------------------
-// ProjectToChannelCoordinates Backward
-// --------------------------------
 template <typename T>
 __global__ void project_to_channel_coords_backward_kernel(
     const T* __restrict__ points, const T* __restrict__ receiver,
@@ -485,9 +470,6 @@ void project_to_channel_coords_backward_cuda(
     cudaDeviceSynchronize();
 }
 
-// --------------------------------
-// ComputeJacobian Backward
-// --------------------------------
 template <typename T>
 __global__ void compute_jacobian_backward_kernel(const T* __restrict__ d,
                                                  const T* __restrict__ grad_J,
@@ -589,9 +571,6 @@ void compute_jacobian_backward_cuda(torch::Tensor d, torch::Tensor grad_J,
     cudaDeviceSynchronize();
 }
 
-// --------------------------------
-// ProjectCov3dToCov2d Backward
-// --------------------------------
 template <typename T>
 __global__ void project_cov3d_to_cov2d_backward_kernel(
     const T* __restrict__ cov3d, const T* __restrict__ J,

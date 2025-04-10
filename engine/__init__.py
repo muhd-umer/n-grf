@@ -5,7 +5,7 @@ import warnings
 from . import _torch_impl
 
 try:
-    from ._wrapper import CUDA_AVAILABLE
+    from ._wrapper import CUDA_AVAILABLE, rasterize
 except ImportError:
     warnings.warn("CUDA wrapper not found. Using PyTorch implementation directly.")
     CUDA_AVAILABLE = False
@@ -14,4 +14,5 @@ except ImportError:
 __all__ = [
     "CUDA_AVAILABLE",
     "_torch_impl",
+    "rasterize",
 ]

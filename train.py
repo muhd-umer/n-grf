@@ -217,11 +217,20 @@ def rasterize_channel(
             scale_modifier=args.scale_modifier,
         )
     else:
-        scaling = model.get_scaling
-        rotation = model.get_rotation
-        scale_modifier = args.scale_modifier
-
-        return rasterize(...)
+        return rasterize(
+            points=model.get_xyz,
+            scaling=model.get_scaling,
+            rotation=model.get_rotation,
+            attenuation=model.get_features[:, 0:1],
+            phase_rotation=model.get_features[:, 1:2],
+            opacity=model.get_opacity,
+            receiver=rx_position,
+            transmitter=tx_position,
+            num_tx=num_tx_ant,
+            num_rx=num_rx_ant,
+            frequency=frequency,
+            scale_modifier=args.scale_modifier,
+        )
 
 
 def setup_experiment(args):

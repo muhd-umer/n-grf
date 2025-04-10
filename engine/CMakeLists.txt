@@ -11,14 +11,12 @@ set(CMAKE_CUDA_STANDARD 17)
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
 
 add_library(CudaRasterizer
-	_cuda_impl/backward.h
-	_cuda_impl/backward.cu
-	_cuda_impl/forward.h
-	_cuda_impl/forward.cu
-	_cuda_impl/auxiliary.h
-	_cuda_impl/rasterizer_impl.cu
-	_cuda_impl/rasterizer_impl.h
-	_cuda_impl/rasterizer.h
+	_cuda_impl/checks.cuh
+	_cuda_impl/matrix.cuh
+	_cuda_impl/projection.cu
+	_cuda_impl/projection_backward.cu
+	_cuda_impl/rasterize.cu
+	_cuda_impl/rasterize_backward.cu
 )
 
 set_target_properties(CudaRasterizer PROPERTIES CUDA_ARCHITECTURES "70;75;86")

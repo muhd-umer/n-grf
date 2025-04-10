@@ -7,9 +7,6 @@
 #include "checks.cuh"
 #include "matrix.cuh"
 
-// --------------------------------
-// ComputeGaussianInfluence
-// --------------------------------
 template <typename T>
 __global__ void compute_gaussian_influence_kernel(const T* __restrict__ uv,
                                                   const T* __restrict__ cov2d,
@@ -98,9 +95,6 @@ void compute_gaussian_influence_cuda(torch::Tensor uv, torch::Tensor cov2d,
     cudaDeviceSynchronize();
 }
 
-// --------------------------------
-// ComputeWirelessChannel
-// --------------------------------
 template <typename T>
 __global__ void compute_wireless_channel_kernel(
     const T* __restrict__ attenuation, const T* __restrict__ phase_rotation,
@@ -179,9 +173,6 @@ void compute_wireless_channel_cuda(torch::Tensor attenuation,
     cudaDeviceSynchronize();
 }
 
-// --------------------------------
-// AlphaBlending
-// --------------------------------
 template <typename T>
 __global__ void alpha_blending_kernel(
     const T* __restrict__ influences, const T* __restrict__ real_contributions,

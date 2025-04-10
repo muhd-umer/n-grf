@@ -7,9 +7,6 @@
 #include "checks.cuh"
 #include "matrix.cuh"
 
-// --------------------------------
-// ComputeGaussianInfluence Backward
-// --------------------------------
 template <typename T>
 __global__ void compute_gaussian_influence_backward_kernel(
     const T* __restrict__ uv, const T* __restrict__ cov2d,
@@ -197,9 +194,6 @@ void compute_gaussian_influence_backward_cuda(
     cudaDeviceSynchronize();
 }
 
-// --------------------------------
-// ComputeWirelessChannel Backward
-// --------------------------------
 template <typename T>
 __global__ void compute_wireless_channel_backward_kernel(
     const T* __restrict__ attenuation, const T* __restrict__ phase_rotation,
@@ -326,9 +320,6 @@ void compute_wireless_channel_backward_cuda(
     cudaDeviceSynchronize();
 }
 
-// --------------------------------
-// AlphaBlending Backward
-// --------------------------------
 template <typename T>
 __global__ void alpha_blending_backward_kernel(
     const T* __restrict__ influences, const T* __restrict__ real_contributions,

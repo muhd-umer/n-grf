@@ -2,11 +2,11 @@
 
 #include <torch/extension.h>
 
-#include <_cuda_impl/matrix.cuh>
-#include <_cuda_impl/projection.cu>
-#include <_cuda_impl/projection_backward.cu>
-#include <_cuda_impl/rasterize.cu>
-#include <_cuda_impl/rasterize_backward.cu>
+#include "_cuda_impl/matrix.cuh"
+#include "_cuda_impl/projection.cu"
+#include "_cuda_impl/projection_backward.cu"
+#include "_cuda_impl/rasterize.cu"
+#include "_cuda_impl/rasterize_backward.cu"
 
 // Forward pass functions
 void quaternion_to_rotation_cuda(torch::Tensor quaternion,
