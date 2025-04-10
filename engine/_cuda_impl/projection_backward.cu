@@ -16,20 +16,26 @@ __global__ void quaternion_to_rotation_backward_kernel(
         return;
     }
 
-    // Extract quaternion components
-    T w = quaternion[i * 4 + 0];
-    T x = quaternion[i * 4 + 1];
-    T y = quaternion[i * 4 + 2];
-    T z = quaternion[i * 4 + 3];
+    T w_un = quaternion[i * 4 + 0];
+    T x_un = quaternion[i * 4 + 1];
+    T y_un = quaternion[i * 4 + 2];
+    T z_un = quaternion[i * 4 + 3];
 
-    // Normalize quaternion
-    T norm = sqrt(w * w + x * x + y * y + z * z);
-    w /= norm;
-    x /= norm;
-    y /= norm;
-    z /= norm;
+    T norm_sq = w_un * w_un + x_un * x_un + y_un * y_un + z_un * z_un;
+    if (norm_sq < T(1e-15)) {
+        grad_quaternion[i * 4 + 0] = T(0.0);
+        grad_quaternion[i * 4 + 1] = T(0.0);
+        grad_quaternion[i * 4 + 2] = T(0.0);
+        grad_quaternion[i * 4 + 3] = T(0.0);
+        return;
+    }
+    T norm = sqrt(norm_sq);
+    T inv_norm = T(1.0) / norm;
+    T w = w_un * inv_norm;
+    T x = x_un * inv_norm;
+    T y = y_un * inv_norm;
+    T z = z_un * inv_norm;
 
-    // Extract gradient components
     T dR00 = grad_rotation[i * 9 + 0];
     T dR01 = grad_rotation[i * 9 + 1];
     T dR02 = grad_rotation[i * 9 + 2];
@@ -40,47 +46,27 @@ __global__ void quaternion_to_rotation_backward_kernel(
     T dR21 = grad_rotation[i * 9 + 7];
     T dR22 = grad_rotation[i * 9 + 8];
 
-    // Compute gradients with respect to normalized quaternion
-    T grad_w = -2 * z * dR01 + 2 * y * dR02 + 2 * z * dR10 - 2 * x * dR12 -
-               2 * y * dR20 + 2 * x * dR21;
+    T grad_w_norm = -2 * z * dR01 + 2 * y * dR02 + 2 * z * dR10 - 2 * x * dR12 -
+                    2 * y * dR20 + 2 * x * dR21;
 
-    T grad_x = 2 * y * dR01 + 2 * z * dR02 + 2 * y * dR10 - 4 * x * dR11 -
-               2 * w * dR12 + 2 * z * dR20 + 2 * w * dR21 - 4 * x * dR22;
+    T grad_x_norm = 2 * y * dR01 + 2 * z * dR02 + 2 * y * dR10 - 4 * x * dR11 -
+                    2 * w * dR12 + 2 * z * dR20 + 2 * w * dR21 - 4 * x * dR22;
 
-    T grad_y = -4 * y * dR00 + 2 * x * dR01 + 2 * w * dR02 + 2 * x * dR10 +
-               2 * z * dR12 - 2 * w * dR20 + 2 * z * dR21 - 4 * y * dR22;
+    T grad_y_norm = -4 * y * dR00 + 2 * x * dR01 + 2 * w * dR02 + 2 * x * dR10 +
+                    2 * z * dR12 - 2 * w * dR20 + 2 * z * dR21 - 4 * y * dR22;
 
-    T grad_z = -4 * z * dR00 - 2 * w * dR01 + 2 * x * dR02 + 2 * w * dR10 -
-               4 * z * dR11 + 2 * y * dR12 + 2 * x * dR20 + 2 * y * dR21;
+    T grad_z_norm = -4 * z * dR00 - 2 * w * dR01 + 2 * x * dR02 + 2 * w * dR10 -
+                    4 * z * dR11 + 2 * y * dR12 + 2 * x * dR20 + 2 * y * dR21;
 
-    // Apply chain rule for quaternion normalization
     T q_norm_cubed = norm * norm * norm;
+    T grad_dot_q_un = grad_w_norm * w_un + grad_x_norm * x_un +
+                      grad_y_norm * y_un + grad_z_norm * z_un;
+    T factor = grad_dot_q_un / q_norm_cubed;
 
-    T grad_w_unnorm = (1.0 / norm - w * w / q_norm_cubed) * grad_w -
-                      (w * x / q_norm_cubed) * grad_x -
-                      (w * y / q_norm_cubed) * grad_y -
-                      (w * z / q_norm_cubed) * grad_z;
-
-    T grad_x_unnorm = -(w * x / q_norm_cubed) * grad_w +
-                      (1.0 / norm - x * x / q_norm_cubed) * grad_x -
-                      (x * y / q_norm_cubed) * grad_y -
-                      (x * z / q_norm_cubed) * grad_z;
-
-    T grad_y_unnorm = -(w * y / q_norm_cubed) * grad_w -
-                      (x * y / q_norm_cubed) * grad_x +
-                      (1.0 / norm - y * y / q_norm_cubed) * grad_y -
-                      (y * z / q_norm_cubed) * grad_z;
-
-    T grad_z_unnorm = -(w * z / q_norm_cubed) * grad_w -
-                      (x * z / q_norm_cubed) * grad_x -
-                      (y * z / q_norm_cubed) * grad_y +
-                      (1.0 / norm - z * z / q_norm_cubed) * grad_z;
-
-    // Set output gradients
-    grad_quaternion[i * 4 + 0] = grad_w_unnorm;
-    grad_quaternion[i * 4 + 1] = grad_x_unnorm;
-    grad_quaternion[i * 4 + 2] = grad_y_unnorm;
-    grad_quaternion[i * 4 + 3] = grad_z_unnorm;
+    grad_quaternion[i * 4 + 0] = grad_w_norm * inv_norm - w_un * factor;
+    grad_quaternion[i * 4 + 1] = grad_x_norm * inv_norm - x_un * factor;
+    grad_quaternion[i * 4 + 2] = grad_y_norm * inv_norm - y_un * factor;
+    grad_quaternion[i * 4 + 3] = grad_z_norm * inv_norm - z_un * factor;
 }
 
 void quaternion_to_rotation_backward_cuda(torch::Tensor quaternion,
@@ -189,18 +175,14 @@ __global__ void matrix_multiply_backward_kernel(const T* __restrict__ A,
         return;
     }
 
-    // Create B^T
     T B_T[9];
     transpose<T>(B + i * 9, B_T, 3, 3);
 
-    // grad_A = grad_C @ B^T
     matrix_multiply<T>(grad_C + i * 9, B_T, grad_A + i * 9, 3, 3, 3);
 
-    // Create A^T
     T A_T[9];
     transpose<T>(A + i * 9, A_T, 3, 3);
 
-    // grad_B = A^T @ grad_C
     matrix_multiply<T>(A_T, grad_C + i * 9, grad_B + i * 9, 3, 3, 3);
 }
 
@@ -265,20 +247,15 @@ __global__ void covariance_matrix_backward_kernel(
         return;
     }
 
-    // Create grad_cov3d + grad_cov3d^T
     T grad_cov3d_T[9];
     transpose<T>(grad_cov3d + i * 9, grad_cov3d_T, 3, 3);
 
-    // grad_RS = (grad_cov3d + grad_cov3d^T) @ RS
-    matrix_multiply<T>(grad_cov3d + i * 9, RS + i * 9, grad_RS + i * 9, 3, 3, 3);
-    
-    // Add the transposed contribution
-    T temp[9];
-    matrix_multiply<T>(grad_cov3d_T, RS + i * 9, temp, 3, 3, 3);
-    
-    for (int j = 0; j < 9; j++) {
-        grad_RS[i * 9 + j] += temp[j];
+    T grad_sum[9];
+    for (int j = 0; j < 9; ++j) {
+        grad_sum[j] = grad_cov3d[i * 9 + j] + grad_cov3d_T[j];
     }
+
+    matrix_multiply<T>(grad_sum, RS + i * 9, grad_RS + i * 9, 3, 3, 3);
 }
 
 void covariance_matrix_backward_cuda(torch::Tensor RS, torch::Tensor grad_cov3d,
@@ -333,13 +310,11 @@ __global__ void project_to_channel_coords_backward_kernel(
         return;
     }
 
-    // Extract input values
     const T r = distances[i];
     const T x = displacement[i * 3 + 0];
     const T y = displacement[i * 3 + 1];
     const T z = displacement[i * 3 + 2];
 
-    // Extract gradients
     const T grad_r = grad_distances[i];
 
     const T grad_dx = grad_displacement[i * 3 + 0];
@@ -349,47 +324,41 @@ __global__ void project_to_channel_coords_backward_kernel(
     const T grad_u = grad_uv[i * 2 + 0];
     const T grad_v = grad_uv[i * 2 + 1];
 
-    // Initialize gradient
     T grad_px = 0, grad_py = 0, grad_pz = 0;
 
-    // Gradient from distances: dr/dpoints = d/r
-    T r_eps = r + T(1e-10); // Add epsilon for numerical stability
+    T r_eps = r + T(1e-10);
     grad_px += grad_r * x / r_eps;
     grad_py += grad_r * y / r_eps;
     grad_pz += grad_r * z / r_eps;
 
-    // Gradient from displacement vectors: dd/dpoints = I (identity)
     grad_px += grad_dx;
     grad_py += grad_dy;
     grad_pz += grad_dz;
 
-    // Constants
     const T PI = T(3.14159265358979323846);
 
-    // Gradients from uv coordinates through transformation
-    // chain rule through transformations
-    // s_x to u, s_y to v
     const T grad_s_x = grad_u * (num_tx - T(1)) / T(2);
     const T grad_s_y = grad_v * (num_rx - T(1)) / T(2);
 
-    // longitude to s_x, latitude to s_y
     const T grad_longitude = grad_s_x / PI;
     const T grad_latitude = grad_s_y * T(2) / PI;
 
-    // positions to longitude and latitude
-    T xy_squared = x * x + y * y + T(1e-10);  // add epsilon for stability
+    T xy_squared = x * x + y * y + T(1e-10);
     grad_px += grad_longitude * (-y / xy_squared);
     grad_py += grad_longitude * (x / xy_squared);
 
-    T dz_r = z / r;
-    dz_r = min(max(dz_r, T(-1.0)), T(1.0));  // Clamp to [-1, 1]
-    T cos_lat = sqrt(T(1.0) - dz_r * dz_r) + T(1e-10);
+    T dz_r = z / r_eps;
+    dz_r = min(max(dz_r, T(-1.0)), T(1.0));
+    T cos_lat_sq = T(1.0) - dz_r * dz_r;
+    T cos_lat = sqrt(max(cos_lat_sq, T(1e-10)));
 
-    grad_px += grad_latitude * (-x * z) / (r * r * r * cos_lat);
-    grad_py += grad_latitude * (-y * z) / (r * r * r * cos_lat);
-    grad_pz += grad_latitude * (xy_squared) / (r * r * r * cos_lat);
+    T r3_cos_lat = r_eps * r_eps * r_eps * cos_lat;
+    if (abs(r3_cos_lat) > T(1e-10)) {
+        grad_px += grad_latitude * (-x * z) / r3_cos_lat;
+        grad_py += grad_latitude * (-y * z) / r3_cos_lat;
+        grad_pz += grad_latitude * (xy_squared) / r3_cos_lat;
+    }
 
-    // Set output gradients
     grad_points[i * 3 + 0] = grad_px;
     grad_points[i * 3 + 1] = grad_py;
     grad_points[i * 3 + 2] = grad_pz;
@@ -469,76 +438,53 @@ void project_to_channel_coords_backward_cuda(
 }
 
 template <typename T>
-__global__ void compute_jacobian_backward_kernel(const T* __restrict__ d,
-                                                 const T* __restrict__ grad_J,
-                                                 const int num_tx,
-                                                 const int num_rx, const int N,
-                                                 T* __restrict__ grad_d) {
+__launch_bounds__(1024) __global__
+    void compute_jacobian_backward_kernel(const T* __restrict__ d,
+                                          const T* __restrict__ grad_J,
+                                          const int num_tx, const int num_rx,
+                                          const int N, T* __restrict__ grad_d) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= N) {
         return;
     }
 
-    // Extract displacement components
     const T x = d[i * 3 + 0];
     const T y = d[i * 3 + 1];
     const T z = d[i * 3 + 2];
 
-    // Extract gradient components
-    const T L11 = grad_J[i * 6 + 0];  // dJ[0,0]/d(...)
-    const T L12 = grad_J[i * 6 + 1];  // dJ[0,1]/d(...)
-    // L13 is ignored (since J[0,2] is 0)
-    const T L21 = grad_J[i * 6 + 3];  // dJ[1,0]/d(...)
-    const T L22 = grad_J[i * 6 + 4];  // dJ[1,1]/d(...)
-    const T L23 = grad_J[i * 6 + 5];  // dJ[1,2]/d(...)
+    const T L11 = grad_J[i * 6 + 0];
+    const T L12 = grad_J[i * 6 + 1];
 
-    // Constants
+    const T L21 = grad_J[i * 6 + 3];
+    const T L22 = grad_J[i * 6 + 4];
+    const T L23 = grad_J[i * 6 + 5];
+
     const T PI = T(3.14159265358979323846);
     const T tx_factor = (num_tx - T(1)) / (T(2.0) * PI);
     const T rx_factor = (num_rx - T(1)) / PI;
 
-    // Compute r
-    const T r = sqrt(x * x + y * y + z * z);
-
-    // Intermediate calculations
     const T xy_sq = x * x + y * y;
-    const T sqrt_xy = sqrt(max(xy_sq, T(1e-10)));
-    const T denom2 = xy_sq * xy_sq + T(1e-10);  // (x²+y²)²
+    const T xy_sq_safe = max(xy_sq, T(1e-10));
+    const T sqrt_xy_safe = sqrt(xy_sq_safe);
+    const T denom = sqrt_xy_safe * xy_sq_safe * xy_sq_safe + T(1e-10);
 
-    // Compute cos_lat = sqrt(1 - (z/r)²)
-    T dz_r = z / r;
-    dz_r = min(max(dz_r, T(-1.0)), T(1.0));  // Clamp to [-1, 1]
-    const T cos_lat = sqrt(max(T(1.0) - dz_r * dz_r, T(1e-10)));
+    T grad_d_x = (L11 * tx_factor * (2 * x * y * sqrt_xy_safe) +
+                  L12 * tx_factor * (y * y - x * x) * sqrt_xy_safe +
+                  L21 * rx_factor * (y * y - 2 * x * x) * z +
+                  L22 * rx_factor * (-3 * x * y * z) +
+                  L23 * rx_factor * (-x * xy_sq_safe)) /
+                 denom;
 
-    // Compute r_cos_lat_xy
-    const T r_cos_lat_xy = r * cos_lat * xy_sq;
-    const T r_cos_lat_xy_safe = max(r_cos_lat_xy, T(1e-10));
+    T grad_d_y = (L11 * tx_factor * (y * y - x * x) * sqrt_xy_safe +
+                  L12 * tx_factor * (-2 * x * y * sqrt_xy_safe) +
+                  L21 * rx_factor * (-3 * x * y * z) +
+                  L22 * rx_factor * (x * x - 2 * y * y) * z +
+                  L23 * rx_factor * (-y * xy_sq_safe)) /
+                 denom;
 
-    // compute gradients for x using derived formula
-    const T grad_d_x =
-        (2 * L11 * tx_factor * x * y * sqrt_xy
-         - L12 * tx_factor * x * x * sqrt_xy
-         + L12 * tx_factor * y * y * sqrt_xy
-         - 2 * L21 * rx_factor * x * x * z
-         + L21 * rx_factor * y * y * z
-         - 3 * L22 * rx_factor * x * y * z
-         - L23 * rx_factor * x * xy_sq) / (sqrt_xy * denom2);
+    T grad_d_z =
+        rx_factor * (L21 * x + L22 * y) / (pow(xy_sq_safe, T(1.5)) + T(1e-10));
 
-    // compute gradients for y using derived formula
-    const T grad_d_y =
-        (-L11 * tx_factor * x * x * sqrt_xy
-         + L11 * tx_factor * y * y * sqrt_xy
-         - 2 * L12 * tx_factor * x * y * sqrt_xy
-         - 3 * L21 * rx_factor * x * y * z
-         + L22 * rx_factor * x * x * z
-         - 2 * L22 * rx_factor * y * y * z
-         - L23 * rx_factor * y * xy_sq) / (sqrt_xy * denom2);
-
-    // compute gradients for z using derived formula
-    const T grad_d_z =
-        rx_factor * (L21 * x + L22 * y) / (pow(xy_sq, T(1.5)) + T(1e-10));
-
-    // Set output gradients
     grad_d[i * 3 + 0] = grad_d_x;
     grad_d[i * 3 + 1] = grad_d_y;
     grad_d[i * 3 + 2] = grad_d_z;
@@ -593,43 +539,28 @@ __global__ void project_cov3d_to_cov2d_backward_kernel(
         return;
     }
 
-    // ----------------
-    // Gradient wrt cov3d
-    // ----------------
-    // Create J^T
-    T J_T[6];  // 3x2
+    T J_T[6];
     transpose<T>(J + i * 6, J_T, 2, 3);
 
-    // Create temp = J^T @ grad_cov2d
-    T temp[6];  // 3x2
-    matrix_multiply<T>(J_T, grad_cov2d + i * 4, temp, 3, 2, 2);
+    T temp_grad_J[6];
+    matrix_multiply<T>(grad_cov2d + i * 4, J + i * 6, temp_grad_J, 2, 2, 3);
 
-    // Create grad_cov3d = temp @ J
-    matrix_multiply<T>(temp, J + i * 6, grad_cov3d + i * 9, 3, 2, 3);
+    matrix_multiply<T>(J_T, temp_grad_J, grad_cov3d + i * 9, 3, 2, 3);
 
-    // ----------------
-    // Gradient wrt J
-    // ----------------
-    // Create grad_cov2d @ J @ cov3d
-    T temp1[6];  // 2x3
-    matrix_multiply<T>(grad_cov2d + i * 4, J + i * 6, temp1, 2, 2, 3);
+    T J_cov3d[6];
+    matrix_multiply<T>(J + i * 6, cov3d + i * 9, J_cov3d, 2, 3, 3);
 
-    T temp2[6];  // 2x3
-    matrix_multiply<T>(temp1, cov3d + i * 9, temp2, 2, 3, 3);
+    T term1[6];
+    matrix_multiply<T>(grad_cov2d + i * 4, J_cov3d, term1, 2, 2, 3);
 
-    // Create grad_cov2d^T @ J @ cov3d
-    T grad_cov2d_T[4];  // 2x2
+    T grad_cov2d_T[4];
     transpose<T>(grad_cov2d + i * 4, grad_cov2d_T, 2, 2);
 
-    T temp3[6];  // 2x3
-    matrix_multiply<T>(grad_cov2d_T, J + i * 6, temp3, 2, 2, 3);
+    T term2[6];
+    matrix_multiply<T>(grad_cov2d_T, J_cov3d, term2, 2, 2, 3);
 
-    T temp4[6];  // 2x3
-    matrix_multiply<T>(temp3, cov3d + i * 9, temp4, 2, 3, 3);
-
-    // grad_J = temp2 + temp4
     for (int j = 0; j < 6; j++) {
-        grad_J[i * 6 + j] = temp2[j] + temp4[j];
+        grad_J[i * 6 + j] = term1[j] + term2[j];
     }
 }
 

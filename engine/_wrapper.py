@@ -20,10 +20,11 @@ except ImportError:
 class QuaternionToRotation(Function):
     @staticmethod
     def forward(ctx, quaternion):
+        q_norm = torch.nn.functional.normalize(quaternion, dim=1)
         rotation = torch.empty(
             quaternion.shape[0], 3, 3, dtype=quaternion.dtype, device=quaternion.device
         )
-        _C.quaternion_to_rotation_cuda(quaternion, rotation)
+        _C.quaternion_to_rotation_cuda(q_norm, rotation)
         ctx.save_for_backward(quaternion)
         return rotation
 
@@ -114,7 +115,7 @@ class ProjectToChannelCoords(Function):
     @staticmethod
     def backward(ctx, grad_distances, grad_displacement, grad_uv):
         points, receiver, distances, displacement = ctx.saved_tensors
-        grad_points = torch.empty_like(points)
+        grad_points = torch.zeros_like(points)
         _C.project_to_channel_coords_backward_cuda(
             points,
             receiver,
@@ -163,8 +164,8 @@ class ProjectCov3dToCov2d(Function):
     @staticmethod
     def backward(ctx, grad_cov2d):
         cov3d, jacobian = ctx.saved_tensors
-        grad_cov3d = torch.empty_like(cov3d)
-        grad_jacobian = torch.empty_like(jacobian)
+        grad_cov3d = torch.zeros_like(cov3d)
+        grad_jacobian = torch.zeros_like(jacobian)
         _C.project_cov3d_to_cov2d_backward_cuda(
             cov3d, jacobian, grad_cov2d.contiguous(), grad_cov3d, grad_jacobian
         )
@@ -216,17 +217,14 @@ class ComputeWirelessChannel(Function):
         )
         ctx.save_for_backward(attenuation, phase_rotation, distances)
         ctx.wavelength = wavelength
-        return (
-            real_contributions,
-            imag_contributions,
-        )
+        return real_contributions, imag_contributions
 
     @staticmethod
     def backward(ctx, grad_real, grad_imag):
         attenuation, phase_rotation, distances = ctx.saved_tensors
-        grad_attenuation = torch.empty_like(attenuation)
-        grad_phase_rotation = torch.empty_like(phase_rotation)
-        grad_distances = torch.empty_like(distances)
+        grad_attenuation = torch.zeros_like(attenuation)
+        grad_phase_rotation = torch.zeros_like(phase_rotation)
+        grad_distances = torch.zeros_like(distances)
         _C.compute_wireless_channel_backward_cuda(
             attenuation,
             phase_rotation,
@@ -270,6 +268,7 @@ class AlphaBlending(Function):
             num_rx,
             channel_matrix,
         )
+
         ctx.save_for_backward(
             influences, real_contributions, imag_contributions, opacity, sort_indices
         )
@@ -282,6 +281,7 @@ class AlphaBlending(Function):
         influences, real_contributions, imag_contributions, opacity, sort_indices = (
             ctx.saved_tensors
         )
+
         grad_influences = torch.zeros_like(influences)
         grad_real_contributions = torch.zeros_like(real_contributions)
         grad_imag_contributions = torch.zeros_like(imag_contributions)
@@ -301,6 +301,7 @@ class AlphaBlending(Function):
             grad_imag_contributions,
             grad_opacity,
         )
+
         return (
             grad_influences,
             grad_real_contributions,
@@ -326,25 +327,6 @@ def rasterize(
     frequency,
     scale_modifier=1.0,
 ):
-    """Rasterize the channel matrix for a specific receiver position
-
-    Args:
-        points: Gaussian centers [N, 3]
-        scaling: Scaling factors [N, 3]
-        rotation: Quaternion rotations [N, 4]
-        attenuation: Learned attenuation amplitude from neural network [N, 1]
-        phase_rotation: Learned phase rotation from neural network [N, 1]
-        opacity: Opacity values [N, 1]
-        receiver: Receiver position [3]
-        transmitter: Transmitter position [3]
-        num_tx: Number of transmit antennas
-        num_rx: Number of receive antennas
-        frequency: Signal frequency in Hz
-        scale_modifier: Global scaling modifier (default is 1.0)
-
-    Returns:
-        Channel matrix of shape [num_tx, 2*num_rx] with real and imaginary parts concatenated
-    """
     c = 299792458.0
     wavelength = c / frequency
 
@@ -357,6 +339,7 @@ def rasterize(
     cov2d = ProjectCov3dToCov2d.apply(cov3d, jacobian)
     sort_indices = torch.argsort(distances).to(dtype=torch.int32)
     influences = ComputeGaussianInfluence.apply(uv, cov2d, num_tx, num_rx)
+
     real_contributions, imag_contributions = ComputeWirelessChannel.apply(
         attenuation.contiguous(), phase_rotation.contiguous(), distances, wavelength
     )

@@ -10,120 +10,104 @@
 #include "matrix.cuh"
 
 template <typename T>
-__global__ void compute_gaussian_influence_backward_kernel(
-    const T* __restrict__ uv, const T* __restrict__ cov2d,
-    const T* __restrict__ influences,  // precomputed influence values
-    const T* __restrict__ grad_influences, const int num_tx, const int num_rx,
-    const int N, T* __restrict__ grad_uv, T* __restrict__ grad_cov2d) {
+__launch_bounds__(1024) __global__
+    void compute_gaussian_influence_backward_kernel(
+        const T* __restrict__ uv, const T* __restrict__ cov2d,
+        const T* __restrict__ influences, const T* __restrict__ grad_influences,
+        const int num_tx, const int num_rx, const int N,
+        T* __restrict__ grad_uv, T* __restrict__ grad_cov2d) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= N) {
         return;
     }
 
-    // Extract covariance matrix and compute inverse
     const T a = cov2d[i * 4 + 0];
     const T b = cov2d[i * 4 + 1];
     const T c = cov2d[i * 4 + 2];
-    const T d = cov2d[i * 4 + 3];
+    const T d_cov = cov2d[i * 4 + 3];
 
-    const T det = a * d - b * c;
+    const T det = a * d_cov - b * c;
+    if (abs(det) < T(1e-10)) {
+        grad_uv[i * 2 + 0] = T(0.0);
+        grad_uv[i * 2 + 1] = T(0.0);
+        grad_cov2d[i * 4 + 0] = T(0.0);
+        grad_cov2d[i * 4 + 1] = T(0.0);
+        grad_cov2d[i * 4 + 2] = T(0.0);
+        grad_cov2d[i * 4 + 3] = T(0.0);
+        return;
+    }
     const T inv_det = T(1.0) / det;
 
-    const T inv_a = d * inv_det;
-    const T inv_b = -b * inv_det;
-    const T inv_c = -c * inv_det;
-    const T inv_d = a * inv_det;
+    T inv_cov[4];
+    inv_cov[0] = d_cov * inv_det;
+    inv_cov[1] = -b * inv_det;
+    inv_cov[2] = -c * inv_det;
+    inv_cov[3] = a * inv_det;
 
     const T u_i = uv[i * 2 + 0];
     const T v_i = uv[i * 2 + 1];
 
-    // Initialize gradients for this Gaussian
     T grad_u_sum = T(0.0);
     T grad_v_sum = T(0.0);
-    T grad_a_sum = T(0.0);
-    T grad_b_sum = T(0.0);
-    T grad_c_sum = T(0.0);
-    T grad_d_sum = T(0.0);
+    T grad_cov2d_sum[4] = {T(0.0), T(0.0), T(0.0), T(0.0)};
 
-    // For each antenna location, compute gradient contribution
     for (int tx = 0; tx < num_tx; tx++) {
         for (int rx = 0; rx < num_rx; rx++) {
             const int influence_idx = i * num_tx * num_rx + tx * num_rx + rx;
             const T grad_influence = grad_influences[influence_idx];
 
-            // Only compute gradient if there's a non-zero gradient
             if (abs(grad_influence) > T(1e-10)) {
                 const T antenna_u = tx + T(0.5);
                 const T antenna_v = rx + T(0.5);
 
-                const T du = u_i - antenna_u;
-                const T dv = v_i - antenna_v;
+                T disp[2];
+                disp[0] = u_i - antenna_u;
+                disp[1] = v_i - antenna_v;
 
-                // Influence value already computed
                 const T influence = influences[influence_idx];
 
-                // Gradient of influence with respect to Mahalanobis distance
-                const T grad_md = -T(0.5) * influence * grad_influence;
+                const T grad_md = grad_influence * (-T(0.5) * influence);
 
-                // Gradient of Mahalanobis distance with respect to uv
-                // coordinates dmd/du = inv_a * du + inv_b * dv dmd/dv = inv_c *
-                // du + inv_d * dv
-                grad_u_sum += grad_md * (inv_a * du + inv_b * dv);
-                grad_v_sum += grad_md * (inv_c * du + inv_d * dv);
+                T grad_disp[2];
+                grad_disp[0] = inv_cov[0] * disp[0] + inv_cov[1] * disp[1];
+                grad_disp[1] = inv_cov[2] * disp[0] + inv_cov[3] * disp[1];
 
-                // Outer product of displacement vector
-                const T du_du = du * du;
-                const T du_dv = du * dv;
-                const T dv_dv = dv * dv;
+                grad_u_sum += grad_md * T(2.0) * grad_disp[0];
+                grad_v_sum += grad_md * T(2.0) * grad_disp[1];
 
-                // Gradient of Mahalanobis distance with respect to inverse
-                // covariance dmd/dinv_a = du * du dmd/dinv_b = du * dv
-                // dmd/dinv_c = du * dv
-                // dmd/dinv_d = dv * dv
-                const T grad_inv_a = grad_md * du_du;
-                const T grad_inv_b = grad_md * du_dv;
-                const T grad_inv_c = grad_md * du_dv;
-                const T grad_inv_d = grad_md * dv_dv;
+                T d_outer[4];
+                d_outer[0] = disp[0] * disp[0];
+                d_outer[1] = disp[0] * disp[1];
+                d_outer[2] = disp[1] * disp[0];
+                d_outer[3] = disp[1] * disp[1];
 
-                // Chain rule for covariance matrix inversion
-                // dinv_a/da = -inv_a * inv_a * d + inv_b * inv_c
-                // dinv_b/db = -inv_b * inv_b
-                // dinv_c/dc = -inv_c * inv_c
-                // dinv_d/dd = -inv_d * inv_d
+                T temp_mat[4];
+                temp_mat[0] = grad_md * d_outer[0];
+                temp_mat[1] = grad_md * d_outer[1];
+                temp_mat[2] = grad_md * d_outer[2];
+                temp_mat[3] = grad_md * d_outer[3];
 
-                // Compute gradients for each element of the covariance matrix
-                grad_a_sum +=
-                    grad_inv_a * (-inv_a * inv_a * d + inv_b * inv_c) +
-                    grad_inv_b * (-inv_a * inv_b) +
-                    grad_inv_c * (-inv_a * inv_c) +
-                    grad_inv_d * (-inv_b * inv_c);
+                T temp_mat2[4];
+                matrix_multiply<T>(temp_mat, inv_cov, temp_mat2, 2, 2, 2);
 
-                grad_b_sum += grad_inv_a * (inv_a * inv_c) +
-                              grad_inv_b * (-inv_a * inv_d) +
-                              grad_inv_c * (-inv_c * inv_c) +
-                              grad_inv_d * (-inv_c * inv_d);
+                T grad_C_term[4];
+                matrix_multiply<T>(inv_cov, temp_mat2, grad_C_term, 2, 2, 2);
 
-                grad_c_sum += grad_inv_a * (inv_a * inv_b) +
-                              grad_inv_b * (-inv_b * inv_b) +
-                              grad_inv_c * (-inv_a * inv_d) +
-                              grad_inv_d * (-inv_b * inv_d);
-
-                grad_d_sum += grad_inv_a * (inv_b * inv_b) +
-                              grad_inv_b * (inv_a * inv_b) +
-                              grad_inv_c * (inv_a * inv_c) +
-                              grad_inv_d * (-inv_d * inv_d + inv_a * inv_a);
+                grad_cov2d_sum[0] -= grad_C_term[0];
+                grad_cov2d_sum[1] -= grad_C_term[1];
+                grad_cov2d_sum[2] -= grad_C_term[2];
+                grad_cov2d_sum[3] -= grad_C_term[3];
             }
         }
     }
 
-    // Update gradients
     grad_uv[i * 2 + 0] = grad_u_sum;
     grad_uv[i * 2 + 1] = grad_v_sum;
 
-    grad_cov2d[i * 4 + 0] = grad_a_sum;
-    grad_cov2d[i * 4 + 1] = grad_b_sum;
-    grad_cov2d[i * 4 + 2] = grad_c_sum;
-    grad_cov2d[i * 4 + 3] = grad_d_sum;
+    grad_cov2d[i * 4 + 0] = grad_cov2d_sum[0];
+    grad_cov2d[i * 4 + 1] = grad_cov2d_sum[1];
+    grad_cov2d[i * 4 + 2] = grad_cov2d_sum[2];
+    grad_cov2d[i * 4 + 3] = grad_cov2d_sum[3];
 }
 
 void compute_gaussian_influence_backward_cuda(
@@ -208,7 +192,8 @@ __global__ void compute_wireless_channel_backward_kernel(
     const T PI = T(3.14159265358979323846);
 
     const T r = distances[i];
-    const T path_loss = wavelength / (T(4.0) * PI * r);
+    const T r_safe = max(r, T(1e-10));
+    const T path_loss = wavelength / (T(4.0) * PI * r_safe);
     const T phase_shift = -T(2.0) * PI * r / wavelength;
 
     const T A = attenuation[i];
@@ -223,16 +208,13 @@ __global__ void compute_wireless_channel_backward_kernel(
     const T grad_real = grad_real_contributions[i];
     const T grad_imag = grad_imag_contributions[i];
 
-    // Gradient with respect to attenuation
     grad_attenuation[i] =
         grad_real * path_loss * cos_phase + grad_imag * path_loss * sin_phase;
 
-    // Gradient with respect to phase rotation
     grad_phase_rotation[i] = -grad_real * total_attenuation * sin_phase +
                              grad_imag * total_attenuation * cos_phase;
 
-    // Gradient with respect to distance
-    const T grad_path_loss = -wavelength / (T(4.0) * PI * r * r);
+    const T grad_path_loss = -wavelength / (T(4.0) * PI * r_safe * r_safe);
     const T grad_phase_shift = -T(2.0) * PI / wavelength;
 
     grad_distances[i] =
@@ -258,18 +240,31 @@ void compute_wireless_channel_backward_cuda(
     CHECK_VALID_INPUT(grad_distances);
 
     const int N = attenuation.size(0);
-    TORCH_CHECK(phase_rotation.size(0) == N,
-                "phase_rotation must have shape N");
-    TORCH_CHECK(distances.size(0) == N, "distances must have shape N");
-    TORCH_CHECK(grad_real_contributions.size(0) == N,
-                "grad_real_contributions must have shape N");
-    TORCH_CHECK(grad_imag_contributions.size(0) == N,
-                "grad_imag_contributions must have shape N");
-    TORCH_CHECK(grad_attenuation.size(0) == N,
-                "grad_attenuation must have shape N");
-    TORCH_CHECK(grad_phase_rotation.size(0) == N,
-                "grad_phase_rotation must have shape N");
-    TORCH_CHECK(grad_distances.size(0) == N,
+    TORCH_CHECK(attenuation.size(0) == N &&
+                    (attenuation.dim() == 1 || attenuation.size(1) == 1),
+                "attenuation must have shape N or Nx1");
+    TORCH_CHECK(phase_rotation.size(0) == N &&
+                    (phase_rotation.dim() == 1 || phase_rotation.size(1) == 1),
+                "phase_rotation must have shape N or Nx1");
+    TORCH_CHECK(distances.size(0) == N && distances.dim() == 1,
+                "distances must have shape N");
+    TORCH_CHECK(grad_real_contributions.size(0) == N &&
+                    (grad_real_contributions.dim() == 1 ||
+                     grad_real_contributions.size(1) == 1),
+                "grad_real_contributions must have shape N or Nx1");
+    TORCH_CHECK(grad_imag_contributions.size(0) == N &&
+                    (grad_imag_contributions.dim() == 1 ||
+                     grad_imag_contributions.size(1) == 1),
+                "grad_imag_contributions must have shape N or Nx1");
+    TORCH_CHECK(
+        grad_attenuation.size(0) == N &&
+            (grad_attenuation.dim() == 1 || grad_attenuation.size(1) == 1),
+        "grad_attenuation must have shape N or Nx1");
+    TORCH_CHECK(
+        grad_phase_rotation.size(0) == N && (grad_phase_rotation.dim() == 1 ||
+                                             grad_phase_rotation.size(1) == 1),
+        "grad_phase_rotation must have shape N or Nx1");
+    TORCH_CHECK(grad_distances.size(0) == N && grad_distances.dim() == 1,
                 "grad_distances must have shape N");
 
     const int max_threads_per_block = 1024;
@@ -277,6 +272,15 @@ void compute_wireless_channel_backward_cuda(
         (N + max_threads_per_block - 1) / max_threads_per_block;
     dim3 gridsize(num_blocks, 1, 1);
     dim3 blocksize(max_threads_per_block, 1, 1);
+
+    auto att_cont = attenuation.contiguous().view({N});
+    auto phase_cont = phase_rotation.contiguous().view({N});
+    auto dist_cont = distances.contiguous();
+    auto grad_real_cont = grad_real_contributions.contiguous().view({N});
+    auto grad_imag_cont = grad_imag_contributions.contiguous().view({N});
+    auto grad_att_cont = grad_attenuation.contiguous().view({N});
+    auto grad_phase_cont = grad_phase_rotation.contiguous().view({N});
+    auto grad_dist_cont = grad_distances.contiguous();
 
     if (attenuation.dtype() == torch::kFloat32) {
         CHECK_FLOAT_TENSOR(phase_rotation);
@@ -287,14 +291,14 @@ void compute_wireless_channel_backward_cuda(
         CHECK_FLOAT_TENSOR(grad_phase_rotation);
         CHECK_FLOAT_TENSOR(grad_distances);
         compute_wireless_channel_backward_kernel<float>
-            <<<gridsize, blocksize>>>(attenuation.data_ptr<float>(),
-                                      phase_rotation.data_ptr<float>(),
-                                      distances.data_ptr<float>(), wavelength,
-                                      grad_real_contributions.data_ptr<float>(),
-                                      grad_imag_contributions.data_ptr<float>(),
-                                      N, grad_attenuation.data_ptr<float>(),
-                                      grad_phase_rotation.data_ptr<float>(),
-                                      grad_distances.data_ptr<float>());
+            <<<gridsize, blocksize>>>(att_cont.data_ptr<float>(),
+                                      phase_cont.data_ptr<float>(),
+                                      dist_cont.data_ptr<float>(), wavelength,
+                                      grad_real_cont.data_ptr<float>(),
+                                      grad_imag_cont.data_ptr<float>(), N,
+                                      grad_att_cont.data_ptr<float>(),
+                                      grad_phase_cont.data_ptr<float>(),
+                                      grad_dist_cont.data_ptr<float>());
     } else if (attenuation.dtype() == torch::kFloat64) {
         CHECK_DOUBLE_TENSOR(phase_rotation);
         CHECK_DOUBLE_TENSOR(distances);
@@ -305,17 +309,24 @@ void compute_wireless_channel_backward_cuda(
         CHECK_DOUBLE_TENSOR(grad_distances);
         compute_wireless_channel_backward_kernel<double>
             <<<gridsize, blocksize>>>(
-                attenuation.data_ptr<double>(),
-                phase_rotation.data_ptr<double>(), distances.data_ptr<double>(),
-                wavelength, grad_real_contributions.data_ptr<double>(),
-                grad_imag_contributions.data_ptr<double>(), N,
-                grad_attenuation.data_ptr<double>(),
-                grad_phase_rotation.data_ptr<double>(),
-                grad_distances.data_ptr<double>());
+                att_cont.data_ptr<double>(), phase_cont.data_ptr<double>(),
+                dist_cont.data_ptr<double>(), (double)wavelength,
+                grad_real_cont.data_ptr<double>(),
+                grad_imag_cont.data_ptr<double>(), N,
+                grad_att_cont.data_ptr<double>(),
+                grad_phase_cont.data_ptr<double>(),
+                grad_dist_cont.data_ptr<double>());
     } else {
         AT_ERROR("Unsupported data type: ", attenuation.dtype());
     }
     cudaDeviceSynchronize();
+
+    if (attenuation.dim() > 1 && attenuation.size(1) == 1) {
+        grad_attenuation.copy_(grad_att_cont.view({N, 1}));
+    }
+    if (phase_rotation.dim() > 1 && phase_rotation.size(1) == 1) {
+        grad_phase_rotation.copy_(grad_phase_cont.view({N, 1}));
+    }
 }
 
 template <typename T>
@@ -327,7 +338,6 @@ __global__ void alpha_blending_backward_per_gaussian_antenna_kernel(
     const int num_rx, const int N, T* __restrict__ grad_influences,
     T* __restrict__ grad_real_contributions,
     T* __restrict__ grad_imag_contributions, T* __restrict__ grad_opacity) {
-    // One thread per antenna element and Gaussian
     const int tx = blockIdx.x;
     const int rx = blockIdx.y;
     const int p = threadIdx.x;
@@ -336,116 +346,48 @@ __global__ void alpha_blending_backward_per_gaussian_antenna_kernel(
         return;
     }
 
-    const int grad_idx = tx * (2 * num_rx) + rx;
-    const T grad_real = grad_channel_matrix[grad_idx];
+    const int grad_idx_real = tx * (2 * num_rx) + rx;
+    const T grad_real = grad_channel_matrix[grad_idx_real];
     const T grad_imag = grad_channel_matrix[tx * (2 * num_rx) + num_rx + rx];
 
-    // Cache in shared memory to reduce global memory reads
-    __shared__ T shm_real_acc[1024];  // Max threads per block
-    __shared__ T shm_imag_acc[1024];
-    __shared__ T shm_trans[1024 + 1];  // +1 for next transmittance
-    // Add shared variables for final accumulated values
-    __shared__ T final_real_acc;
-    __shared__ T final_imag_acc;
-
-    // Compute cumulative visibility and accumulated color for this pixel
-    if (p < N) {
-        const int idx = sort_indices[p];
-        const T influence =
-            influences[idx * num_tx * num_rx + tx * num_rx + rx];
-        const T alpha = opacity[idx] * influence;
-
-        // Initialize for first Gaussian
-        if (p == 0) {
-            shm_trans[0] = T(1.0);
-            shm_real_acc[0] = T(0.0);
-            shm_imag_acc[0] = T(0.0);
-        }
-
-        __syncthreads();
-
-        // The opacity after p Gaussians
-        const T transmittance = shm_trans[p];
-
-        // The accumulated real and imaginary contributions from previous
-        // Gaussians
-        T real_acc = shm_real_acc[p];
-        T imag_acc = shm_imag_acc[p];
-
-        // Contribution of current Gaussian
-        const T real_contrib = real_contributions[idx];
-        const T imag_contrib = imag_contributions[idx];
-
-        // Update accumulated values for next Gaussian
-        real_acc += transmittance * alpha * real_contrib;
-        imag_acc += transmittance * alpha * imag_contrib;
-
-        // Store for next Gaussian
-        if (p < N - 1) {
-            shm_real_acc[p + 1] = real_acc;
-            shm_imag_acc[p + 1] = imag_acc;
-            shm_trans[p + 1] = transmittance * (T(1.0) - alpha);
-        }
-        
-        // Store final accumulated values if this is the last point
-        if (p == N - 1) {
-            final_real_acc = real_acc;
-            final_imag_acc = imag_acc;
-        }
-
-        __syncthreads();
-
-        // Backward pass
-        // Compute gradients for all Gaussians from N-1 to 0
-        for (int pos = N - 1; pos >= 0; pos--) {
-            __syncthreads();
-
-            if (p == pos) {
-                const int idx = sort_indices[pos];
-                const T tr = shm_trans[pos];
-                const T influence =
-                    influences[idx * num_tx * num_rx + tx * num_rx + rx];
-                const T opacity_val = opacity[idx];
-                const T alpha = opacity_val * influence;
-                const T real_contrib = real_contributions[idx];
-                const T imag_contrib = imag_contributions[idx];
-
-                // Gradient with respect to real and imaginary contributions
-                atomicAdd(&grad_real_contributions[idx],
-                          tr * alpha * grad_real);
-                atomicAdd(&grad_imag_contributions[idx],
-                          tr * alpha * grad_imag);
-
-                // Gradient with respect to opacity and influence
-                const T grad_vis =
-                    grad_real * real_contrib + grad_imag * imag_contrib;
-                const T visibility_grad = tr * grad_vis;
-
-                // Split between opacity and influence
-                atomicAdd(&grad_opacity[idx], visibility_grad * influence);
-                atomicAdd(
-                    &grad_influences[idx * num_tx * num_rx + tx * num_rx + rx],
-                    visibility_grad * opacity_val);
-
-                // Transmittance contribution to the result
-                if (pos < N - 1) {
-                    // Remaining contribution
-                    const T remaining_real = final_real_acc - shm_real_acc[pos + 1];
-                    const T remaining_imag = final_imag_acc - shm_imag_acc[pos + 1];
-
-                    const T grad_tr =
-                        grad_real * remaining_real + grad_imag * remaining_imag;
-
-                    // Gradient through transmittance affects opacity/influence
-                    const T tr_grad = -tr * grad_tr;
-                    atomicAdd(&grad_opacity[idx], tr_grad * influence);
-                    atomicAdd(&grad_influences[idx * num_tx * num_rx +
-                                               tx * num_rx + rx],
-                              tr_grad * opacity_val);
-                }
-            }
+    T transmittance_p = T(1.0);
+    for (int k = 0; k < p; ++k) {
+        const int idx_k = sort_indices[k];
+        const T influence_k =
+            influences[idx_k * num_tx * num_rx + tx * num_rx + rx];
+        const T alpha_k = opacity[idx_k] * influence_k;
+        transmittance_p *= (T(1.0) - alpha_k);
+        if (transmittance_p < T(1e-4)) {
+            transmittance_p = T(0.0);
+            break;
         }
     }
+
+    const int idx_p = sort_indices[p];
+    const T influence_p =
+        influences[idx_p * num_tx * num_rx + tx * num_rx + rx];
+    const T opacity_p = opacity[idx_p];
+    const T alpha_p = opacity_p * influence_p;
+    const T real_contrib_p = real_contributions[idx_p];
+    const T imag_contrib_p = imag_contributions[idx_p];
+
+    T grad_C_real_term = grad_real * transmittance_p * alpha_p;
+    T grad_C_imag_term = grad_imag * transmittance_p * alpha_p;
+
+    T local_grad_direct = grad_real * transmittance_p * real_contrib_p +
+                          grad_imag * transmittance_p * imag_contrib_p;
+
+    T dLdT_p_plus_1 = T(0.0);
+    T local_grad = local_grad_direct - transmittance_p * dLdT_p_plus_1;
+
+    T grad_opac_term = local_grad * influence_p;
+    T grad_infl_term = local_grad * opacity_p;
+
+    atomicAdd(&grad_real_contributions[idx_p], grad_C_real_term);
+    atomicAdd(&grad_imag_contributions[idx_p], grad_C_imag_term);
+    atomicAdd(&grad_opacity[idx_p], grad_opac_term);
+    atomicAdd(&grad_influences[idx_p * num_tx * num_rx + tx * num_rx + rx],
+              grad_infl_term);
 }
 
 void alpha_blending_backward_cuda(
@@ -470,12 +412,19 @@ void alpha_blending_backward_cuda(
     TORCH_CHECK(influences.size(1) == num_tx && influences.size(2) == num_rx,
                 "influences must have shape Nx" + std::to_string(num_tx) + "x" +
                     std::to_string(num_rx));
-    TORCH_CHECK(real_contributions.size(0) == N,
-                "real_contributions must have shape N");
-    TORCH_CHECK(imag_contributions.size(0) == N,
-                "imag_contributions must have shape N");
-    TORCH_CHECK(opacity.size(0) == N, "opacity must have shape N");
-    TORCH_CHECK(sort_indices.size(0) == N, "sort_indices must have shape N");
+    TORCH_CHECK(
+        real_contributions.size(0) == N &&
+            (real_contributions.dim() == 1 || real_contributions.size(1) == 1),
+        "real_contributions must have shape N or Nx1");
+    TORCH_CHECK(
+        imag_contributions.size(0) == N &&
+            (imag_contributions.dim() == 1 || imag_contributions.size(1) == 1),
+        "imag_contributions must have shape N or Nx1");
+    TORCH_CHECK(
+        opacity.size(0) == N && (opacity.dim() == 1 || opacity.size(1) == 1),
+        "opacity must have shape N or Nx1");
+    TORCH_CHECK(sort_indices.size(0) == N && sort_indices.dim() == 1,
+                "sort_indices must have shape N");
     TORCH_CHECK(grad_channel_matrix.size(0) == num_tx &&
                     grad_channel_matrix.size(1) == 2 * num_rx,
                 "grad_channel_matrix must have shape " +
@@ -485,25 +434,39 @@ void alpha_blending_backward_cuda(
                     grad_influences.size(2) == num_rx,
                 "grad_influences must have shape Nx" + std::to_string(num_tx) +
                     "x" + std::to_string(num_rx));
-    TORCH_CHECK(grad_real_contributions.size(0) == N,
-                "grad_real_contributions must have shape N");
-    TORCH_CHECK(grad_imag_contributions.size(0) == N,
-                "grad_imag_contributions must have shape N");
-    TORCH_CHECK(grad_opacity.size(0) == N, "grad_opacity must have shape N");
+    TORCH_CHECK(grad_real_contributions.size(0) == N &&
+                    (grad_real_contributions.dim() == 1 ||
+                     grad_real_contributions.size(1) == 1),
+                "grad_real_contributions must have shape N or Nx1");
+    TORCH_CHECK(grad_imag_contributions.size(0) == N &&
+                    (grad_imag_contributions.dim() == 1 ||
+                     grad_imag_contributions.size(1) == 1),
+                "grad_imag_contributions must have shape N or Nx1");
+    TORCH_CHECK(grad_opacity.size(0) == N &&
+                    (grad_opacity.dim() == 1 || grad_opacity.size(1) == 1),
+                "grad_opacity must have shape N or Nx1");
 
-    // Zero out the gradients before accumulating
     grad_influences.zero_();
     grad_real_contributions.zero_();
     grad_imag_contributions.zero_();
     grad_opacity.zero_();
 
-    // Use 3D grid: (num_tx, num_rx, 1)
-    // with block size of N (or max_threads_per_block if N is too large)
     const int max_threads_per_block = 1024;
     const int threads_per_block = std::min(N, max_threads_per_block);
 
     dim3 grid_size(num_tx, num_rx, 1);
     dim3 block_size(threads_per_block, 1, 1);
+
+    auto influences_cont = influences.contiguous();
+    auto real_cont_cont = real_contributions.contiguous().view({N});
+    auto imag_cont_cont = imag_contributions.contiguous().view({N});
+    auto opacity_cont = opacity.contiguous().view({N});
+    auto sort_indices_cont = sort_indices.contiguous();
+    auto grad_channel_cont = grad_channel_matrix.contiguous();
+    auto grad_influences_cont = grad_influences.contiguous();
+    auto grad_real_cont = grad_real_contributions.contiguous().view({N});
+    auto grad_imag_cont = grad_imag_contributions.contiguous().view({N});
+    auto grad_opacity_cont = grad_opacity.contiguous().view({N});
 
     if (influences.dtype() == torch::kFloat32) {
         CHECK_FLOAT_TENSOR(real_contributions);
@@ -517,16 +480,17 @@ void alpha_blending_backward_cuda(
         CHECK_FLOAT_TENSOR(grad_opacity);
 
         alpha_blending_backward_per_gaussian_antenna_kernel<float>
-            <<<grid_size, block_size>>>(
-                influences.data_ptr<float>(),
-                real_contributions.data_ptr<float>(),
-                imag_contributions.data_ptr<float>(), opacity.data_ptr<float>(),
-                sort_indices.data_ptr<int>(),
-                grad_channel_matrix.data_ptr<float>(), num_tx, num_rx, N,
-                grad_influences.data_ptr<float>(),
-                grad_real_contributions.data_ptr<float>(),
-                grad_imag_contributions.data_ptr<float>(),
-                grad_opacity.data_ptr<float>());
+            <<<grid_size, block_size>>>(influences_cont.data_ptr<float>(),
+                                        real_cont_cont.data_ptr<float>(),
+                                        imag_cont_cont.data_ptr<float>(),
+                                        opacity_cont.data_ptr<float>(),
+                                        sort_indices_cont.data_ptr<int>(),
+                                        grad_channel_cont.data_ptr<float>(),
+                                        num_tx, num_rx, N,
+                                        grad_influences_cont.data_ptr<float>(),
+                                        grad_real_cont.data_ptr<float>(),
+                                        grad_imag_cont.data_ptr<float>(),
+                                        grad_opacity_cont.data_ptr<float>());
     } else if (influences.dtype() == torch::kFloat64) {
         CHECK_DOUBLE_TENSOR(real_contributions);
         CHECK_DOUBLE_TENSOR(imag_contributions);
@@ -538,19 +502,36 @@ void alpha_blending_backward_cuda(
         CHECK_DOUBLE_TENSOR(grad_imag_contributions);
         CHECK_DOUBLE_TENSOR(grad_opacity);
 
+        const int double_threads_per_block =
+            std::min(N, max_threads_per_block / 2);
+        dim3 double_block_size(double_threads_per_block, 1, 1);
+
         alpha_blending_backward_per_gaussian_antenna_kernel<double>
-            <<<grid_size, block_size>>>(
-                influences.data_ptr<double>(),
-                real_contributions.data_ptr<double>(),
-                imag_contributions.data_ptr<double>(),
-                opacity.data_ptr<double>(), sort_indices.data_ptr<int>(),
-                grad_channel_matrix.data_ptr<double>(), num_tx, num_rx, N,
-                grad_influences.data_ptr<double>(),
-                grad_real_contributions.data_ptr<double>(),
-                grad_imag_contributions.data_ptr<double>(),
-                grad_opacity.data_ptr<double>());
+            <<<grid_size, double_block_size>>>(
+                influences_cont.data_ptr<double>(),
+                real_cont_cont.data_ptr<double>(),
+                imag_cont_cont.data_ptr<double>(),
+                opacity_cont.data_ptr<double>(),
+                sort_indices_cont.data_ptr<int>(),
+                grad_channel_cont.data_ptr<double>(), num_tx, num_rx, N,
+                grad_influences_cont.data_ptr<double>(),
+                grad_real_cont.data_ptr<double>(),
+                grad_imag_cont.data_ptr<double>(),
+                grad_opacity_cont.data_ptr<double>());
     } else {
         AT_ERROR("Unsupported data type: ", influences.dtype());
     }
     cudaDeviceSynchronize();
+
+    if (grad_real_contributions.dim() > 1 &&
+        grad_real_contributions.size(1) == 1) {
+        grad_real_contributions.copy_(grad_real_cont.view({N, 1}));
+    }
+    if (grad_imag_contributions.dim() > 1 &&
+        grad_imag_contributions.size(1) == 1) {
+        grad_imag_contributions.copy_(grad_imag_cont.view({N, 1}));
+    }
+    if (grad_opacity.dim() > 1 && grad_opacity.size(1) == 1) {
+        grad_opacity.copy_(grad_opacity_cont.view({N, 1}));
+    }
 }
