@@ -22,14 +22,6 @@ __global__ void quaternion_to_rotation_kernel(const T* __restrict__ quaternion,
     T y = quaternion[i * 4 + 2];
     T z = quaternion[i * 4 + 3];
 
-    // Normalize quaternion
-    T norm = sqrt(w * w + x * x + y * y + z * z);
-    w /= norm;
-    x /= norm;
-    y /= norm;
-    z /= norm;
-
-    // Compute rotation matrix
     rotation[i * 9 + 0] = 1 - 2 * y * y - 2 * z * z;
     rotation[i * 9 + 1] = 2 * x * y - 2 * w * z;
     rotation[i * 9 + 2] = 2 * x * z + 2 * w * y;
@@ -83,9 +75,9 @@ __global__ void compute_scaling_matrix_kernel(const T* __restrict__ scaling,
     }
 
     // Create 3x3 diagonal matrix with scaled values
-    const T sx = exp(scaling[i * 3 + 0]) * scale_modifier;
-    const T sy = exp(scaling[i * 3 + 1]) * scale_modifier;
-    const T sz = exp(scaling[i * 3 + 2]) * scale_modifier;
+    const T sx = scaling[i * 3 + 0] * scale_modifier;
+    const T sy = scaling[i * 3 + 1] * scale_modifier;
+    const T sz = scaling[i * 3 + 2] * scale_modifier;
 
     // Fill the diagonal
     scaling_matrix[i * 9 + 0] = sx;
@@ -396,8 +388,8 @@ void compute_jacobian_cuda(torch::Tensor d, int num_tx, int num_rx,
 }
 
 template <typename T>
-__global__ void project_cov3d_to_cov2d_kernel(const T* __restrict__ cov3d,
-                                              const T* __restrict__ J,
+__global__ void project_cov3d_to_cov2d_kernel(const T* __restrict__ cov3d_mat,
+                                              const T* __restrict__ jacobian,
                                               const int N,
                                               T* __restrict__ cov2d) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
@@ -407,13 +399,13 @@ __global__ void project_cov3d_to_cov2d_kernel(const T* __restrict__ cov3d,
 
     // Step 1: Compute temp = cov3d * J^T
     T J_T[6];  // 3x2
-    transpose<T>(J + i * 6, J_T, 2, 3);
+    transpose<T>(jacobian + i * 6, J_T, 2, 3);
 
     T temp[6];  // 3x2
-    matrix_multiply<T>(cov3d + i * 9, J_T, temp, 3, 3, 2);
+    matrix_multiply<T>(cov3d_mat + i * 9, J_T, temp, 3, 3, 2);
 
     // Step 2: Compute cov2d = J * temp
-    matrix_multiply<T>(J + i * 6, temp, cov2d + i * 4, 2, 3, 2);
+    matrix_multiply<T>(jacobian + i * 6, temp, cov2d + i * 4, 2, 3, 2);
 
     // Add a small constant to ensure positive definiteness
     cov2d[i * 4 + 0] += T(0.3);  // (0,0)

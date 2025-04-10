@@ -282,10 +282,10 @@ class AlphaBlending(Function):
         influences, real_contributions, imag_contributions, opacity, sort_indices = (
             ctx.saved_tensors
         )
-        grad_influences = torch.empty_like(influences)
-        grad_real_contributions = torch.empty_like(real_contributions)
-        grad_imag_contributions = torch.empty_like(imag_contributions)
-        grad_opacity = torch.empty_like(opacity)
+        grad_influences = torch.zeros_like(influences)
+        grad_real_contributions = torch.zeros_like(real_contributions)
+        grad_imag_contributions = torch.zeros_like(imag_contributions)
+        grad_opacity = torch.zeros_like(opacity)
 
         _C.alpha_blending_backward_cuda(
             influences,
@@ -330,13 +330,13 @@ def rasterize(
 
     Args:
         points: Gaussian centers [N, 3]
-        scaling: Scaling factors (already with exponential activation applied) [N, 3]
-        rotation: Quaternion rotations (already normalized) [N, 4]
+        scaling: Scaling factors [N, 3]
+        rotation: Quaternion rotations [N, 4]
         attenuation: Learned attenuation amplitude from neural network [N, 1]
         phase_rotation: Learned phase rotation from neural network [N, 1]
-        opacity: Opacity values (already with sigmoid activation applied) [N, 1]
+        opacity: Opacity values [N, 1]
         receiver: Receiver position [3]
-        transmitter: Transmitter position [3] (not used in current implementation)
+        transmitter: Transmitter position [3]
         num_tx: Number of transmit antennas
         num_rx: Number of receive antennas
         frequency: Signal frequency in Hz
@@ -355,11 +355,8 @@ def rasterize(
     distances, d, uv = ProjectToChannelCoords.apply(points, receiver, num_tx, num_rx)
     jacobian = ComputeJacobian.apply(d, num_tx, num_rx)
     cov2d = ProjectCov3dToCov2d.apply(cov3d, jacobian)
-
     sort_indices = torch.argsort(distances).to(dtype=torch.int32)
-
     influences = ComputeGaussianInfluence.apply(uv, cov2d, num_tx, num_rx)
-
     real_contributions, imag_contributions = ComputeWirelessChannel.apply(
         attenuation.contiguous(), phase_rotation.contiguous(), distances, wavelength
     )

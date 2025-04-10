@@ -188,13 +188,13 @@ def rasterize(
 
     Args:
         points: Gaussian centers [N, 3]
-        scaling: Scaling factors (already with exponential activation applied) [N, 3]
-        rotation: Quaternion rotations (already normalized) [N, 4]
+        scaling: Scaling factors [N, 3]
+        rotation: Quaternion rotations [N, 4]
         attenuation: Learned attenuation amplitude from neural network [N, 1]
         phase_rotation: Learned phase rotation from neural network [N, 1]
         opacity: Opacity values (already with sigmoid activation applied) [N, 1]
         receiver: Receiver position [3]
-        transmitter: Transmitter position [3] (not used in current implementation)
+        transmitter: Transmitter position [3]
         num_tx: Number of transmit antennas
         num_rx: Number of receive antennas
         frequency: Signal frequency in Hz

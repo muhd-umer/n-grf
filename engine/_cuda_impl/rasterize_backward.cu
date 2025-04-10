@@ -87,35 +87,31 @@ __global__ void compute_gaussian_influence_backward_kernel(
 
                 // Chain rule for covariance matrix inversion
                 // dinv_a/da = -inv_a * inv_a * d + inv_b * inv_c
-                // dinv_b/da = -inv_a * inv_b * d + inv_b * inv_d
-                // dinv_c/da = -inv_a * inv_c * d + inv_c * inv_d
-                // dinv_d/da = -inv_a * inv_d * d + inv_d * inv_d
+                // dinv_b/db = -inv_b * inv_b
+                // dinv_c/dc = -inv_c * inv_c
+                // dinv_d/dd = -inv_d * inv_d
 
-                // Compute gradients with respect to a
+                // Compute gradients for each element of the covariance matrix
                 grad_a_sum +=
                     grad_inv_a * (-inv_a * inv_a * d + inv_b * inv_c) +
-                    grad_inv_b * (-inv_a * inv_b * d + inv_b * inv_d) +
-                    grad_inv_c * (-inv_a * inv_c * d + inv_c * inv_d) +
-                    grad_inv_d * (-inv_a * inv_d * d + inv_d * inv_d);
+                    grad_inv_b * (-inv_a * inv_b) +
+                    grad_inv_c * (-inv_a * inv_c) +
+                    grad_inv_d * (-inv_b * inv_c);
 
-                // Compute gradients with respect to b
-                grad_b_sum += grad_inv_a * (inv_a * inv_a * c) +
-                              grad_inv_b * (inv_a * inv_b * c - inv_a * inv_d) +
-                              grad_inv_c * (inv_a * inv_c * c - inv_c * inv_c) +
-                              grad_inv_d * (inv_a * inv_d * c - inv_c * inv_d);
+                grad_b_sum += grad_inv_a * (inv_a * inv_c) +
+                              grad_inv_b * (-inv_a * inv_d) +
+                              grad_inv_c * (-inv_c * inv_c) +
+                              grad_inv_d * (-inv_c * inv_d);
 
-                // Compute gradients with respect to c
-                grad_c_sum += grad_inv_a * (inv_a * inv_a * b) +
-                              grad_inv_b * (inv_a * inv_b * b - inv_b * inv_b) +
-                              grad_inv_c * (inv_a * inv_c * b - inv_b * inv_c) +
-                              grad_inv_d * (inv_a * inv_d * b - inv_b * inv_d);
+                grad_c_sum += grad_inv_a * (inv_a * inv_b) +
+                              grad_inv_b * (-inv_b * inv_b) +
+                              grad_inv_c * (-inv_a * inv_d) +
+                              grad_inv_d * (-inv_b * inv_d);
 
-                // Compute gradients with respect to d
-                grad_d_sum +=
-                    grad_inv_a * (-inv_a * inv_a * a + inv_a * inv_a) +
-                    grad_inv_b * (-inv_a * inv_b * a + inv_a * inv_b) +
-                    grad_inv_c * (-inv_a * inv_c * a + inv_a * inv_c) +
-                    grad_inv_d * (-inv_a * inv_d * a + inv_a * inv_d);
+                grad_d_sum += grad_inv_a * (inv_b * inv_b) +
+                              grad_inv_b * (inv_a * inv_b) +
+                              grad_inv_c * (inv_a * inv_c) +
+                              grad_inv_d * (-inv_d * inv_d + inv_a * inv_a);
             }
         }
     }
@@ -323,7 +319,7 @@ void compute_wireless_channel_backward_cuda(
 }
 
 template <typename T>
-__global__ void alpha_blending_backward_kernel(
+__global__ void alpha_blending_backward_per_gaussian_antenna_kernel(
     const T* __restrict__ influences, const T* __restrict__ real_contributions,
     const T* __restrict__ imag_contributions, const T* __restrict__ opacity,
     const int* __restrict__ sort_indices,
@@ -331,83 +327,124 @@ __global__ void alpha_blending_backward_kernel(
     const int num_rx, const int N, T* __restrict__ grad_influences,
     T* __restrict__ grad_real_contributions,
     T* __restrict__ grad_imag_contributions, T* __restrict__ grad_opacity) {
-    // One thread per antenna pair
-    const int tx = blockIdx.x * blockDim.x + threadIdx.x;
-    const int rx = blockIdx.y * blockDim.y + threadIdx.y;
+    // One thread per antenna element and Gaussian
+    const int tx = blockIdx.x;
+    const int rx = blockIdx.y;
+    const int p = threadIdx.x;
 
-    if (tx >= num_tx || rx >= num_rx) {
+    if (tx >= num_tx || rx >= num_rx || p >= N) {
         return;
     }
 
-    // Extract gradients from channel matrix
-    const T grad_real = grad_channel_matrix[tx * (2 * num_rx) + rx];
+    const int grad_idx = tx * (2 * num_rx) + rx;
+    const T grad_real = grad_channel_matrix[grad_idx];
     const T grad_imag = grad_channel_matrix[tx * (2 * num_rx) + num_rx + rx];
 
-    // Precompute effective opacities, transmittances, and accumulated colors
-    T eff_opacity[128];    // Fixed array size, should be large enough for most
-                           // cases
-    T transmittance[129];  // One more for initialization
-    T real_accum[128];
-    T imag_accum[128];
+    // Cache in shared memory to reduce global memory reads
+    __shared__ T shm_real_acc[1024];  // Max threads per block
+    __shared__ T shm_imag_acc[1024];
+    __shared__ T shm_trans[1024 + 1];  // +1 for next transmittance
+    // Add shared variables for final accumulated values
+    __shared__ T final_real_acc;
+    __shared__ T final_imag_acc;
 
-    transmittance[0] = T(1.0);
-
-    // Forward pass to compute transmittance and accumulated colors
-    for (int p = 0; p < N; p++) {
-        const int idx_pos = p;
-        const int idx = sort_indices[idx_pos];
-
-        eff_opacity[p] =
-            opacity[idx] * influences[idx * num_tx * num_rx + tx * num_rx + rx];
-
-        real_accum[p] =
-            eff_opacity[p] * real_contributions[idx] * transmittance[p];
-        imag_accum[p] =
-            eff_opacity[p] * imag_contributions[idx] * transmittance[p];
-
-        transmittance[p + 1] = transmittance[p] * (T(1.0) - eff_opacity[p]);
-    }
-
-    // Backward pass to compute gradients
-    T dLdT_next =
-        T(0.0);  // Gradient of loss with respect to next transmittance
-
-    for (int p = N - 1; p >= 0; p--) {
-        const int idx_pos = p;
-        const int idx = sort_indices[idx_pos];
-
-        // Gradient with respect to real and imag contributions
-        T grad_real_contrib = eff_opacity[p] * transmittance[p] * grad_real;
-        T grad_imag_contrib = eff_opacity[p] * transmittance[p] * grad_imag;
-
-        // Atomic add to handle multiple threads updating the same contribution
-        atomicAdd(&grad_real_contributions[idx], grad_real_contrib);
-        atomicAdd(&grad_imag_contributions[idx], grad_imag_contrib);
-
-        // Direct effect of effective opacity on output
-        T grad_eff_opacity_direct =
-            transmittance[p] * (real_contributions[idx] * grad_real +
-                                imag_contributions[idx] * grad_imag);
-
-        // Indirect effect through transmittance for subsequent Gaussians
-        T grad_eff_opacity_indirect = -transmittance[p] * dLdT_next;
-
-        // Total gradient with respect to effective opacity
-        T grad_eff_opacity =
-            grad_eff_opacity_direct + grad_eff_opacity_indirect;
-
-        // Split gradient between opacity and influence
+    // Compute cumulative visibility and accumulated color for this pixel
+    if (p < N) {
+        const int idx = sort_indices[p];
         const T influence =
             influences[idx * num_tx * num_rx + tx * num_rx + rx];
-        atomicAdd(&grad_opacity[idx], grad_eff_opacity * influence);
-        atomicAdd(&grad_influences[idx * num_tx * num_rx + tx * num_rx + rx],
-                  grad_eff_opacity * opacity[idx]);
+        const T alpha = opacity[idx] * influence;
 
-        // Compute gradient with respect to transmittance for previous Gaussian
-        T dLdT_curr = grad_real * real_accum[p] + grad_imag * imag_accum[p] +
-                      dLdT_next * (T(1.0) - eff_opacity[p]);
+        // Initialize for first Gaussian
+        if (p == 0) {
+            shm_trans[0] = T(1.0);
+            shm_real_acc[0] = T(0.0);
+            shm_imag_acc[0] = T(0.0);
+        }
 
-        dLdT_next = dLdT_curr;
+        __syncthreads();
+
+        // The opacity after p Gaussians
+        const T transmittance = shm_trans[p];
+
+        // The accumulated real and imaginary contributions from previous
+        // Gaussians
+        T real_acc = shm_real_acc[p];
+        T imag_acc = shm_imag_acc[p];
+
+        // Contribution of current Gaussian
+        const T real_contrib = real_contributions[idx];
+        const T imag_contrib = imag_contributions[idx];
+
+        // Update accumulated values for next Gaussian
+        real_acc += transmittance * alpha * real_contrib;
+        imag_acc += transmittance * alpha * imag_contrib;
+
+        // Store for next Gaussian
+        if (p < N - 1) {
+            shm_real_acc[p + 1] = real_acc;
+            shm_imag_acc[p + 1] = imag_acc;
+            shm_trans[p + 1] = transmittance * (T(1.0) - alpha);
+        }
+        
+        // Store final accumulated values if this is the last point
+        if (p == N - 1) {
+            final_real_acc = real_acc;
+            final_imag_acc = imag_acc;
+        }
+
+        __syncthreads();
+
+        // Backward pass
+        // Compute gradients for all Gaussians from N-1 to 0
+        for (int pos = N - 1; pos >= 0; pos--) {
+            __syncthreads();
+
+            if (p == pos) {
+                const int idx = sort_indices[pos];
+                const T tr = shm_trans[pos];
+                const T influence =
+                    influences[idx * num_tx * num_rx + tx * num_rx + rx];
+                const T opacity_val = opacity[idx];
+                const T alpha = opacity_val * influence;
+                const T real_contrib = real_contributions[idx];
+                const T imag_contrib = imag_contributions[idx];
+
+                // Gradient with respect to real and imaginary contributions
+                atomicAdd(&grad_real_contributions[idx],
+                          tr * alpha * grad_real);
+                atomicAdd(&grad_imag_contributions[idx],
+                          tr * alpha * grad_imag);
+
+                // Gradient with respect to opacity and influence
+                const T grad_vis =
+                    grad_real * real_contrib + grad_imag * imag_contrib;
+                const T visibility_grad = tr * grad_vis;
+
+                // Split between opacity and influence
+                atomicAdd(&grad_opacity[idx], visibility_grad * influence);
+                atomicAdd(
+                    &grad_influences[idx * num_tx * num_rx + tx * num_rx + rx],
+                    visibility_grad * opacity_val);
+
+                // Transmittance contribution to the result
+                if (pos < N - 1) {
+                    // Remaining contribution
+                    const T remaining_real = final_real_acc - shm_real_acc[pos + 1];
+                    const T remaining_imag = final_imag_acc - shm_imag_acc[pos + 1];
+
+                    const T grad_tr =
+                        grad_real * remaining_real + grad_imag * remaining_imag;
+
+                    // Gradient through transmittance affects opacity/influence
+                    const T tr_grad = -tr * grad_tr;
+                    atomicAdd(&grad_opacity[idx], tr_grad * influence);
+                    atomicAdd(&grad_influences[idx * num_tx * num_rx +
+                                               tx * num_rx + rx],
+                              tr_grad * opacity_val);
+                }
+            }
+        }
     }
 }
 
@@ -430,12 +467,6 @@ void alpha_blending_backward_cuda(
     CHECK_VALID_INPUT(grad_opacity);
 
     const int N = influences.size(0);
-    TORCH_CHECK(
-        N <= 128,
-        "Current implementation supports at most 128 Gaussians");  // Due to
-                                                                   // fixed
-                                                                   // array size
-                                                                   // in kernel
     TORCH_CHECK(influences.size(1) == num_tx && influences.size(2) == num_rx,
                 "influences must have shape Nx" + std::to_string(num_tx) + "x" +
                     std::to_string(num_rx));
@@ -460,10 +491,19 @@ void alpha_blending_backward_cuda(
                 "grad_imag_contributions must have shape N");
     TORCH_CHECK(grad_opacity.size(0) == N, "grad_opacity must have shape N");
 
-    // Use 2D grid to parallelize over the channel matrix elements
-    dim3 blocksize(16, 16, 1);
-    dim3 gridsize((num_tx + blocksize.x - 1) / blocksize.x,
-                  (num_rx + blocksize.y - 1) / blocksize.y, 1);
+    // Zero out the gradients before accumulating
+    grad_influences.zero_();
+    grad_real_contributions.zero_();
+    grad_imag_contributions.zero_();
+    grad_opacity.zero_();
+
+    // Use 3D grid: (num_tx, num_rx, 1)
+    // with block size of N (or max_threads_per_block if N is too large)
+    const int max_threads_per_block = 1024;
+    const int threads_per_block = std::min(N, max_threads_per_block);
+
+    dim3 grid_size(num_tx, num_rx, 1);
+    dim3 block_size(threads_per_block, 1, 1);
 
     if (influences.dtype() == torch::kFloat32) {
         CHECK_FLOAT_TENSOR(real_contributions);
@@ -475,14 +515,18 @@ void alpha_blending_backward_cuda(
         CHECK_FLOAT_TENSOR(grad_real_contributions);
         CHECK_FLOAT_TENSOR(grad_imag_contributions);
         CHECK_FLOAT_TENSOR(grad_opacity);
-        alpha_blending_backward_kernel<float><<<gridsize, blocksize>>>(
-            influences.data_ptr<float>(), real_contributions.data_ptr<float>(),
-            imag_contributions.data_ptr<float>(), opacity.data_ptr<float>(),
-            sort_indices.data_ptr<int>(), grad_channel_matrix.data_ptr<float>(),
-            num_tx, num_rx, N, grad_influences.data_ptr<float>(),
-            grad_real_contributions.data_ptr<float>(),
-            grad_imag_contributions.data_ptr<float>(),
-            grad_opacity.data_ptr<float>());
+
+        alpha_blending_backward_per_gaussian_antenna_kernel<float>
+            <<<grid_size, block_size>>>(
+                influences.data_ptr<float>(),
+                real_contributions.data_ptr<float>(),
+                imag_contributions.data_ptr<float>(), opacity.data_ptr<float>(),
+                sort_indices.data_ptr<int>(),
+                grad_channel_matrix.data_ptr<float>(), num_tx, num_rx, N,
+                grad_influences.data_ptr<float>(),
+                grad_real_contributions.data_ptr<float>(),
+                grad_imag_contributions.data_ptr<float>(),
+                grad_opacity.data_ptr<float>());
     } else if (influences.dtype() == torch::kFloat64) {
         CHECK_DOUBLE_TENSOR(real_contributions);
         CHECK_DOUBLE_TENSOR(imag_contributions);
@@ -493,16 +537,18 @@ void alpha_blending_backward_cuda(
         CHECK_DOUBLE_TENSOR(grad_real_contributions);
         CHECK_DOUBLE_TENSOR(grad_imag_contributions);
         CHECK_DOUBLE_TENSOR(grad_opacity);
-        alpha_blending_backward_kernel<double><<<gridsize, blocksize>>>(
-            influences.data_ptr<double>(),
-            real_contributions.data_ptr<double>(),
-            imag_contributions.data_ptr<double>(), opacity.data_ptr<double>(),
-            sort_indices.data_ptr<int>(),
-            grad_channel_matrix.data_ptr<double>(), num_tx, num_rx, N,
-            grad_influences.data_ptr<double>(),
-            grad_real_contributions.data_ptr<double>(),
-            grad_imag_contributions.data_ptr<double>(),
-            grad_opacity.data_ptr<double>());
+
+        alpha_blending_backward_per_gaussian_antenna_kernel<double>
+            <<<grid_size, block_size>>>(
+                influences.data_ptr<double>(),
+                real_contributions.data_ptr<double>(),
+                imag_contributions.data_ptr<double>(),
+                opacity.data_ptr<double>(), sort_indices.data_ptr<int>(),
+                grad_channel_matrix.data_ptr<double>(), num_tx, num_rx, N,
+                grad_influences.data_ptr<double>(),
+                grad_real_contributions.data_ptr<double>(),
+                grad_imag_contributions.data_ptr<double>(),
+                grad_opacity.data_ptr<double>());
     } else {
         AT_ERROR("Unsupported data type: ", influences.dtype());
     }
