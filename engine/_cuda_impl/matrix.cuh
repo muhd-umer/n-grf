@@ -2,6 +2,7 @@
 
 #pragma once
 #include <cuda.h>
+#include <cuda_runtime.h>
 
 template <typename T>
 __device__ void transpose(const T* A, T* A_T, int num_rows_input,

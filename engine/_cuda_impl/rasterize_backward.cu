@@ -1,8 +1,10 @@
-// engine__cuda_impl/rasterize_backward.cu
+// engine/_cuda_impl/rasterize_backward.cu
 
 #include <cuda.h>
 #include <cuda_runtime.h>
 #include <torch/extension.h>
+
+#include <cmath>
 
 #include "checks.cuh"
 #include "matrix.cuh"

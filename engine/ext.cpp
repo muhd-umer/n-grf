@@ -81,6 +81,7 @@ void alpha_blending_backward_cuda(
     torch::Tensor grad_real_contributions,
     torch::Tensor grad_imag_contributions, torch::Tensor grad_opacity);
 
+// PYBIND11 bindings
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     // Forward pass functions
     m.def("quaternion_to_rotation_cuda", &quaternion_to_rotation_cuda,
