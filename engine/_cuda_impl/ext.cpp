@@ -25,11 +25,6 @@ void compute_wireless_channel_cuda(torch::Tensor attenuation,
                                    torch::Tensor distances, float wavelength,
                                    torch::Tensor real_contributions,
                                    torch::Tensor imag_contributions);
-void alpha_blending_cuda(torch::Tensor influences,
-                         torch::Tensor real_contributions,
-                         torch::Tensor imag_contributions,
-                         torch::Tensor opacity, torch::Tensor sort_indices,
-                         int num_tx, int num_rx, torch::Tensor channel_matrix);
 
 void quaternion_to_rotation_backward_cuda(torch::Tensor quaternion,
                                           torch::Tensor grad_rotation,
@@ -65,13 +60,6 @@ void compute_wireless_channel_backward_cuda(
     torch::Tensor grad_real_contributions,
     torch::Tensor grad_imag_contributions, torch::Tensor grad_attenuation,
     torch::Tensor grad_phase_rotation, torch::Tensor grad_distances);
-void alpha_blending_backward_cuda(
-    torch::Tensor influences, torch::Tensor real_contributions,
-    torch::Tensor imag_contributions, torch::Tensor opacity,
-    torch::Tensor sort_indices, torch::Tensor grad_channel_matrix, int num_tx,
-    int num_rx, torch::Tensor grad_influences,
-    torch::Tensor grad_real_contributions,
-    torch::Tensor grad_imag_contributions, torch::Tensor grad_opacity);
 
 // PYBIND11 bindings
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {

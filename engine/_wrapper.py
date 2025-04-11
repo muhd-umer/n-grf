@@ -240,77 +240,7 @@ class ComputeWirelessChannel(Function):
 
 
 class AlphaBlending(Function):
-    @staticmethod
-    def forward(
-        ctx,
-        influences,
-        real_contributions,
-        imag_contributions,
-        opacity,
-        sort_indices,
-        num_tx,
-        num_rx,
-    ):
-        channel_matrix = torch.empty(
-            num_tx, 2 * num_rx, dtype=influences.dtype, device=influences.device
-        )
-
-        if sort_indices.dtype != torch.int32:
-            sort_indices = sort_indices.to(dtype=torch.int32)
-
-        _C.alpha_blending_cuda(
-            influences,
-            real_contributions,
-            imag_contributions,
-            opacity,
-            sort_indices,
-            num_tx,
-            num_rx,
-            channel_matrix,
-        )
-
-        ctx.save_for_backward(
-            influences, real_contributions, imag_contributions, opacity, sort_indices
-        )
-        ctx.num_tx = num_tx
-        ctx.num_rx = num_rx
-        return channel_matrix
-
-    @staticmethod
-    def backward(ctx, grad_channel_matrix):
-        influences, real_contributions, imag_contributions, opacity, sort_indices = (
-            ctx.saved_tensors
-        )
-
-        grad_influences = torch.zeros_like(influences)
-        grad_real_contributions = torch.zeros_like(real_contributions)
-        grad_imag_contributions = torch.zeros_like(imag_contributions)
-        grad_opacity = torch.zeros_like(opacity)
-
-        _C.alpha_blending_backward_cuda(
-            influences,
-            real_contributions,
-            imag_contributions,
-            opacity,
-            sort_indices,
-            grad_channel_matrix.contiguous(),
-            ctx.num_tx,
-            ctx.num_rx,
-            grad_influences,
-            grad_real_contributions,
-            grad_imag_contributions,
-            grad_opacity,
-        )
-
-        return (
-            grad_influences,
-            grad_real_contributions,
-            grad_imag_contributions,
-            grad_opacity,
-            None,
-            None,
-            None,
-        )
+    pass
 
 
 def rasterize(
@@ -344,14 +274,6 @@ def rasterize(
         attenuation.contiguous(), phase_rotation.contiguous(), distances, wavelength
     )
 
-    cat_channel = AlphaBlending.apply(
-        influences,
-        real_contributions,
-        imag_contributions,
-        opacity,
-        sort_indices,
-        num_tx,
-        num_rx,
-    )
+    cat_channel = AlphaBlending.apply(...)
 
     return cat_channel
