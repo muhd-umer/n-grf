@@ -412,19 +412,15 @@ class GaussianModel(nn.Module):
                 }
             )
 
-        self.optimizer = torch.optim.SGD(
+        self.optimizer = torch.optim.Adam(
             param_groups,
             lr=0.0,
-            momentum=0.9,
-            nesterov=True,
             fused=True,
         )
-        self.encoder_optimizer = torch.optim.SGD(
+        self.encoder_optimizer = torch.optim.Adam(
             self.encoder.parameters(),
             lr=training_args.encoder_lr,
             weight_decay=training_args.weight_decay,
-            momentum=0.9,
-            nesterov=True,
             fused=True,
         )
 
