@@ -1,3 +1,5 @@
+# models/loss.py
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -21,25 +23,6 @@ class NormalizedMSELoss(nn.Module):
         target_sq = ((target**2).sum(dim=(1, 2))).clamp(min=eps)
         nmse = diff_sq / target_sq
         return nmse.mean()
-
-
-class CharbonnierLoss(nn.Module):
-    def __init__(self, eps=1e-3):
-        super().__init__()
-        self.eps = eps
-
-    def forward(self, pred, target):
-        if pred.dim() == 2:
-            pred = pred.unsqueeze(0)
-            target = target.unsqueeze(0)
-
-        target = target.to(pred.dtype)
-
-        eps = torch.tensor(self.eps, dtype=pred.dtype, device=pred.device)
-
-        diff = pred - target
-        errors = torch.sqrt(diff * diff + eps**2)
-        return errors.mean()
 
 
 class LogMSELoss(nn.Module):
@@ -114,17 +97,78 @@ class CosineSimilarityLoss(nn.Module):
         return (1 - cos).mean()
 
 
+def complex_mse_loss(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    num_rx = pred.shape[1] // 2
+    pred_complex = torch.complex(pred[:, :num_rx], pred[:, num_rx:])
+    target_complex = torch.complex(target[:, :num_rx], target[:, num_rx:])
+    return torch.mean(torch.abs(pred_complex - target_complex) ** 2)
+
+
+def channel_corr_loss(
+    pred: torch.Tensor, target: torch.Tensor, eps=1e-8
+) -> torch.Tensor:
+    num_rx = pred.shape[1] // 2
+    pred_complex = torch.complex(pred[:, :num_rx], pred[:, num_rx:])
+    target_complex = torch.complex(target[:, :num_rx], target[:, num_rx:])
+
+    pred_flat = pred_complex.view(-1)
+    target_flat = target_complex.view(-1)
+    pred_norm = pred_flat / (torch.norm(pred_flat) + eps)
+    target_norm = target_flat / (torch.norm(target_flat) + eps)
+
+    correlation = torch.abs(torch.sum(pred_norm * torch.conj(target_norm)))
+    return 1.0 - correlation
+
+
+class MSECorrLoss(nn.Module):
+    def __init__(self, lambda_mse=0.5, lambda_corr=0.5):
+        super().__init__()
+        self.lambda_mse = lambda_mse
+        self.lambda_corr = lambda_corr
+
+    def forward(self, pred, target):
+        mse = complex_mse_loss(pred, target)
+        corr = channel_corr_loss(pred, target)
+        return self.lambda_mse * mse + self.lambda_corr * corr
+
+
+class LogMagPhaseLoss(nn.Module):
+    def __init__(self, phase_weight=1.0, eps=1e-10):
+        super().__init__()
+        self.phase_weight = phase_weight
+        self.eps = eps
+        self.log_mse_loss = LogMSELoss(eps=eps)
+
+    def forward(self, pred, target):
+        if pred.dim() == 2:
+            pred = pred.unsqueeze(0)
+            target = target.unsqueeze(0)
+
+        target = target.to(pred.dtype)
+        eps = torch.tensor(self.eps, dtype=pred.dtype, device=pred.device)
+        pi = torch.tensor(torch.pi, dtype=pred.dtype, device=pred.device)
+
+        N_r = pred.shape[2] // 2
+        pr, pj = pred[..., :N_r], pred[..., N_r:]
+        tr, tj = target[..., :N_r], target[..., N_r:]
+
+        mag_loss = self.log_mse_loss(pred, target)
+
+        pred_phase = torch.atan2(pj, pr + eps)
+        true_phase = torch.atan2(tj, tr + eps)
+
+        phase_diff = pred_phase - true_phase
+        phase_diff = torch.remainder(phase_diff + pi, 2 * pi) - pi
+        phase_loss = (phase_diff**2).mean()
+
+        total_loss = mag_loss + self.phase_weight * phase_loss
+        return total_loss
+
+
 def get_loss_function(loss_type, **kwargs):
-    if loss_type == "mse":
-        return nn.MSELoss()
-    elif loss_type == "l1":
-        return nn.L1Loss()
-    elif loss_type == "nmse":
+    if loss_type == "nmse":
         eps = kwargs.get("eps", 1e-8)
         return NormalizedMSELoss(eps=eps)
-    elif loss_type == "charbonnier":
-        eps = kwargs.get("eps", 1e-3)
-        return CharbonnierLoss(eps=eps)
     elif loss_type == "log_mse":
         eps = kwargs.get("eps", 1e-8)
         return LogMSELoss(eps=eps)
@@ -134,5 +178,13 @@ def get_loss_function(loss_type, **kwargs):
         return PolarMSELoss(phase_weight=phase_weight, eps=eps)
     elif loss_type == "cosine":
         return CosineSimilarityLoss()
+    elif loss_type == "mse_corr":
+        lambda_mse = kwargs.get("lambda_mse", 0.5)
+        lambda_corr = kwargs.get("lambda_corr", 0.5)
+        return MSECorrLoss(lambda_mse=lambda_mse, lambda_corr=lambda_corr)
+    elif loss_type == "log_mag_phase":
+        phase_weight = kwargs.get("phase_weight", 1.0)
+        eps = kwargs.get("eps", 1e-10)
+        return LogMagPhaseLoss(phase_weight=phase_weight, eps=eps)
     else:
         raise ValueError(f"Unknown loss type: {loss_type}")
