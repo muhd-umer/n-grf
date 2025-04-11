@@ -82,7 +82,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
           "Compute Gaussian influence CUDA");
     m.def("compute_wireless_channel_cuda", &compute_wireless_channel_cuda,
           "Compute wireless channel CUDA");
-    m.def("alpha_blending_cuda", &alpha_blending_cuda, "Alpha blending CUDA");
 
     // Backward pass functions
     m.def("quaternion_to_rotation_backward_cuda",
@@ -109,6 +108,4 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("compute_wireless_channel_backward_cuda",
           &compute_wireless_channel_backward_cuda,
           "Compute wireless channel backward CUDA");
-    m.def("alpha_blending_backward_cuda", &alpha_blending_backward_cuda,
-          "Alpha blending backward CUDA");
 }
