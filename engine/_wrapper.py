@@ -20,6 +20,14 @@ except ImportError:
 class QuaternionToRotation(Function):
     @staticmethod
     def forward(ctx, quaternion):
+        """Convert quaternion to a rotation matrix.
+
+        Args:
+            quaternion (Tensor): Input quaternions [N, 4]
+
+        Returns:
+            Tensor: Rotation matrices [N, 3, 3]
+        """
         q_norm = torch.nn.functional.normalize(quaternion, dim=1)
         rotation = torch.empty(
             quaternion.shape[0], 3, 3, dtype=quaternion.dtype, device=quaternion.device
@@ -30,6 +38,14 @@ class QuaternionToRotation(Function):
 
     @staticmethod
     def backward(ctx, grad_rotation):
+        """Backward pass for QuaternionToRotation.
+
+        Args:
+            grad_rotation (Tensor): Gradient of the rotation matrix
+
+        Returns:
+            Tensor: Gradient with respect to the input quaternion
+        """
         quaternion = ctx.saved_tensors[0]
         grad_quaternion = torch.empty_like(quaternion)
         _C.quaternion_to_rotation_backward_cuda(
@@ -41,6 +57,15 @@ class QuaternionToRotation(Function):
 class ComputeScalingMatrix(Function):
     @staticmethod
     def forward(ctx, scaling, scale_modifier=1.0):
+        """Compute a scaling matrix from scaling factors.
+
+        Args:
+            scaling (Tensor): Scaling factors [N, 3]
+            scale_modifier (float): Global scaling modifier
+
+        Returns:
+            Tensor: Scaling matrices [N, 3, 3]
+        """
         scaling_matrix = torch.empty(
             scaling.shape[0], 3, 3, dtype=scaling.dtype, device=scaling.device
         )
@@ -51,6 +76,14 @@ class ComputeScalingMatrix(Function):
 
     @staticmethod
     def backward(ctx, grad_scaling_matrix):
+        """Backward pass for ComputeScalingMatrix.
+
+        Args:
+            grad_scaling_matrix (Tensor): Gradient of the scaling matrix
+
+        Returns:
+            Tensor: Gradient with respect to scaling
+        """
         scaling = ctx.saved_tensors[0]
         grad_scaling = torch.empty_like(scaling)
         _C.compute_scaling_matrix_backward_cuda(
@@ -62,6 +95,15 @@ class ComputeScalingMatrix(Function):
 class MatrixMultiply(Function):
     @staticmethod
     def forward(ctx, A, B):
+        """Multiply two matrices.
+
+        Args:
+            A (Tensor): First matrix
+            B (Tensor): Second matrix
+
+        Returns:
+            Tensor: Matrix product
+        """
         C = torch.empty(
             A.shape[0], A.shape[1], B.shape[2], dtype=A.dtype, device=A.device
         )
@@ -71,6 +113,14 @@ class MatrixMultiply(Function):
 
     @staticmethod
     def backward(ctx, grad_C):
+        """Backward pass for MatrixMultiply.
+
+        Args:
+            grad_C (Tensor): Gradient of the output matrix
+
+        Returns:
+            Tuple[Tensor, Tensor]: Gradients with respect to matrices A and B
+        """
         A, B = ctx.saved_tensors
         grad_A = torch.empty_like(A)
         grad_B = torch.empty_like(B)
@@ -81,6 +131,14 @@ class MatrixMultiply(Function):
 class CovarianceMatrix(Function):
     @staticmethod
     def forward(ctx, RS):
+        """Compute the 3D covariance matrix.
+
+        Args:
+            RS (Tensor): Product of rotation and scaling matrices [N, 3, 3]
+
+        Returns:
+            Tensor: Covariance matrices [N, 3, 3]
+        """
         cov3d = torch.empty_like(RS)
         _C.covariance_matrix_cuda(RS, cov3d)
         ctx.save_for_backward(RS)
@@ -88,6 +146,14 @@ class CovarianceMatrix(Function):
 
     @staticmethod
     def backward(ctx, grad_cov3d):
+        """Backward pass for CovarianceMatrix.
+
+        Args:
+            grad_cov3d (Tensor): Gradient of the covariance matrix
+
+        Returns:
+            Tensor: Gradient with respect to RS
+        """
         RS = ctx.saved_tensors[0]
         grad_RS = torch.empty_like(RS)
         _C.covariance_matrix_backward_cuda(RS, grad_cov3d.contiguous(), grad_RS)
@@ -97,6 +163,18 @@ class CovarianceMatrix(Function):
 class ProjectToChannelCoords(Function):
     @staticmethod
     def forward(ctx, points, receiver, num_tx, num_rx):
+        """Project points to channel coordinates.
+
+        Args:
+            points (Tensor): Gaussian centers [N, 3]
+            receiver (Tensor): Receiver position [3]
+            num_tx (int): Number of transmit antennas
+            num_rx (int): Number of receive antennas
+
+        Returns:
+            Tuple[Tensor, Tensor, Tensor]: Distances [N], displacement vectors
+            [N, 3], and uv coordinates [N, 2]
+        """
         distances = torch.empty(
             points.shape[0], dtype=points.dtype, device=points.device
         )
@@ -114,6 +192,16 @@ class ProjectToChannelCoords(Function):
 
     @staticmethod
     def backward(ctx, grad_distances, grad_displacement, grad_uv):
+        """Backward pass for ProjectToChannelCoords.
+
+        Args:
+            grad_distances (Tensor): Gradient of distances
+            grad_displacement (Tensor): Gradient of displacement
+            grad_uv (Tensor): Gradient of uv coordinates
+
+        Returns:
+            Tensor: Gradient with respect to the input points
+        """
         points, receiver, distances, displacement = ctx.saved_tensors
         grad_points = torch.zeros_like(points)
         _C.project_to_channel_coords_backward_cuda(
@@ -134,6 +222,16 @@ class ProjectToChannelCoords(Function):
 class ComputeJacobian(Function):
     @staticmethod
     def forward(ctx, d, num_tx, num_rx):
+        """Compute the Jacobian matrix for the channel projection.
+
+        Args:
+            d (Tensor): Displacement vectors [N, 3]
+            num_tx (int): Number of transmit antennas
+            num_rx (int): Number of receive antennas
+
+        Returns:
+            Tensor: Jacobian matrices [N, 2, 3]
+        """
         J = torch.empty(d.shape[0], 2, 3, dtype=d.dtype, device=d.device)
         _C.compute_jacobian_cuda(d, num_tx, num_rx, J)
         ctx.save_for_backward(d)
@@ -143,6 +241,14 @@ class ComputeJacobian(Function):
 
     @staticmethod
     def backward(ctx, grad_J):
+        """Backward pass for ComputeJacobian.
+
+        Args:
+            grad_J (Tensor): Gradient of the Jacobian
+
+        Returns:
+            Tensor: Gradient with respect to the displacement vectors
+        """
         d = ctx.saved_tensors[0]
         grad_d = torch.empty_like(d)
         _C.compute_jacobian_backward_cuda(
@@ -154,6 +260,15 @@ class ComputeJacobian(Function):
 class ProjectCov3dToCov2d(Function):
     @staticmethod
     def forward(ctx, cov3d, jacobian):
+        """Project 3D covariance matrices to 2D.
+
+        Args:
+            cov3d (Tensor): 3D covariance matrices [N, 3, 3]
+            jacobian (Tensor): Jacobian matrices [N, 2, 3]
+
+        Returns:
+            Tensor: 2D covariance matrices [N, 2, 2]
+        """
         cov2d = torch.empty(
             cov3d.shape[0], 2, 2, dtype=cov3d.dtype, device=cov3d.device
         )
@@ -163,6 +278,14 @@ class ProjectCov3dToCov2d(Function):
 
     @staticmethod
     def backward(ctx, grad_cov2d):
+        """Backward pass for ProjectCov3dToCov2d.
+
+        Args:
+            grad_cov2d (Tensor): Gradient of 2D covariance matrices.
+
+        Returns:
+            Tuple[Tensor, Tensor]: Gradients with respect to cov3d and jacobian
+        """
         cov3d, jacobian = ctx.saved_tensors
         grad_cov3d = torch.zeros_like(cov3d)
         grad_jacobian = torch.zeros_like(jacobian)
@@ -175,6 +298,17 @@ class ProjectCov3dToCov2d(Function):
 class ComputeGaussianInfluence(Function):
     @staticmethod
     def forward(ctx, uv, cov2d, num_tx, num_rx):
+        """Compute Gaussian influence using Mahalanobis distance.
+
+        Args:
+            uv (Tensor): Channel matrix coordinates [N, 2]
+            cov2d (Tensor): 2D covariance matrices [N, 2, 2]
+            num_tx (int): Number of transmit antennas
+            num_rx (int): Number of receive antennas
+
+        Returns:
+            Tensor: Gaussian influences [N, num_tx, num_rx]
+        """
         influences = torch.empty(
             uv.shape[0], num_tx, num_rx, dtype=uv.dtype, device=uv.device
         )
@@ -186,6 +320,14 @@ class ComputeGaussianInfluence(Function):
 
     @staticmethod
     def backward(ctx, grad_influences):
+        """Backward pass for ComputeGaussianInfluence.
+
+        Args:
+            grad_influences (Tensor): Gradient of the Gaussian influences
+
+        Returns:
+            Tuple[Tensor, Tensor, None, None]: Gradients for uv and cov2d
+        """
         uv, cov2d, influences = ctx.saved_tensors
         grad_uv = torch.empty_like(uv)
         grad_cov2d = torch.empty_like(cov2d)
@@ -205,6 +347,17 @@ class ComputeGaussianInfluence(Function):
 class ComputeWirelessChannel(Function):
     @staticmethod
     def forward(ctx, attenuation, phase_rotation, distances, wavelength):
+        """Compute wireless channel contributions based on physics.
+
+        Args:
+            attenuation (Tensor): Learned attenuation amplitudes [N, 1]
+            phase_rotation (Tensor): Learned phase rotations [N, 1]
+            distances (Tensor): Distances from Gaussian centers to receiver [N]
+            wavelength (float): Signal wavelength
+
+        Returns:
+            Tuple[Tensor, Tensor]: Real and imaginary channel contributions
+        """
         attenuation_cont = attenuation.contiguous()
         phase_rotation_cont = phase_rotation.contiguous()
         distances_cont = distances.contiguous()
@@ -226,6 +379,16 @@ class ComputeWirelessChannel(Function):
 
     @staticmethod
     def backward(ctx, grad_real, grad_imag):
+        """Backward pass for ComputeWirelessChannel.
+
+        Args:
+            grad_real (Tensor): Gradient of the real contributions
+            grad_imag (Tensor): Gradient of the imaginary contributions
+
+        Returns:
+            Tuple[Tensor, Tensor, Tensor, None]: Gradients for attenuation,
+            phase_rotation, and distances
+        """
         attenuation, phase_rotation, distances = ctx.saved_tensors
         grad_attenuation = torch.zeros_like(attenuation)
         grad_phase_rotation = torch.zeros_like(phase_rotation)
@@ -261,6 +424,20 @@ class AlphaBlending(Function):
         num_tx,
         num_rx,
     ):
+        """Perform alpha blending to composite channel contributions.
+
+        Args:
+            influences (Tensor): Gaussian influences [N, num_tx, num_rx]
+            contributions_real (Tensor): Real parts of channel contributions [N, 1]
+            contributions_imag (Tensor): Imaginary parts of channel contributions [N, 1]
+            opacity (Tensor): Opacity values [N, 1]
+            sort_indices (Tensor): Sorting indices for channel compositing.
+            num_tx (int): Number of transmit antennas
+            num_rx (int): Number of receive antennas
+
+        Returns:
+            Tensor: Composited channel matrix [num_tx, 2*num_rx]
+        """
         N = influences.shape[0]
         device = influences.device
         dtype = influences.dtype
@@ -307,6 +484,15 @@ class AlphaBlending(Function):
 
     @staticmethod
     def backward(ctx, grad_cat_channel):
+        """Backward pass for AlphaBlending.
+
+        Args:
+            grad_cat_channel (Tensor): Gradient of the concatenated channel matrix
+
+        Returns:
+            Tuple: Gradients for influences, contributions_real,
+            contributions_imag, and opacity
+        """
         (
             influences,
             contributions_real,
@@ -373,11 +559,26 @@ def rasterize(
     frequency,
     scale_modifier=1.0,
 ):
-    if not CUDA_AVAILABLE:
-        raise ImportError(
-            "CUDA extension _C is not available. Cannot use CUDA rasterizer."
-        )
+    """Rasterize the channel matrix for a specific receiver position.
 
+    Args:
+        points (Tensor): Gaussian centers [N, 3]
+        scaling (Tensor): Scaling factors [N, 3]
+        rotation (Tensor): Quaternion rotations [N, 4]
+        attenuation (Tensor): Learned attenuation amplitudes [N, 1]
+        phase_rotation (Tensor): Learned phase rotations [N, 1]
+        opacity (Tensor): Opacity values [N, 1]
+        receiver (Tensor): Receiver position [3]
+        transmitter (Tensor): Transmitter position [3]
+        num_tx (int): Number of transmit antennas
+        num_rx (int): Number of receive antennas
+        frequency (float): Signal frequency in Hz
+        scale_modifier (float, optional): Global scaling modifier
+
+    Returns:
+        Tensor: Channel matrix [num_tx, 2*num_rx] with real and imaginary parts
+        concatenated
+    """
     c = 299792458.0
     wavelength = c / frequency
 

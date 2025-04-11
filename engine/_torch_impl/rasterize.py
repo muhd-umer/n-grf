@@ -20,7 +20,8 @@ def compute_gaussian_influence(
         num_rx: Number of receive antennas
 
     Returns:
-        Tensor of shape [N, num_tx, num_rx] with Gaussian influence on each channel element
+        Tensor of shape [N, num_tx, num_rx] with Gaussian influence on each
+        channel element
     """
     N = uv.shape[0]
 
@@ -137,8 +138,8 @@ def compute_cov3d(
     """Compute 3D covariance matrices from scaling and rotation parameters.
 
     Args:
-        scaling: Scaling factors (already with exponential activation applied) [N, 3]
-        rotation: Quaternion rotations (already normalized) [N, 4]
+        scaling: Scaling factors [N, 3]
+        rotation: Quaternion rotations [N, 4]
         scale_modifier: Global scale modifier
 
     Returns:
@@ -192,7 +193,7 @@ def rasterize(
         rotation: Quaternion rotations [N, 4]
         attenuation: Learned attenuation amplitude from neural network [N, 1]
         phase_rotation: Learned phase rotation from neural network [N, 1]
-        opacity: Opacity values (already with sigmoid activation applied) [N, 1]
+        opacity: Opacity values [N, 1]
         receiver: Receiver position [3]
         transmitter: Transmitter position [3]
         num_tx: Number of transmit antennas
