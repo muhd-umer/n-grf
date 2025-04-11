@@ -20,6 +20,7 @@ class EncoderConfig:
         skip_layers: List of layer indices to add skip connections
         input_pos_multires: Positional encoding resolution for positions
         use_positional_encoding: Whether to use positional encoding
+        use_layer_norm: Whether to use Layer Normalization
     """
 
     hidden_size: int = 128
@@ -27,6 +28,7 @@ class EncoderConfig:
     skip_layers: Tuple[int, ...] = (4,)
     input_pos_multires: int = 10
     use_positional_encoding: bool = True
+    use_layer_norm: bool = True
 
 
 class FeatureEncoder(nn.Module):
@@ -57,13 +59,19 @@ class FeatureEncoder(nn.Module):
 
         self.layers = nn.ModuleList()
         self.layers.append(nn.Linear(input_dim, config.hidden_size))
+        if config.use_layer_norm:
+            self.layers.append(nn.LayerNorm(config.hidden_size))
+        self.layers.append(nn.ReLU())
 
         for i in range(config.num_layers - 1):
+            layer_input_dim = config.hidden_size
             if i + 1 in config.skip_layers:
-                layer_input_dim = config.hidden_size + input_dim
-            else:
-                layer_input_dim = config.hidden_size
+                layer_input_dim += input_dim
+
             self.layers.append(nn.Linear(layer_input_dim, config.hidden_size))
+            if config.use_layer_norm:
+                self.layers.append(nn.LayerNorm(config.hidden_size))
+            self.layers.append(nn.ReLU())
 
         self.attenuation_head = nn.Linear(config.hidden_size, 1)
         self.phase_rotation_head = nn.Linear(config.hidden_size, 1)
@@ -80,7 +88,7 @@ class FeatureEncoder(nn.Module):
         Args:
             points: Point positions (N, 3)
             tx_pos: Transmitter position (3,)
-            rx_pos: Receiver position (3,) [optional]
+            rx_pos: Receiver position (3,)
 
         Returns:
             Tuple of tensors (attenuation, phase_rotation) each of shape (N, 1)
@@ -88,7 +96,6 @@ class FeatureEncoder(nn.Module):
         if self.use_positional_encoding:
             points_embed = self.pos_embedder(points)
             tx_embed = self.pos_embedder(tx_pos.expand(points.shape[0], -1))
-
             rx_embed = self.pos_embedder(rx_pos.expand(points.shape[0], -1))
             x = torch.cat([points_embed, tx_embed, rx_embed], dim=-1)
         else:
@@ -101,16 +108,29 @@ class FeatureEncoder(nn.Module):
                 dim=-1,
             )
 
-        # forward with residual connections
         input_features = x
-        for i, layer in enumerate(self.layers):
-            if i in self.config.skip_layers:
-                x = torch.cat([x, input_features], dim=-1)
-            x = layer(x)
-            x = torch.relu(x)
+        hidden_state = x
 
-        raw_attenuation = self.attenuation_head(x)
-        raw_phase_rotation = self.phase_rotation_head(x)
+        layer_idx = 0
+        linear_layer_count = 0
+        while layer_idx < len(self.layers):
+            layer = self.layers[layer_idx]
+
+            if isinstance(layer, nn.Linear) and linear_layer_count > 0:
+                current_conceptual_layer = linear_layer_count
+                if current_conceptual_layer in self.config.skip_layers:
+                    hidden_state = torch.cat([hidden_state, input_features], dim=-1)
+
+            hidden_state = layer(hidden_state)
+
+            if isinstance(layer, nn.Linear):
+                linear_layer_count += 1
+
+            layer_idx += 1
+
+        final_hidden_state = hidden_state
+        raw_attenuation = self.attenuation_head(final_hidden_state)
+        raw_phase_rotation = self.phase_rotation_head(final_hidden_state)
 
         attenuation = F.softplus(raw_attenuation)
         phase_rotation = torch.sigmoid(raw_phase_rotation) * 2 * torch.pi

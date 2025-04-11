@@ -6,6 +6,7 @@ from datetime import datetime
 from pathlib import Path
 
 import torch
+from torch.nn.utils import clip_grad_norm_
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
@@ -17,8 +18,6 @@ from models.gaussian_model import GaussianModel
 from models.loss import get_loss_function
 from utils.general_utils import set_random_seed
 from utils.train_utils import setup_logging
-
-torch.set_float32_matmul_precision("highest")
 
 
 def parse_args():
@@ -33,7 +32,7 @@ def parse_args():
     parser.add_argument(
         "--num_points",
         type=int,
-        default=12_000,
+        default=20_000,
         help="Number of points to sample from point cloud",
     )
 
@@ -48,7 +47,7 @@ def parse_args():
     parser.add_argument(
         "--init_method",
         type=str,
-        default="point_cloud",
+        default="random",
         choices=["point_cloud", "random"],
         help="Method to initialize Gaussian points (point_cloud or random)",
     )
@@ -69,7 +68,7 @@ def parse_args():
     parser.add_argument(
         "--position_lr_init",
         type=float,
-        default=0.0016,
+        default=0.00016,
         help="Initial position learning rate",
     )
     parser.add_argument(
@@ -97,10 +96,22 @@ def parse_args():
         "--normals_lr", type=float, default=0.0025, help="Normals learning rate"
     )
     parser.add_argument(
-        "--weight_decay", type=float, default=1e-7, help="Weight decay for encoder"
+        "--weight_decay", type=float, default=1e-8, help="Weight decay for encoder"
     )
     parser.add_argument(
         "--percent_dense", type=float, default=0.01, help="Density control parameter"
+    )
+    parser.add_argument(
+        "--gradient_clip_val",
+        type=float,
+        default=1.0,
+        help="Value to clip gradient norm to (0 to disable)",
+    )
+    parser.add_argument(
+        "--disable_encoder_layernorm",
+        action="store_false",
+        dest="use_encoder_layernorm",
+        help="Disable Layer Normalization in the feature encoder",
     )
 
     # training params
@@ -110,15 +121,14 @@ def parse_args():
     parser.add_argument(
         "--loss_type",
         type=str,
-        default="log_mse",
+        default="mse_corr",
         choices=[
-            "mse",
-            "l1",
             "nmse",
             "log_mse",
-            "charbonnier",
+            "mse_corr",
             "polar_mse",
             "cosine",
+            "log_mag_phase",
         ],
         help="Loss function to use for training",
     )
@@ -194,6 +204,9 @@ def parse_args():
     )
 
     args = parser.parse_args()
+    if "use_encoder_layernorm" not in args:
+        args.use_encoder_layernorm = True
+
     return args
 
 
@@ -318,9 +331,16 @@ def compute_grad_stats(model):
     }
 
     total_params = 0
-    for name, param in model.named_parameters():
+    all_params = []
+    for group in model.optimizer.param_groups:
+        all_params.extend(group["params"])
+    for group in model.encoder_optimizer.param_groups:
+        all_params.extend(group["params"])
+
+    for param in all_params:
         if param.grad is not None:
-            grad_stats["mean_abs"] += param.grad.abs().mean().item() * param.numel()
+            grad_abs = param.grad.abs()
+            grad_stats["mean_abs"] += grad_abs.sum().item()
             grad_stats["min"] = min(grad_stats["min"], param.grad.min().item())
             grad_stats["max"] = max(grad_stats["max"], param.grad.max().item())
             grad_stats["param_count"] += 1
@@ -367,6 +387,7 @@ def train(args, logger, writer, log_dir):
         skip_layers=(4,),
         input_pos_multires=10,
         use_positional_encoding=args.use_positional_encoding,
+        use_layer_norm=args.use_encoder_layernorm,
     )
     model = GaussianModel(
         encoder_cfg=encoder_cfg, use_pred_normals=args.use_pred_normals
@@ -455,6 +476,20 @@ def train(args, logger, writer, log_dir):
 
         loss.backward()
 
+        if args.gradient_clip_val > 0:
+            #
+            all_gaussian_params = []
+            for group in model.optimizer.param_groups:
+                all_gaussian_params.extend(group["params"])
+            if all_gaussian_params:
+                clip_grad_norm_(all_gaussian_params, args.gradient_clip_val)
+
+            if model.encoder_optimizer.param_groups[0]["params"]:
+                clip_grad_norm_(
+                    model.encoder_optimizer.param_groups[0]["params"],
+                    args.gradient_clip_val,
+                )
+
         grad_stats = compute_grad_stats(model)
 
         model.update_learning_rate(iteration)
@@ -523,7 +558,7 @@ def train(args, logger, writer, log_dir):
                     iteration=iteration,
                     best_val_loss=best_val_loss,
                 )
-                logger.info("Best model saved at iteration {iteration}")
+                logger.info(f"Best model saved at iteration {iteration}")
 
         # save checkpoint
         if iteration > 0 and iteration % args.checkpoint_freq == 0:
