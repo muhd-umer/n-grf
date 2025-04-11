@@ -36,13 +36,6 @@ def parse_args():
         help="Number of points to sample from point cloud",
     )
 
-    # model params
-    parser.add_argument(
-        "--use_pred_normals",
-        action="store_true",
-        help="Whether to predict surface normals",
-    )
-
     # initialization params
     parser.add_argument(
         "--init_method",
@@ -93,13 +86,7 @@ def parse_args():
         "--encoder_lr", type=float, default=0.0075, help="Encoder learning rate"
     )
     parser.add_argument(
-        "--normals_lr", type=float, default=0.0025, help="Normals learning rate"
-    )
-    parser.add_argument(
         "--weight_decay", type=float, default=1e-8, help="Weight decay for encoder"
-    )
-    parser.add_argument(
-        "--percent_dense", type=float, default=0.01, help="Density control parameter"
     )
     parser.add_argument(
         "--gradient_clip_val",
@@ -389,9 +376,7 @@ def train(args, logger, writer, log_dir):
         use_positional_encoding=args.use_positional_encoding,
         use_layer_norm=args.use_encoder_layernorm,
     )
-    model = GaussianModel(
-        encoder_cfg=encoder_cfg, use_pred_normals=args.use_pred_normals
-    ).to(device)
+    model = GaussianModel(encoder_cfg=encoder_cfg).to(device)
 
     if args.init_method == "point_cloud":
         point_cloud = train_dataloader.dataset.get_point_cloud(args.num_points)

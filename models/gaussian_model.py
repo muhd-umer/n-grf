@@ -31,22 +31,17 @@ class GaussianModel(nn.Module):
     - opacity: Inverse sigmoid of constant value (0.1)
     - features_dc: Main spherical harmonic features
     - features_rest: Higher order spherical harmonics initialized to zero
-    - Screen-space max radii tracking for adaptive density
-    - Gradients and denominator accumulators for training
 
     Args:
         encoder_cfg: Configuration for the encoder
-        use_pred_normals: Whether to use predicted normals
     """
 
     def __init__(
         self,
         encoder_cfg: Optional[EncoderConfig] = None,
-        use_pred_normals: bool = False,
     ):
         super().__init__()
 
-        self.use_pred_normals = use_pred_normals
         self.encoder_cfg = encoder_cfg or EncoderConfig()
         self.encoder = FeatureEncoder(self.encoder_cfg)
 
@@ -55,18 +50,10 @@ class GaussianModel(nn.Module):
         self._rotation = torch.empty(0)  # rotation quaternions
         self._scaling = torch.empty(0)  # scaling factors
         self._opacity = torch.empty(0)  # opacity values
-
         self.features = torch.empty(0)  # wireless features
 
         # training state
-        self.max_radii2D = torch.empty(0)  # screen-space radii for adaptive density
-        self.xyz_gradient_accum = torch.empty(0)  # accumulated position gradients
-        self.denom = torch.empty(0)  # gradient step denominator
         self.optimizer = None
-        self.percent_dense = 0
-
-        # optional predicted normals
-        self._normals = torch.empty(0) if self.use_pred_normals else None
 
         self.setup_functions()
 
@@ -147,15 +134,6 @@ class GaussianModel(nn.Module):
         init_opacity = 0.1 * torch.ones((num_points, 1), device=device)
         self._opacity = nn.Parameter(inverse_sigmoid(init_opacity))
 
-        # initialize training state tensors
-        self.max_radii2D = torch.zeros((num_points,), device=device)
-        self.xyz_gradient_accum = torch.zeros((num_points, 1), device=device)
-        self.denom = torch.zeros((num_points, 1), device=device)
-
-        # initialize optional normals
-        if self.use_pred_normals:
-            self._normals = nn.Parameter(torch.randn(num_points, 3, device=device))
-
     def init_randomly(
         self,
         num_points: int,
@@ -208,13 +186,6 @@ class GaussianModel(nn.Module):
         """Get wireless-related features."""
         return self.features
 
-    @property
-    def get_normals(self):
-        """Get predicted normals if enabled."""
-        if not self.use_pred_normals:
-            raise ValueError("Predicted normals not enabled in config")
-        return self.rotation_activation(self._normals)
-
     def get_covariance(self, scaling_modifier: float = 1.0):
         """Compute covariance matrices for each Gaussian.
 
@@ -249,18 +220,11 @@ class GaussianModel(nn.Module):
             "scaling": self._scaling,
             "opacity": self._opacity,
             "features": self.features,
-            "use_pred_normals": self.use_pred_normals,
         }
-
-        if self.use_pred_normals and self._normals is not None:
-            model_state["normals"] = self._normals
 
         if save_optimizer:
             model_state.update(
                 {
-                    "max_radii2D": self.max_radii2D,
-                    "xyz_gradient_accum": self.xyz_gradient_accum,
-                    "denom": self.denom,
                     "optimizer_state": (
                         self.optimizer.state_dict() if self.optimizer else None
                     ),
@@ -271,7 +235,6 @@ class GaussianModel(nn.Module):
                     ),
                     "iteration": iteration,
                     "best_val_loss": best_val_loss,
-                    "percent_dense": self.percent_dense,
                 }
             )
 
@@ -296,11 +259,9 @@ class GaussianModel(nn.Module):
         state = torch.load(filepath, map_location=device, weights_only=False)
 
         encoder_cfg = state.get("encoder_config", None)
-        use_pred_normals = state.get("use_pred_normals", False)
 
         model = cls(
             encoder_cfg=encoder_cfg,
-            use_pred_normals=use_pred_normals,
         )
 
         model._xyz = state["xyz"].to(device)
@@ -309,20 +270,8 @@ class GaussianModel(nn.Module):
         model._opacity = state["opacity"].to(device)
         model.features = state["features"].to(device)
 
-        if "normals" in state and model.use_pred_normals:
-            model._normals = state["normals"].to(device)
-
-        model.max_radii2D = torch.zeros_like(model._xyz[:, 0])
-        model.xyz_gradient_accum = torch.zeros((model._xyz.shape[0], 1), device=device)
-        model.denom = torch.zeros((model._xyz.shape[0], 1), device=device)
-
         if training_args is not None and "optimizer_state" in state:
             model.training_setup(training_args)
-
-            model.max_radii2D = state["max_radii2D"].to(device)
-            model.xyz_gradient_accum = state["xyz_gradient_accum"].to(device)
-            model.denom = state["denom"].to(device)
-            model.percent_dense = state.get("percent_dense", 0.01)
 
             if state["optimizer_state"] is not None:
                 model.optimizer.load_state_dict(state["optimizer_state"])
@@ -374,12 +323,6 @@ class GaussianModel(nn.Module):
         Args:
             training_args: Training arguments including learning rates
         """
-        self.percent_dense = training_args.percent_dense
-        self.xyz_gradient_accum = torch.zeros(
-            (self.get_xyz.shape[0], 1), device=self._xyz.device
-        )
-        self.denom = torch.zeros((self.get_xyz.shape[0], 1), device=self._xyz.device)
-
         param_groups = [
             {
                 "params": [self._xyz],
@@ -402,15 +345,6 @@ class GaussianModel(nn.Module):
                 "name": "opacity",
             },
         ]
-
-        if self.use_pred_normals and self._normals is not None:
-            param_groups.append(
-                {
-                    "params": [self._normals],
-                    "lr": training_args.normals_lr,
-                    "name": "normals",
-                }
-            )
 
         self.optimizer = torch.optim.Adam(
             param_groups,
