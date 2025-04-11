@@ -1,4 +1,4 @@
-// engine/ext.cpp
+// engine/_cuda_impl/ext.cpp
 
 #include <torch/extension.h>
 
@@ -25,6 +25,14 @@ void compute_wireless_channel_cuda(torch::Tensor attenuation,
                                    torch::Tensor distances, float wavelength,
                                    torch::Tensor real_contributions,
                                    torch::Tensor imag_contributions);
+void alpha_blending_forward_cuda(torch::Tensor influences,
+                                 torch::Tensor real_contributions,
+                                 torch::Tensor imag_contributions,
+                                 torch::Tensor opacity,
+                                 torch::Tensor sort_indices, int num_tx,
+                                 int num_rx, torch::Tensor channel_matrix,
+                                 torch::Tensor eff_opacity_out,
+                                 torch::Tensor transmittance_out);
 
 void quaternion_to_rotation_backward_cuda(torch::Tensor quaternion,
                                           torch::Tensor grad_rotation,
@@ -60,10 +68,15 @@ void compute_wireless_channel_backward_cuda(
     torch::Tensor grad_real_contributions,
     torch::Tensor grad_imag_contributions, torch::Tensor grad_attenuation,
     torch::Tensor grad_phase_rotation, torch::Tensor grad_distances);
+void alpha_blending_backward_cuda(
+    torch::Tensor influences, torch::Tensor real_contributions,
+    torch::Tensor imag_contributions, torch::Tensor opacity,
+    torch::Tensor eff_opacity, torch::Tensor transmittance,
+    torch::Tensor sort_indices, torch::Tensor grad_cat_channel, int num_tx,
+    int num_rx, torch::Tensor grad_influences, torch::Tensor grad_contrib_real,
+    torch::Tensor grad_contrib_imag, torch::Tensor grad_opacity);
 
-// PYBIND11 bindings
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
-    // Forward pass functions
     m.def("quaternion_to_rotation_cuda", &quaternion_to_rotation_cuda,
           "Quaternion to rotation matrix CUDA");
     m.def("compute_scaling_matrix_cuda", &compute_scaling_matrix_cuda,
@@ -82,8 +95,9 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
           "Compute Gaussian influence CUDA");
     m.def("compute_wireless_channel_cuda", &compute_wireless_channel_cuda,
           "Compute wireless channel CUDA");
+    m.def("alpha_blending_forward_cuda", &alpha_blending_forward_cuda,
+          "Alpha blending forward CUDA");
 
-    // Backward pass functions
     m.def("quaternion_to_rotation_backward_cuda",
           &quaternion_to_rotation_backward_cuda,
           "Quaternion to rotation matrix backward CUDA");
@@ -108,4 +122,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("compute_wireless_channel_backward_cuda",
           &compute_wireless_channel_backward_cuda,
           "Compute wireless channel backward CUDA");
+    m.def("alpha_blending_backward_cuda", &alpha_blending_backward_cuda,
+          "Alpha blending backward CUDA");
 }

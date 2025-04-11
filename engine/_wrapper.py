@@ -205,18 +205,23 @@ class ComputeGaussianInfluence(Function):
 class ComputeWirelessChannel(Function):
     @staticmethod
     def forward(ctx, attenuation, phase_rotation, distances, wavelength):
-        real_contributions = torch.empty_like(attenuation)
-        imag_contributions = torch.empty_like(attenuation)
+        attenuation_cont = attenuation.contiguous()
+        phase_rotation_cont = phase_rotation.contiguous()
+        distances_cont = distances.contiguous()
+
+        real_contributions = torch.empty_like(attenuation_cont)
+        imag_contributions = torch.empty_like(attenuation_cont)
         _C.compute_wireless_channel_cuda(
-            attenuation,
-            phase_rotation,
-            distances,
+            attenuation_cont,
+            phase_rotation_cont,
+            distances_cont,
             wavelength,
             real_contributions,
             imag_contributions,
         )
-        ctx.save_for_backward(attenuation, phase_rotation, distances)
+        ctx.save_for_backward(attenuation_cont, phase_rotation_cont, distances_cont)
         ctx.wavelength = wavelength
+
         return real_contributions, imag_contributions
 
     @staticmethod
@@ -225,22 +230,133 @@ class ComputeWirelessChannel(Function):
         grad_attenuation = torch.zeros_like(attenuation)
         grad_phase_rotation = torch.zeros_like(phase_rotation)
         grad_distances = torch.zeros_like(distances)
+
+        grad_real_cont = grad_real.contiguous()
+        grad_imag_cont = grad_imag.contiguous()
+
         _C.compute_wireless_channel_backward_cuda(
             attenuation,
             phase_rotation,
             distances,
             ctx.wavelength,
-            grad_real.contiguous(),
-            grad_imag.contiguous(),
+            grad_real_cont,
+            grad_imag_cont,
             grad_attenuation,
             grad_phase_rotation,
             grad_distances,
         )
+
         return grad_attenuation, grad_phase_rotation, grad_distances, None
 
 
 class AlphaBlending(Function):
-    pass
+    @staticmethod
+    def forward(
+        ctx,
+        influences,
+        contributions_real,
+        contributions_imag,
+        opacity,
+        sort_indices,
+        num_tx,
+        num_rx,
+    ):
+        N = influences.shape[0]
+        device = influences.device
+        dtype = influences.dtype
+
+        influences_cont = influences.contiguous()
+        contrib_real_cont = contributions_real.contiguous().view(N)
+        contrib_imag_cont = contributions_imag.contiguous().view(N)
+        opacity_cont = opacity.contiguous().view(N)
+        sort_indices_cont = sort_indices.contiguous().to(torch.int32)
+
+        channel_matrix = torch.empty((num_tx, 2 * num_rx), device=device, dtype=dtype)
+        eff_opacity = torch.empty((N, num_tx, num_rx), device=device, dtype=dtype)
+        transmittance = torch.empty((N + 1, num_tx, num_rx), device=device, dtype=dtype)
+
+        _C.alpha_blending_forward_cuda(
+            influences_cont,
+            contrib_real_cont,
+            contrib_imag_cont,
+            opacity_cont,
+            sort_indices_cont,
+            num_tx,
+            num_rx,
+            channel_matrix,
+            eff_opacity,
+            transmittance,
+        )
+
+        ctx.save_for_backward(
+            influences_cont,
+            contrib_real_cont,
+            contrib_imag_cont,
+            opacity_cont,
+            eff_opacity,
+            transmittance,
+            sort_indices_cont,
+        )
+        ctx.num_tx = num_tx
+        ctx.num_rx = num_rx
+        ctx.N = N
+        ctx.contrib_original_shape = contributions_real.shape
+        ctx.opacity_original_shape = opacity.shape
+
+        return channel_matrix
+
+    @staticmethod
+    def backward(ctx, grad_cat_channel):
+        (
+            influences,
+            contributions_real,
+            contributions_imag,
+            opacity,
+            eff_opacity,
+            transmittance,
+            sort_indices,
+        ) = ctx.saved_tensors
+        num_tx = ctx.num_tx
+        num_rx = ctx.num_rx
+        N = ctx.N
+
+        grad_cat_channel_cont = grad_cat_channel.contiguous()
+
+        grad_influences = torch.zeros_like(influences)
+        grad_contrib_real = torch.zeros_like(contributions_real)
+        grad_contrib_imag = torch.zeros_like(contributions_imag)
+        grad_opacity = torch.zeros_like(opacity)
+
+        _C.alpha_blending_backward_cuda(
+            influences,
+            contributions_real,
+            contributions_imag,
+            opacity,
+            eff_opacity,
+            transmittance,
+            sort_indices,
+            grad_cat_channel_cont,
+            num_tx,
+            num_rx,
+            grad_influences,
+            grad_contrib_real,
+            grad_contrib_imag,
+            grad_opacity,
+        )
+
+        grad_contrib_real = grad_contrib_real.view(ctx.contrib_original_shape)
+        grad_contrib_imag = grad_contrib_imag.view(ctx.contrib_original_shape)
+        grad_opacity = grad_opacity.view(ctx.opacity_original_shape)
+
+        return (
+            grad_influences,
+            grad_contrib_real,
+            grad_contrib_imag,
+            grad_opacity,
+            None,
+            None,
+            None,
+        )
 
 
 def rasterize(
@@ -257,6 +373,11 @@ def rasterize(
     frequency,
     scale_modifier=1.0,
 ):
+    if not CUDA_AVAILABLE:
+        raise ImportError(
+            "CUDA extension _C is not available. Cannot use CUDA rasterizer."
+        )
+
     c = 299792458.0
     wavelength = c / frequency
 
@@ -264,16 +385,31 @@ def rasterize(
     S = ComputeScalingMatrix.apply(scaling, scale_modifier)
     RS = MatrixMultiply.apply(R, S)
     cov3d = CovarianceMatrix.apply(RS)
+
     distances, d, uv = ProjectToChannelCoords.apply(points, receiver, num_tx, num_rx)
     jacobian = ComputeJacobian.apply(d, num_tx, num_rx)
     cov2d = ProjectCov3dToCov2d.apply(cov3d, jacobian)
-    sort_indices = torch.argsort(distances).to(dtype=torch.int32)
+
     influences = ComputeGaussianInfluence.apply(uv, cov2d, num_tx, num_rx)
 
+    attenuation_cont = attenuation.contiguous()
+    phase_rotation_cont = phase_rotation.contiguous()
+    distances_cont = distances.contiguous()
+
     real_contributions, imag_contributions = ComputeWirelessChannel.apply(
-        attenuation.contiguous(), phase_rotation.contiguous(), distances, wavelength
+        attenuation_cont, phase_rotation_cont, distances_cont, wavelength
     )
 
-    cat_channel = AlphaBlending.apply(...)
+    sort_indices = torch.argsort(distances).to(dtype=torch.int32)
+
+    cat_channel = AlphaBlending.apply(
+        influences.contiguous(),
+        real_contributions,
+        imag_contributions,
+        opacity.contiguous(),
+        sort_indices,
+        num_tx,
+        num_rx,
+    )
 
     return cat_channel

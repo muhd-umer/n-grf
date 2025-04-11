@@ -20,7 +20,6 @@ __global__ void compute_gaussian_influence_kernel(const T* __restrict__ uv,
         return;
     }
 
-    // Invert 2x2 covariance matrix
     const T a = cov2d[i * 4 + 0];
     const T b = cov2d[i * 4 + 1];
     const T c = cov2d[i * 4 + 2];
@@ -37,7 +36,6 @@ __global__ void compute_gaussian_influence_kernel(const T* __restrict__ uv,
     const T u_i = uv[i * 2 + 0];
     const T v_i = uv[i * 2 + 1];
 
-    // For each antenna position, compute Mahalanobis distance
     for (int tx = 0; tx < num_tx; tx++) {
         for (int rx = 0; rx < num_rx; rx++) {
             const T antenna_u = tx + T(0.5);
@@ -46,11 +44,9 @@ __global__ void compute_gaussian_influence_kernel(const T* __restrict__ uv,
             const T du = u_i - antenna_u;
             const T dv = v_i - antenna_v;
 
-            // Compute Mahalanobis distance: d^T * inv_cov2d * d
             const T md =
                 du * (inv_a * du + inv_b * dv) + dv * (inv_c * du + inv_d * dv);
 
-            // Compute influence as exp(-0.5 * md)
             influences[i * num_tx * num_rx + tx * num_rx + rx] =
                 exp(-T(0.5) * md);
         }
@@ -176,12 +172,12 @@ void compute_wireless_channel_cuda(torch::Tensor attenuation,
 }
 
 template <typename T>
-__global__ void alpha_blending_kernel(
+__global__ void alpha_blending_forward_kernel(
     const T* __restrict__ influences, const T* __restrict__ real_contributions,
     const T* __restrict__ imag_contributions, const T* __restrict__ opacity,
     const int* __restrict__ sort_indices, const int num_tx, const int num_rx,
-    const int N, T* __restrict__ channel_matrix) {
-    // One thread per antenna pair
+    const int N, T* __restrict__ channel_matrix,
+    T* __restrict__ eff_opacity_out, T* __restrict__ transmittance_out) {
     const int tx = blockIdx.x * blockDim.x + threadIdx.x;
     const int rx = blockIdx.y * blockDim.y + threadIdx.y;
 
@@ -191,61 +187,71 @@ __global__ void alpha_blending_kernel(
 
     T real_sum = T(0.0);
     T imag_sum = T(0.0);
-    T transmittance = T(1.0);
+    T current_transmittance = T(1.0);
 
-    // Alpha blending for each sorted Gaussian
-    for (int idx_pos = 0; idx_pos < N; idx_pos++) {
-        const int idx = sort_indices[idx_pos];
+    transmittance_out[tx * num_rx + rx] = current_transmittance;
 
-        const T alpha =
-            opacity[idx] * influences[idx * num_tx * num_rx + tx * num_rx + rx];
+    for (int p = 0; p < N; p++) {
+        const int idx = sort_indices[p];
+        const int influence_idx = idx * num_tx * num_rx + tx * num_rx + rx;
+        const int eff_opacity_idx = p * num_tx * num_rx + tx * num_rx + rx;
+        const int transmittance_idx_curr =
+            p * num_tx * num_rx + tx * num_rx + rx;
+        const int transmittance_idx_next =
+            (p + 1) * num_tx * num_rx + tx * num_rx + rx;
 
-        // Update color
-        real_sum += transmittance * alpha * real_contributions[idx];
-        imag_sum += transmittance * alpha * imag_contributions[idx];
+        const T eff_op = opacity[idx] * influences[influence_idx];
+        eff_opacity_out[eff_opacity_idx] = eff_op;
 
-        // Update transmittance
-        transmittance *= (T(1.0) - alpha);
+        real_sum += current_transmittance * eff_op * real_contributions[idx];
+        imag_sum += current_transmittance * eff_op * imag_contributions[idx];
 
-        // Early termination if transmittance is near zero
-        if (transmittance < T(0.001)) {
-            break;
-        }
+        current_transmittance *= (T(1.0) - eff_op);
+        transmittance_out[transmittance_idx_next] = current_transmittance;
     }
 
-    // Store the result in the channel matrix
     channel_matrix[tx * (2 * num_rx) + rx] = real_sum;
     channel_matrix[tx * (2 * num_rx) + num_rx + rx] = imag_sum;
 }
 
-void alpha_blending_cuda(torch::Tensor influences,
-                         torch::Tensor real_contributions,
-                         torch::Tensor imag_contributions,
-                         torch::Tensor opacity, torch::Tensor sort_indices,
-                         int num_tx, int num_rx, torch::Tensor channel_matrix) {
+void alpha_blending_forward_cuda(torch::Tensor influences,
+                                 torch::Tensor real_contributions,
+                                 torch::Tensor imag_contributions,
+                                 torch::Tensor opacity,
+                                 torch::Tensor sort_indices, int num_tx,
+                                 int num_rx, torch::Tensor channel_matrix,
+                                 torch::Tensor eff_opacity_out,
+                                 torch::Tensor transmittance_out) {
     CHECK_VALID_INPUT(influences);
     CHECK_VALID_INPUT(real_contributions);
     CHECK_VALID_INPUT(imag_contributions);
     CHECK_VALID_INPUT(opacity);
     CHECK_VALID_INPUT(sort_indices);
     CHECK_VALID_INPUT(channel_matrix);
+    CHECK_VALID_INPUT(eff_opacity_out);
+    CHECK_VALID_INPUT(transmittance_out);
 
     const int N = influences.size(0);
     TORCH_CHECK(influences.size(1) == num_tx && influences.size(2) == num_rx,
-                "influences must have shape Nx" + std::to_string(num_tx) + "x" +
-                    std::to_string(num_rx));
+                "influences shape mismatch");
     TORCH_CHECK(real_contributions.size(0) == N,
-                "real_contributions must have shape N");
+                "real_contributions shape mismatch");
     TORCH_CHECK(imag_contributions.size(0) == N,
-                "imag_contributions must have shape N");
-    TORCH_CHECK(opacity.size(0) == N, "opacity must have shape N");
-    TORCH_CHECK(sort_indices.size(0) == N, "sort_indices must have shape N");
+                "imag_contributions shape mismatch");
+    TORCH_CHECK(opacity.size(0) == N, "opacity shape mismatch");
+    TORCH_CHECK(sort_indices.size(0) == N, "sort_indices shape mismatch");
     TORCH_CHECK(channel_matrix.size(0) == num_tx &&
                     channel_matrix.size(1) == 2 * num_rx,
-                "channel_matrix must have shape " + std::to_string(num_tx) +
-                    "x" + std::to_string(2 * num_rx));
+                "channel_matrix shape mismatch");
+    TORCH_CHECK(eff_opacity_out.size(0) == N &&
+                    eff_opacity_out.size(1) == num_tx &&
+                    eff_opacity_out.size(2) == num_rx,
+                "eff_opacity_out shape mismatch");
+    TORCH_CHECK(transmittance_out.size(0) == N + 1 &&
+                    transmittance_out.size(1) == num_tx &&
+                    transmittance_out.size(2) == num_rx,
+                "transmittance_out shape mismatch");
 
-    // Use 2D grid to parallelize over the channel matrix elements
     dim3 blocksize(16, 16, 1);
     dim3 gridsize((num_tx + blocksize.x - 1) / blocksize.x,
                   (num_rx + blocksize.y - 1) / blocksize.y, 1);
@@ -256,23 +262,30 @@ void alpha_blending_cuda(torch::Tensor influences,
         CHECK_FLOAT_TENSOR(opacity);
         CHECK_INT_TENSOR(sort_indices);
         CHECK_FLOAT_TENSOR(channel_matrix);
-        alpha_blending_kernel<float><<<gridsize, blocksize>>>(
+        CHECK_FLOAT_TENSOR(eff_opacity_out);
+        CHECK_FLOAT_TENSOR(transmittance_out);
+        alpha_blending_forward_kernel<float><<<gridsize, blocksize>>>(
             influences.data_ptr<float>(), real_contributions.data_ptr<float>(),
             imag_contributions.data_ptr<float>(), opacity.data_ptr<float>(),
             sort_indices.data_ptr<int>(), num_tx, num_rx, N,
-            channel_matrix.data_ptr<float>());
+            channel_matrix.data_ptr<float>(), eff_opacity_out.data_ptr<float>(),
+            transmittance_out.data_ptr<float>());
     } else if (influences.dtype() == torch::kFloat64) {
         CHECK_DOUBLE_TENSOR(real_contributions);
         CHECK_DOUBLE_TENSOR(imag_contributions);
         CHECK_DOUBLE_TENSOR(opacity);
         CHECK_INT_TENSOR(sort_indices);
         CHECK_DOUBLE_TENSOR(channel_matrix);
-        alpha_blending_kernel<double><<<gridsize, blocksize>>>(
+        CHECK_DOUBLE_TENSOR(eff_opacity_out);
+        CHECK_DOUBLE_TENSOR(transmittance_out);
+        alpha_blending_forward_kernel<double><<<gridsize, blocksize>>>(
             influences.data_ptr<double>(),
             real_contributions.data_ptr<double>(),
             imag_contributions.data_ptr<double>(), opacity.data_ptr<double>(),
             sort_indices.data_ptr<int>(), num_tx, num_rx, N,
-            channel_matrix.data_ptr<double>());
+            channel_matrix.data_ptr<double>(),
+            eff_opacity_out.data_ptr<double>(),
+            transmittance_out.data_ptr<double>());
     } else {
         AT_ERROR("Unsupported data type: ", influences.dtype());
     }

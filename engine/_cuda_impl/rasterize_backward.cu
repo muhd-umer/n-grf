@@ -329,3 +329,183 @@ void compute_wireless_channel_backward_cuda(
         grad_phase_rotation.copy_(grad_phase_cont.view({N, 1}));
     }
 }
+
+template <typename T>
+__global__ void alpha_blending_backward_kernel(
+
+    const T* __restrict__ influences, const T* __restrict__ real_contributions,
+    const T* __restrict__ imag_contributions, const T* __restrict__ opacity,
+    const T* __restrict__ eff_opacity, const T* __restrict__ transmittance,
+    const int* __restrict__ sort_indices,
+
+    const T* __restrict__ grad_cat_channel,
+
+    const int num_tx, const int num_rx, const int N,
+
+    T* __restrict__ grad_influences, T* __restrict__ grad_contrib_real,
+    T* __restrict__ grad_contrib_imag, T* __restrict__ grad_opacity) {
+    const int tx = blockIdx.x * blockDim.x + threadIdx.x;
+    const int rx = blockIdx.y * blockDim.y + threadIdx.y;
+
+    if (tx >= num_tx || rx >= num_rx) {
+        return;
+    }
+
+    const T grad_real = grad_cat_channel[tx * (2 * num_rx) + rx];
+    const T grad_imag = grad_cat_channel[tx * (2 * num_rx) + num_rx + rx];
+
+    T dLdT = T(0.0);
+
+    for (int p = N - 1; p >= 0; --p) {
+        const int idx = sort_indices[p];
+
+        const int influence_idx = idx * num_tx * num_rx + tx * num_rx + rx;
+        const int eff_opacity_idx = p * num_tx * num_rx + tx * num_rx + rx;
+        const int transmittance_idx_curr =
+            p * num_tx * num_rx + tx * num_rx + rx;
+        const int transmittance_idx_next =
+            (p + 1) * num_tx * num_rx + tx * num_rx + rx;
+
+        const T infl = influences[influence_idx];
+        const T C_r = real_contributions[idx];
+        const T C_i = imag_contributions[idx];
+        const T opac = opacity[idx];
+        const T eff_op = eff_opacity[eff_opacity_idx];
+        const T T_p = transmittance[transmittance_idx_curr];
+
+        const T dLdCr = grad_real * T_p * eff_op;
+        const T dLdCi = grad_imag * T_p * eff_op;
+
+        const T dLdEffOp =
+            grad_real * T_p * C_r + grad_imag * T_p * C_i - T_p * dLdT;
+
+        const T dLdOp = dLdEffOp * infl;
+
+        const T dLdInfl = dLdEffOp * opac;
+
+        const T dLdT_prev = grad_real * eff_op * C_r +
+                            grad_imag * eff_op * C_i + dLdT * (T(1.0) - eff_op);
+
+        atomicAdd(&grad_contrib_real[idx], dLdCr);
+        atomicAdd(&grad_contrib_imag[idx], dLdCi);
+        atomicAdd(&grad_opacity[idx], dLdOp);
+        atomicAdd(&grad_influences[influence_idx], dLdInfl);
+
+        dLdT = dLdT_prev;
+    }
+}
+
+void alpha_blending_backward_cuda(
+    torch::Tensor influences, torch::Tensor real_contributions,
+    torch::Tensor imag_contributions, torch::Tensor opacity,
+    torch::Tensor eff_opacity, torch::Tensor transmittance,
+    torch::Tensor sort_indices, torch::Tensor grad_cat_channel, int num_tx,
+    int num_rx, torch::Tensor grad_influences, torch::Tensor grad_contrib_real,
+    torch::Tensor grad_contrib_imag, torch::Tensor grad_opacity);
+
+void alpha_blending_backward_cuda(
+    torch::Tensor influences, torch::Tensor real_contributions,
+    torch::Tensor imag_contributions, torch::Tensor opacity,
+    torch::Tensor eff_opacity, torch::Tensor transmittance,
+    torch::Tensor sort_indices, torch::Tensor grad_cat_channel, int num_tx,
+    int num_rx, torch::Tensor grad_influences, torch::Tensor grad_contrib_real,
+    torch::Tensor grad_contrib_imag, torch::Tensor grad_opacity) {
+    CHECK_VALID_INPUT(influences);
+    CHECK_VALID_INPUT(real_contributions);
+    CHECK_VALID_INPUT(imag_contributions);
+    CHECK_VALID_INPUT(opacity);
+    CHECK_VALID_INPUT(eff_opacity);
+    CHECK_VALID_INPUT(transmittance);
+    CHECK_VALID_INPUT(sort_indices);
+    CHECK_VALID_INPUT(grad_cat_channel);
+    CHECK_VALID_INPUT(grad_influences);
+    CHECK_VALID_INPUT(grad_contrib_real);
+    CHECK_VALID_INPUT(grad_contrib_imag);
+    CHECK_VALID_INPUT(grad_opacity);
+
+    const int N = influences.size(0);
+    TORCH_CHECK(influences.size(1) == num_tx && influences.size(2) == num_rx,
+                "influences shape mismatch");
+    TORCH_CHECK(real_contributions.size(0) == N,
+                "real_contributions shape mismatch");
+    TORCH_CHECK(imag_contributions.size(0) == N,
+                "imag_contributions shape mismatch");
+    TORCH_CHECK(opacity.size(0) == N, "opacity shape mismatch");
+    TORCH_CHECK(eff_opacity.size(0) == N && eff_opacity.size(1) == num_tx &&
+                    eff_opacity.size(2) == num_rx,
+                "eff_opacity shape mismatch");
+    TORCH_CHECK(transmittance.size(0) == N + 1 &&
+                    transmittance.size(1) == num_tx &&
+                    transmittance.size(2) == num_rx,
+                "transmittance shape mismatch");
+    TORCH_CHECK(sort_indices.size(0) == N, "sort_indices shape mismatch");
+    TORCH_CHECK(grad_cat_channel.size(0) == num_tx &&
+                    grad_cat_channel.size(1) == 2 * num_rx,
+                "grad_cat_channel shape mismatch");
+    TORCH_CHECK(grad_influences.size(0) == N &&
+                    grad_influences.size(1) == num_tx &&
+                    grad_influences.size(2) == num_rx,
+                "grad_influences shape mismatch");
+    TORCH_CHECK(grad_contrib_real.size(0) == N,
+                "grad_contrib_real shape mismatch");
+    TORCH_CHECK(grad_contrib_imag.size(0) == N,
+                "grad_contrib_imag shape mismatch");
+    TORCH_CHECK(grad_opacity.size(0) == N, "grad_opacity shape mismatch");
+
+    dim3 blocksize(16, 16, 1);
+    dim3 gridsize((num_tx + blocksize.x - 1) / blocksize.x,
+                  (num_rx + blocksize.y - 1) / blocksize.y, 1);
+
+    grad_influences.zero_();
+    grad_contrib_real.zero_();
+    grad_contrib_imag.zero_();
+    grad_opacity.zero_();
+
+    if (influences.dtype() == torch::kFloat32) {
+        CHECK_FLOAT_TENSOR(real_contributions);
+        CHECK_FLOAT_TENSOR(imag_contributions);
+        CHECK_FLOAT_TENSOR(opacity);
+        CHECK_FLOAT_TENSOR(eff_opacity);
+        CHECK_FLOAT_TENSOR(transmittance);
+        CHECK_INT_TENSOR(sort_indices);
+        CHECK_FLOAT_TENSOR(grad_cat_channel);
+        CHECK_FLOAT_TENSOR(grad_influences);
+        CHECK_FLOAT_TENSOR(grad_contrib_real);
+        CHECK_FLOAT_TENSOR(grad_contrib_imag);
+        CHECK_FLOAT_TENSOR(grad_opacity);
+        alpha_blending_backward_kernel<float><<<gridsize, blocksize>>>(
+            influences.data_ptr<float>(), real_contributions.data_ptr<float>(),
+            imag_contributions.data_ptr<float>(), opacity.data_ptr<float>(),
+            eff_opacity.data_ptr<float>(), transmittance.data_ptr<float>(),
+            sort_indices.data_ptr<int>(), grad_cat_channel.data_ptr<float>(),
+            num_tx, num_rx, N, grad_influences.data_ptr<float>(),
+            grad_contrib_real.data_ptr<float>(),
+            grad_contrib_imag.data_ptr<float>(),
+            grad_opacity.data_ptr<float>());
+    } else if (influences.dtype() == torch::kFloat64) {
+        CHECK_DOUBLE_TENSOR(real_contributions);
+        CHECK_DOUBLE_TENSOR(imag_contributions);
+        CHECK_DOUBLE_TENSOR(opacity);
+        CHECK_DOUBLE_TENSOR(eff_opacity);
+        CHECK_DOUBLE_TENSOR(transmittance);
+        CHECK_INT_TENSOR(sort_indices);
+        CHECK_DOUBLE_TENSOR(grad_cat_channel);
+        CHECK_DOUBLE_TENSOR(grad_influences);
+        CHECK_DOUBLE_TENSOR(grad_contrib_real);
+        CHECK_DOUBLE_TENSOR(grad_contrib_imag);
+        CHECK_DOUBLE_TENSOR(grad_opacity);
+        alpha_blending_backward_kernel<double><<<gridsize, blocksize>>>(
+            influences.data_ptr<double>(),
+            real_contributions.data_ptr<double>(),
+            imag_contributions.data_ptr<double>(), opacity.data_ptr<double>(),
+            eff_opacity.data_ptr<double>(), transmittance.data_ptr<double>(),
+            sort_indices.data_ptr<int>(), grad_cat_channel.data_ptr<double>(),
+            num_tx, num_rx, N, grad_influences.data_ptr<double>(),
+            grad_contrib_real.data_ptr<double>(),
+            grad_contrib_imag.data_ptr<double>(),
+            grad_opacity.data_ptr<double>());
+    } else {
+        AT_ERROR("Unsupported data type: ", influences.dtype());
+    }
+    cudaDeviceSynchronize();
+}
