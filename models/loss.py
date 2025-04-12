@@ -5,24 +5,40 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+def calculate_nmse(pred, target, eps=1e-8):
+    """Calculate NMSE between predicted and target complex channel matrices"""
+    if pred.dim() == 2:
+        pred = pred.unsqueeze(0)
+        target = target.unsqueeze(0)
+
+    target = target.to(pred.dtype)
+
+    N_r = pred.shape[2] // 2 if pred.dim() == 3 else pred.shape[1] // 2
+
+    if pred.dim() == 3:
+        pred_real, pred_imag = pred[..., :N_r], pred[..., N_r:]
+        target_real, target_imag = target[..., :N_r], target[..., N_r:]
+    else:
+        pred_real, pred_imag = pred[:, :N_r], pred[:, N_r:]
+        target_real, target_imag = target[:, :N_r], target[:, N_r:]
+
+    pred_complex = torch.complex(pred_real, pred_imag)
+    target_complex = torch.complex(target_real, target_imag)
+
+    diff_sq = torch.sum(torch.abs(pred_complex - target_complex) ** 2)
+    target_sq = torch.sum(torch.abs(target_complex) ** 2).clamp(min=eps)
+    nmse = diff_sq / target_sq
+
+    return nmse
+
+
 class NormalizedMSELoss(nn.Module):
     def __init__(self, eps=1e-8):
         super().__init__()
         self.eps = eps
 
     def forward(self, pred, target):
-        if pred.dim() == 2:
-            pred = pred.unsqueeze(0)
-            target = target.unsqueeze(0)
-
-        target = target.to(pred.dtype)
-
-        eps = torch.tensor(self.eps, dtype=pred.dtype, device=pred.device)
-
-        diff_sq = ((pred - target) ** 2).sum(dim=(1, 2))
-        target_sq = ((target**2).sum(dim=(1, 2))).clamp(min=eps)
-        nmse = diff_sq / target_sq
-        return nmse.mean()
+        return calculate_nmse(pred, target, self.eps)
 
 
 class LogMSELoss(nn.Module):
@@ -188,3 +204,8 @@ def get_loss_function(loss_type, **kwargs):
         return LogMagPhaseLoss(phase_weight=phase_weight, eps=eps)
     else:
         raise ValueError(f"Unknown loss type: {loss_type}")
+
+
+def calculate_snr(nmse):
+    """Calculate SNR in dB from NMSE loss value"""
+    return -10.0 * torch.log10(nmse)

@@ -15,7 +15,7 @@ from engine import _torch_impl as torch_impl
 from engine import rasterize
 from models.encoder import EncoderConfig
 from models.gaussian_model import GaussianModel
-from models.loss import get_loss_function
+from models.loss import calculate_nmse, calculate_snr, get_loss_function
 from utils.general_utils import set_random_seed
 from utils.train_utils import setup_logging
 
@@ -271,6 +271,7 @@ def evaluate(
     """Evaluate model on validation set"""
     model.eval()
     total_loss = 0.0
+    total_nmse = 0.0
     num_samples = 0
 
     logger.info(f"Evaluating at iteration {iteration}...")
@@ -295,14 +296,24 @@ def evaluate(
 
             loss = loss_fn(pred_channel, gt_channel)
             total_loss += loss.item()
+
+            nmse = calculate_nmse(pred_channel, gt_channel)
+            total_nmse += nmse.item()
+
             num_samples += 1
 
     avg_loss = total_loss / max(num_samples, 1)
+    avg_nmse = total_nmse / max(num_samples, 1)
+    avg_snr = calculate_snr(torch.tensor(avg_nmse)).item()
 
-    logger.info(f"Evaluation Loss ({args.loss_type}): {avg_loss:.6f}")
+    logger.info(
+        f"Evaluation Loss ({args.loss_type}): {avg_loss:.6f}, SNR: {avg_snr:.2f} dB"
+    )
 
     if writer is not None:
         writer.add_scalar("eval/loss", avg_loss, iteration)
+        writer.add_scalar("eval/nmse", avg_nmse, iteration)
+        writer.add_scalar("eval/snr", avg_snr, iteration)
 
     model.train()
     return avg_loss
@@ -455,6 +466,8 @@ def train(args, logger, writer, log_dir):
         )
 
         loss = loss_fn(pred_channel, gt_channel)
+        nmse = calculate_nmse(pred_channel, gt_channel)
+        snr = calculate_snr(nmse).item()
 
         model.encoder_optimizer.zero_grad()
         model.optimizer.zero_grad()
@@ -462,7 +475,6 @@ def train(args, logger, writer, log_dir):
         loss.backward()
 
         if args.gradient_clip_val > 0:
-            #
             all_gaussian_params = []
             for group in model.optimizer.param_groups:
                 all_gaussian_params.extend(group["params"])
@@ -489,7 +501,8 @@ def train(args, logger, writer, log_dir):
         if iteration % args.log_freq == 0:
             logger.info(
                 f"[{iteration}/{args.iterations}] "
-                f"Loss: {loss.item():.6f}, "
+                f"Loss ({args.loss_type}): {loss.item():.6f}, "
+                f"SNR: {snr:.2f} dB, "
                 f"Time: {iter_time:.2f}s, "
                 f"Gaussians: {model.get_xyz.shape[0]}"
             )
@@ -498,10 +511,11 @@ def train(args, logger, writer, log_dir):
                 f"Min: {grad_stats['min']:.6e}, "
                 f"Max: {grad_stats['max']:.6e}"
             )
-            print("pred_channel: ", pred_channel)
 
             if writer is not None:
                 writer.add_scalar("train/loss", loss.item(), iteration)
+                writer.add_scalar("train/nmse", nmse.item(), iteration)
+                writer.add_scalar("train/snr", snr, iteration)
                 writer.add_scalar("train/iteration_time", iter_time, iteration)
                 writer.add_scalar(
                     "train/num_gaussians", model.get_xyz.shape[0], iteration
@@ -511,9 +525,7 @@ def train(args, logger, writer, log_dir):
                 writer.add_scalar("grad/min", grad_stats["min"], iteration)
                 writer.add_scalar("grad/max", grad_stats["max"], iteration)
 
-            progress_bar.set_description(
-                f"Loss: {loss.item():.6f}, Gaussians: {model.get_xyz.shape[0]}"
-            )
+            progress_bar.set_description(f"Loss: {loss.item():.6f}, SNR: {snr:.2f} dB")
 
         if (
             iteration > 0 and iteration % args.eval_freq == 0
@@ -536,7 +548,34 @@ def train(args, logger, writer, log_dir):
             # save best model
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
-                logger.info(f"New best validation loss: {best_val_loss:.6f}")
+                with torch.no_grad():
+                    val_data = next(iter(val_dataloader))
+                    rx_position = val_data["rx_position"].to(device).squeeze()
+                    gt_channel = val_data["channel_matrix"].to(device).squeeze()
+                    gt_channel = torch.hstack((gt_channel.real, gt_channel.imag))
+
+                    enc_data = {
+                        "tx_pos": tx_position,
+                        "rx_pos": rx_position,
+                        "frequency": frequency,
+                    }
+                    model.embed_features(enc_data)
+                    pred_channel = rasterize_channel(
+                        model,
+                        rx_position,
+                        tx_position,
+                        num_tx_ant,
+                        num_rx_ant,
+                        frequency,
+                        args,
+                    )
+
+                    best_nmse = calculate_nmse(pred_channel, gt_channel)
+                    best_val_snr = calculate_snr(best_nmse).item()
+
+                logger.info(
+                    f"New best validation loss ({args.loss_type}): {best_val_loss:.6f}, SNR: {best_val_snr:.2f} dB"
+                )
                 model.save(
                     log_dir / "checkpoints" / "best_model.pt",
                     save_optimizer=True,
