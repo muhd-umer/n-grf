@@ -2,6 +2,7 @@
 *:Zone.Identifier
 .vscode/
 logs/
+eval_results/
 
 # matlab
 *.mat
