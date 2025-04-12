@@ -366,9 +366,9 @@ def main():
                 f.write(f"{i},{snr:.4f},{loss:.8f}\n")
 
                 if len(vis_pred_channels) < args.num_samples:
-                    f.write("\nPredicted Channel (Real + Imaginary):\n")
+                    f.write("\nPredicted Channel (Real | Imaginary):\n")
                     f.write(f"{pred_channel.cpu().numpy()}\n\n")
-                    f.write("Target Channel (Real + Imaginary):\n")
+                    f.write("Target Channel (Real | Imaginary):\n")
                     f.write(f"{gt_channel.cpu().numpy()}\n\n")
                     f.write("-" * 50 + "\n\n")
 
