@@ -35,6 +35,18 @@ def parse_args():
         default=20_000,
         help="Number of points to sample from point cloud",
     )
+    parser.add_argument(
+        "--batch_size",
+        type=int,
+        default=8,
+        help="Batch size for training and evaluation",
+    )
+    parser.add_argument(
+        "--num_workers",
+        type=int,
+        default=2,
+        help="Number of workers for data loading",
+    )
 
     # initialization params
     parser.add_argument(
@@ -108,7 +120,7 @@ def parse_args():
     parser.add_argument(
         "--loss_type",
         type=str,
-        default="mse_corr",
+        default="nmse",
         choices=[
             "nmse",
             "log_mse",
@@ -233,6 +245,43 @@ def rasterize_channel(
         )
 
 
+def sequential_fwd(
+    model, batch, tx_position, num_tx_ant, num_rx_ant, frequency, args, device
+):
+    """Process by iterating through each sample in the batch sequentially"""
+    batch_size = batch["rx_position"].shape[0]
+    pred_channels = []
+
+    for i in range(batch_size):
+        rx_position = batch["rx_position"][i].to(device)
+        enc_data = {
+            "tx_pos": tx_position,
+            "rx_pos": rx_position,
+            "frequency": frequency,
+        }
+        model.embed_features(enc_data)
+
+        pred_channel = rasterize_channel(
+            model, rx_position, tx_position, num_tx_ant, num_rx_ant, frequency, args
+        )
+        pred_channels.append(pred_channel)
+
+    return torch.stack(pred_channels)
+
+
+def get_gt_batch(batch, device):
+    """Process ground truth channel matrices from a batch"""
+    batch_size = batch["channel_matrix"].shape[0]
+    gt_channels = []
+
+    for b in range(batch_size):
+        gt_channel = batch["channel_matrix"][b].to(device)
+        gt_channel = torch.hstack((gt_channel.real, gt_channel.imag))
+        gt_channels.append(gt_channel)
+
+    return torch.stack(gt_channels)
+
+
 def setup_experiment(args):
     """Setup experiment directory and logging"""
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -277,30 +326,26 @@ def evaluate(
     logger.info(f"Evaluating at iteration {iteration}...")
 
     with torch.no_grad():
-        for i, data in enumerate(dataloader):
-            rx_position = data["rx_position"].to(device).squeeze()
-            gt_channel = data["channel_matrix"].to(device).squeeze()
-            gt_channel = torch.hstack((gt_channel.real, gt_channel.imag))
-
-            # embed wireless features
-            enc_data = {
-                "tx_pos": tx_position,
-                "rx_pos": rx_position,
-                "frequency": frequency,
-            }
-            model.embed_features(enc_data)
-
-            pred_channel = rasterize_channel(
-                model, rx_position, tx_position, num_tx_ant, num_rx_ant, frequency, args
+        for batch in dataloader:
+            batch_size = batch["rx_position"].shape[0]
+            gt_channels = get_gt_batch(batch, device)
+            pred_channels = sequential_fwd(
+                model,
+                batch,
+                tx_position,
+                num_tx_ant,
+                num_rx_ant,
+                frequency,
+                args,
+                device,
             )
 
-            loss = loss_fn(pred_channel, gt_channel)
-            total_loss += loss.item()
+            loss = loss_fn(pred_channels, gt_channels)
+            nmse = calculate_nmse(pred_channels, gt_channels)
 
-            nmse = calculate_nmse(pred_channel, gt_channel)
-            total_nmse += nmse.item()
-
-            num_samples += 1
+            total_loss += loss.item() * batch_size
+            total_nmse += nmse.item() * batch_size
+            num_samples += batch_size
 
     avg_loss = total_loss / max(num_samples, 1)
     avg_nmse = total_nmse / max(num_samples, 1)
@@ -359,7 +404,8 @@ def train(args, logger, writer, log_dir):
     logger.info("Initializing dataloaders...")
     train_dataloader, val_dataloader = get_dataloaders(
         args.data_path,
-        num_workers=2,
+        batch_size=args.batch_size,
+        num_workers=args.num_workers,
         drop_last=True,
     )
 
@@ -376,6 +422,7 @@ def train(args, logger, writer, log_dir):
     logger.info(f"Number of RX antennas: {num_rx_ant}")
     logger.info(f"Environment extent: {scene_extent:.2f}")
     logger.info(f"Operating frequency: {frequency/1e9:.2f} GHz")
+    logger.info(f"Training with batch size: {args.batch_size}")
 
     # initialize model
     logger.info("Initializing model...")
@@ -443,31 +490,29 @@ def train(args, logger, writer, log_dir):
         iter_start_time = time.time()
 
         try:
-            data = next(train_iter)
+            batch = next(train_iter)
         except StopIteration:
             train_iter = iter(train_dataloader)
-            data = next(train_iter)
+            batch = next(train_iter)
 
-        # extract data
-        rx_position = data["rx_position"].to(device).squeeze()
-        gt_channel = data["channel_matrix"].to(device).squeeze()
-        gt_channel = torch.hstack((gt_channel.real, gt_channel.imag))
+        gt_channels = get_gt_batch(batch, device)
 
-        # embed wireless features
-        enc_data = {
-            "tx_pos": tx_position,
-            "rx_pos": rx_position,
-            "frequency": frequency,
-        }
-        model.embed_features(enc_data)
-
-        pred_channel = rasterize_channel(
-            model, rx_position, tx_position, num_tx_ant, num_rx_ant, frequency, args
+        pred_channels = sequential_fwd(
+            model,
+            batch,
+            tx_position,
+            num_tx_ant,
+            num_rx_ant,
+            frequency,
+            args,
+            device,
         )
 
-        loss = loss_fn(pred_channel, gt_channel)
-        nmse = calculate_nmse(pred_channel, gt_channel)
-        snr = calculate_snr(nmse).item()
+        loss = loss_fn(pred_channels, gt_channels)
+
+        with torch.no_grad():
+            nmse = calculate_nmse(pred_channels, gt_channels)
+            snr = calculate_snr(nmse).item()
 
         model.encoder_optimizer.zero_grad()
         model.optimizer.zero_grad()
@@ -504,6 +549,7 @@ def train(args, logger, writer, log_dir):
                 f"Loss ({args.loss_type}): {loss.item():.6f}, "
                 f"SNR: {snr:.2f} dB, "
                 f"Time: {iter_time:.2f}s, "
+                f"Batch Size: {args.batch_size}, "
                 f"Gaussians: {model.get_xyz.shape[0]}"
             )
             logger.info(
@@ -519,6 +565,9 @@ def train(args, logger, writer, log_dir):
                 writer.add_scalar("train/iteration_time", iter_time, iteration)
                 writer.add_scalar(
                     "train/num_gaussians", model.get_xyz.shape[0], iteration
+                )
+                writer.add_scalar(
+                    "train/samples_per_second", args.batch_size / iter_time, iteration
                 )
 
                 writer.add_scalar("grad/mean_abs", grad_stats["mean_abs"], iteration)
@@ -549,28 +598,19 @@ def train(args, logger, writer, log_dir):
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
                 with torch.no_grad():
-                    val_data = next(iter(val_dataloader))
-                    rx_position = val_data["rx_position"].to(device).squeeze()
-                    gt_channel = val_data["channel_matrix"].to(device).squeeze()
-                    gt_channel = torch.hstack((gt_channel.real, gt_channel.imag))
-
-                    enc_data = {
-                        "tx_pos": tx_position,
-                        "rx_pos": rx_position,
-                        "frequency": frequency,
-                    }
-                    model.embed_features(enc_data)
-                    pred_channel = rasterize_channel(
+                    val_batch = next(iter(val_dataloader))
+                    gt_channels = get_gt_batch(val_batch, device)
+                    pred_channels = sequential_fwd(
                         model,
-                        rx_position,
+                        val_batch,
                         tx_position,
                         num_tx_ant,
                         num_rx_ant,
                         frequency,
                         args,
+                        device,
                     )
-
-                    best_nmse = calculate_nmse(pred_channel, gt_channel)
+                    best_nmse = calculate_nmse(pred_channels, gt_channels)
                     best_val_snr = calculate_snr(best_nmse).item()
 
                 logger.info(
