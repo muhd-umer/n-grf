@@ -28,7 +28,8 @@ __launch_bounds__(1024) __global__
     const T d_cov = cov2d[i * 4 + 3];
 
     const T det = a * d_cov - b * c;
-    if (abs(det) < T(1e-10)) {
+    const T det_safe = max(det, T(ROBUST_EPSILON));
+    if (abs(det_safe) < T(1e-15)) {
         grad_uv[i * 2 + 0] = T(0.0);
         grad_uv[i * 2 + 1] = T(0.0);
         grad_cov2d[i * 4 + 0] = T(0.0);
@@ -37,7 +38,7 @@ __launch_bounds__(1024) __global__
         grad_cov2d[i * 4 + 3] = T(0.0);
         return;
     }
-    const T inv_det = T(1.0) / det;
+    const T inv_det = T(1.0) / det_safe;
 
     T inv_cov[4];
     inv_cov[0] = d_cov * inv_det;
@@ -193,7 +194,7 @@ __global__ void compute_wireless_channel_backward_kernel(
     const T PI = T(3.14159265358979323846);
 
     const T r = distances[i];
-    const T r_safe = max(r, T(1e-10));
+    const T r_safe = max(r, T(ROBUST_EPSILON));
     const T path_loss = wavelength / (T(4.0) * PI * r_safe);
     const T phase_shift = -T(2.0) * PI * r / wavelength;
 
@@ -465,8 +466,6 @@ void alpha_blending_backward_cuda(
         CHECK_FLOAT_TENSOR(real_contributions);
         CHECK_FLOAT_TENSOR(imag_contributions);
         CHECK_FLOAT_TENSOR(opacity);
-        CHECK_FLOAT_TENSOR(eff_opacity);
-        CHECK_FLOAT_TENSOR(transmittance);
         CHECK_INT_TENSOR(sort_indices);
         CHECK_FLOAT_TENSOR(grad_cat_channel);
         CHECK_FLOAT_TENSOR(grad_influences);

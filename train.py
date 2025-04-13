@@ -102,7 +102,7 @@ def parse_args():
     parser.add_argument(
         "--gradient_clip_val",
         type=float,
-        default=1.0,
+        default=0.5,
         help="Value to clip gradient norm to (0 to disable)",
     )
     parser.add_argument(
@@ -185,7 +185,7 @@ def parse_args():
         "--loss_scale", type=float, default=1e4, help="Scale factor for scaled_mse loss"
     )
     parser.add_argument(
-        "--loss_eps", type=float, default=1e-8, help="Epsilon value for loss functions"
+        "--loss_eps", type=float, default=1e-10, help="Epsilon value for loss functions"
     )
     parser.add_argument(
         "--phase_weight",

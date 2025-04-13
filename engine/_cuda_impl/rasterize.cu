@@ -26,7 +26,7 @@ __global__ void compute_gaussian_influence_kernel(const T* __restrict__ uv,
     const T d = cov2d[i * 4 + 3];
 
     const T det = a * d - b * c;
-    const T inv_det = T(1.0) / det;
+    const T inv_det = T(1.0) / max(det, T(ROBUST_EPSILON));
 
     const T inv_a = d * inv_det;
     const T inv_b = -b * inv_det;
@@ -106,7 +106,7 @@ __global__ void compute_wireless_channel_kernel(
     const T PI = T(3.14159265358979323846);
 
     const T r = distances[i];
-    const T path_loss = wavelength / (T(4.0) * PI * r);
+    const T path_loss = wavelength / (T(4.0) * PI * max(r, T(ROBUST_EPSILON)));
     const T phase_shift = -T(2.0) * PI * r / wavelength;
 
     const T A = attenuation[i];

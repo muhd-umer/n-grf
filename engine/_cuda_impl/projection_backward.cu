@@ -311,6 +311,7 @@ __global__ void project_to_channel_coords_backward_kernel(
     }
 
     const T r = distances[i];
+    const T r_safe = max(r, T(ROBUST_EPSILON));
     const T x = displacement[i * 3 + 0];
     const T y = displacement[i * 3 + 1];
     const T z = displacement[i * 3 + 2];
@@ -326,10 +327,9 @@ __global__ void project_to_channel_coords_backward_kernel(
 
     T grad_px = 0, grad_py = 0, grad_pz = 0;
 
-    T r_eps = r + T(1e-10);
-    grad_px += grad_r * x / r_eps;
-    grad_py += grad_r * y / r_eps;
-    grad_pz += grad_r * z / r_eps;
+    grad_px += grad_r * x / r_safe;
+    grad_py += grad_r * y / r_safe;
+    grad_pz += grad_r * z / r_safe;
 
     grad_px += grad_dx;
     grad_py += grad_dy;
@@ -343,20 +343,22 @@ __global__ void project_to_channel_coords_backward_kernel(
     const T grad_longitude = grad_s_x / PI;
     const T grad_latitude = grad_s_y * T(2) / PI;
 
-    T xy_squared = x * x + y * y + T(1e-10);
+    T xy_squared = max(x * x + y * y, T(ROBUST_EPSILON));
     grad_px += grad_longitude * (-y / xy_squared);
     grad_py += grad_longitude * (x / xy_squared);
 
-    T dz_r = z / r_eps;
+    T dz_r = z / r_safe;
     dz_r = min(max(dz_r, T(-1.0)), T(1.0));
     T cos_lat_sq = T(1.0) - dz_r * dz_r;
-    T cos_lat = sqrt(max(cos_lat_sq, T(1e-10)));
+    T cos_lat = sqrt(max(cos_lat_sq, T(ROBUST_EPSILON)));
+    T cos_lat_safe = max(cos_lat, T(ROBUST_EPSILON));
 
-    T r3_cos_lat = r_eps * r_eps * r_eps * cos_lat;
-    if (abs(r3_cos_lat) > T(1e-10)) {
-        grad_px += grad_latitude * (-x * z) / r3_cos_lat;
-        grad_py += grad_latitude * (-y * z) / r3_cos_lat;
-        grad_pz += grad_latitude * (xy_squared) / r3_cos_lat;
+    T denom_lat = r_safe * r_safe * r_safe * cos_lat_safe;
+    denom_lat = max(denom_lat, T(ROBUST_EPSILON));
+    if (abs(denom_lat) > T(1e-15)) {
+        grad_px += grad_latitude * (-x * z) / denom_lat;
+        grad_py += grad_latitude * (-y * z) / denom_lat;
+        grad_pz += grad_latitude * (xy_squared) / denom_lat;
     }
 
     grad_points[i * 3 + 0] = grad_px;
@@ -464,9 +466,10 @@ __launch_bounds__(1024) __global__
     const T rx_factor = (num_rx - T(1)) / PI;
 
     const T xy_sq = x * x + y * y;
-    const T xy_sq_safe = max(xy_sq, T(1e-10));
+    const T xy_sq_safe = max(xy_sq, T(ROBUST_EPSILON));
     const T sqrt_xy_safe = sqrt(xy_sq_safe);
-    const T denom = sqrt_xy_safe * xy_sq_safe * xy_sq_safe + T(1e-10);
+    const T denom =
+        max(sqrt_xy_safe * xy_sq_safe * xy_sq_safe, T(ROBUST_EPSILON));
 
     T grad_d_x = (L11 * tx_factor * (2 * x * y * sqrt_xy_safe) +
                   L12 * tx_factor * (y * y - x * x) * sqrt_xy_safe +
@@ -482,8 +485,8 @@ __launch_bounds__(1024) __global__
                   L23 * rx_factor * (-y * xy_sq_safe)) /
                  denom;
 
-    T grad_d_z =
-        rx_factor * (L21 * x + L22 * y) / (pow(xy_sq_safe, T(1.5)) + T(1e-10));
+    T denom_z = max(pow(xy_sq_safe, T(1.5)), T(ROBUST_EPSILON));
+    T grad_d_z = rx_factor * (L21 * x + L22 * y) / denom_z;
 
     grad_d[i * 3 + 0] = grad_d_x;
     grad_d[i * 3 + 1] = grad_d_y;

@@ -4,6 +4,11 @@
 #ifndef CHECKS_H
 #define CHECKS_H
 
+#include <cuda_runtime.h>
+#include <torch/extension.h>
+
+#define ROBUST_EPSILON 1e-6
+
 #define CHECK_IS_CUDA(x) TORCH_CHECK(x.is_cuda(), #x " is not a CUDA tensor")
 #define CHECK_IS_CONTIGUOUS(x) \
     TORCH_CHECK(x.is_contiguous(), #x " is not a contiguous tensor")

@@ -74,12 +74,10 @@ __global__ void compute_scaling_matrix_kernel(const T* __restrict__ scaling,
         return;
     }
 
-    // Create 3x3 diagonal matrix with scaled values
     const T sx = scaling[i * 3 + 0] * scale_modifier;
     const T sy = scaling[i * 3 + 1] * scale_modifier;
     const T sz = scaling[i * 3 + 2] * scale_modifier;
 
-    // Fill the diagonal
     scaling_matrix[i * 9 + 0] = sx;
     scaling_matrix[i * 9 + 1] = 0;
     scaling_matrix[i * 9 + 2] = 0;
@@ -136,7 +134,6 @@ __global__ void matrix_multiply_kernel(const T* __restrict__ A,
         return;
     }
 
-    // Assuming A and B are 3x3 matrices
     matrix_multiply<T>(A + i * 9, B + i * 9, C + i * 9, 3, 3, 3);
 }
 
@@ -183,11 +180,9 @@ __global__ void covariance_matrix_kernel(const T* __restrict__ RS, const int N,
         return;
     }
 
-    // Create RS^T
     T RS_T[9];
     transpose<T>(RS + i * 9, RS_T, 3, 3);
 
-    // Compute covariance matrix: C = RS * RS^T.
     matrix_multiply<T>(RS + i * 9, RS_T, cov3d + i * 9, 3, 3, 3);
 }
 
@@ -230,33 +225,28 @@ __global__ void project_to_channel_coords_kernel(
         return;
     }
 
-    // Compute displacement and distance
     T d[3];
     d[0] = points[i * 3 + 0] - receiver[0];
     d[1] = points[i * 3 + 1] - receiver[1];
     d[2] = points[i * 3 + 2] - receiver[2];
 
-    // Store displacement
     displacement[i * 3 + 0] = d[0];
     displacement[i * 3 + 1] = d[1];
     displacement[i * 3 + 2] = d[2];
 
-    // Compute distance
     T r = sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+    T r_safe = max(r, T(ROBUST_EPSILON));
     distances[i] = r;
 
-    // Compute spherical coordinates
     T longitude = atan2(d[1], d[0]);
-    T dz_r = d[2] / r;
-    dz_r = min(max(dz_r, T(-1.0)), T(1.0));  // Clamp to [-1, 1]
+    T dz_r = d[2] / r_safe;
+    dz_r = min(max(dz_r, T(-1.0)), T(1.0));
     T latitude = asin(dz_r);
 
-    // Transform to uniform coordinates
     T PI = T(3.14159265358979323846);
     T s_x = longitude / PI;
     T s_y = T(2.0) * latitude / PI;
 
-    // Map to channel matrix coordinates
     T u = ((s_x + T(1.0)) / T(2.0)) * (num_tx - T(1.0)) + T(0.5);
     T v = ((s_y + T(1.0)) / T(2.0)) * (num_rx - T(1.0)) + T(0.5);
 
@@ -323,38 +313,36 @@ __global__ void compute_jacobian_kernel(const T* __restrict__ d,
         return;
     }
 
-    // Extract displacement components
     T x = d[i * 3 + 0];
     T y = d[i * 3 + 1];
     T z = d[i * 3 + 2];
 
-    // Compute r and necessary intermediate values
-    T r = sqrt(x * x + y * y + z * z);
+    T r_sq = x * x + y * y + z * z;
+    T r = sqrt(r_sq);
+    T r_safe = max(r, T(ROBUST_EPSILON));
 
-    // Compute x²+y² and clamp for stability
     T xy_sq = x * x + y * y;
-    xy_sq = max(xy_sq, T(1e-10));
+    xy_sq = max(xy_sq, T(ROBUST_EPSILON));
 
-    // Compute cos_lat = sqrt(1 - (z/r)²)
-    T cos_lat = sqrt(max(T(1.0) - (z / r) * (z / r), T(1e-10)));
+    T cos_lat = sqrt(max(T(1.0) - (z / r_safe) * (z / r_safe), T(ROBUST_EPSILON)));
+    T cos_lat_safe = max(cos_lat, T(ROBUST_EPSILON));
 
-    // Factors from antenna grid dimensions
+
     T PI = T(3.14159265358979323846);
     T tx_factor = (num_tx - T(1.0)) / (T(2.0) * PI);
     T rx_factor = (num_rx - T(1.0)) / PI;
 
-    // First row: u-coordinates derivatives (longitude)
     J[i * 6 + 0] = tx_factor * (-y / xy_sq);
     J[i * 6 + 1] = tx_factor * (x / xy_sq);
     J[i * 6 + 2] = T(0.0);
 
-    // Second row: v-coordinates derivatives (latitude)
-    T r_cos_lat_xy = r * cos_lat * xy_sq;
-    r_cos_lat_xy = max(r_cos_lat_xy, T(1e-10));
+    T r_cos_lat = r_safe * cos_lat_safe;
+    T r_cos_lat_xy_sq = r_cos_lat * xy_sq;
+    r_cos_lat_xy_sq = max(r_cos_lat_xy_sq, T(ROBUST_EPSILON));
 
-    J[i * 6 + 3] = rx_factor * (z * x) / r_cos_lat_xy;
-    J[i * 6 + 4] = rx_factor * (z * y) / r_cos_lat_xy;
-    J[i * 6 + 5] = rx_factor / (r * cos_lat);
+    J[i * 6 + 3] = rx_factor * (z * x) / r_cos_lat_xy_sq;
+    J[i * 6 + 4] = rx_factor * (z * y) / r_cos_lat_xy_sq;
+    J[i * 6 + 5] = rx_factor / r_cos_lat;
 }
 
 void compute_jacobian_cuda(torch::Tensor d, int num_tx, int num_rx,
@@ -397,17 +385,15 @@ __global__ void project_cov3d_to_cov2d_kernel(const T* __restrict__ cov3d_mat,
         return;
     }
 
-    // Step 1: Compute temp = cov3d * J^T
-    T J_T[6];  // 3x2
+    T J_T[6];
     transpose<T>(jacobian + i * 6, J_T, 2, 3);
 
-    T temp[6];  // 3x2
+    T temp[6];
     matrix_multiply<T>(cov3d_mat + i * 9, J_T, temp, 3, 3, 2);
 
-    // Step 2: Compute cov2d = J * temp
     matrix_multiply<T>(jacobian + i * 6, temp, cov2d + i * 4, 2, 3, 2);
 
-    // Add a small constant to ensure positive definiteness
+    // add a small constant to ensure positive definiteness
     cov2d[i * 4 + 0] += T(0.3);  // (0,0)
     cov2d[i * 4 + 3] += T(0.3);  // (1,1)
 }
