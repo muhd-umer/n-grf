@@ -161,6 +161,11 @@ def parse_args():
         help="Reset opacity every N iterations",
     )
     parser.add_argument(
+        "--disable_opacity_reset",
+        action="store_true",
+        help="Disable periodic opacity reset",
+    )
+    parser.add_argument(
         "--scale_modifier",
         type=float,
         default=1.0,
@@ -204,6 +209,11 @@ def parse_args():
     args = parser.parse_args()
     if "use_encoder_layernorm" not in args:
         args.use_encoder_layernorm = True
+
+    if not args.disable_opacity_reset:
+        assert (
+            args.opacity_reset_interval > 0
+        ), "If opacity reset is enabled, opacity_reset_interval must be > 0"
 
     return args
 
@@ -537,7 +547,10 @@ def train(args, logger, writer, log_dir):
         model.encoder_optimizer.step()
         model.optimizer.step()
 
-        if iteration % args.opacity_reset_interval == 0:
+        if (
+            not args.disable_opacity_reset
+            and iteration % args.opacity_reset_interval == 0
+        ):
             model.reset_opacity()
 
         # log progress
