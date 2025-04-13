@@ -57,16 +57,15 @@ def parse_args():
         help="Method to initialize Gaussian points (point_cloud or random)",
     )
     parser.add_argument(
-        "--no_physics_init",
-        action="store_false",
-        dest="physics_init",
-        help="Disable physics-based initialization",
+        "--physics_init",
+        action="store_true",
+        help="Enable physics-based initialization",
     )
     parser.add_argument(
-        "--no_positional_encoding",
-        action="store_false",
+        "--positional_encoding",
+        action="store_true",
         dest="use_positional_encoding",
-        help="Disable positional encoding in the encoder",
+        help="Enable positional encoding in the encoder",
     )
 
     # optimization params
@@ -152,7 +151,7 @@ def parse_args():
     parser.add_argument(
         "--log_freq",
         type=int,
-        default=50,
+        default=70,
         help="Log metrics every N iterations",
     )
     parser.add_argument(
