@@ -1,10 +1,11 @@
 # models/gaussian_model.py
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Dict, Optional, Union
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from simple_knn._C import distCUDA2  # type: ignore
 
 from utils.prop_utils import compute_path_loss, compute_phase_rotation
@@ -213,7 +214,7 @@ class GaussianModel(nn.Module):
         filepath = Path(filepath)
         filepath.parent.mkdir(parents=True, exist_ok=True)
 
-        model_state = {
+        model_state: Dict[str, Any] = {
             "encoder_config": self.encoder_cfg,
             "xyz": self._xyz,
             "rotation": self._rotation,
@@ -292,7 +293,7 @@ class GaussianModel(nn.Module):
         model.to(device)
         return model
 
-    def embed_features(self, enc_data: dict[str, torch.Tensor]):
+    def embed_features(self, enc_data: Dict[str, Union[torch.Tensor, float]]):
         """Embed iteration of wireless data into Gaussian features.
 
         The wireless data should contain the following keys:
