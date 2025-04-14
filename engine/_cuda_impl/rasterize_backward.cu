@@ -10,6 +10,20 @@
 #include "checks.cuh"
 #include "matrix.cuh"
 
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 600
+__device__ double atomicAdd(double* address, double val) {
+    unsigned long long int* address_as_ull = (unsigned long long int*)address;
+    unsigned long long int old = *address_as_ull, assumed;
+    do {
+        assumed = old;
+        old = atomicCAS(
+            address_as_ull, assumed,
+            __double_as_longlong(val + __longlong_as_double(assumed)));
+    } while (assumed != old);
+    return __longlong_as_double(old);
+}
+#endif
+
 template <typename T>
 __launch_bounds__(1024) __global__
     void compute_gaussian_influence_backward_kernel(
@@ -364,8 +378,6 @@ __global__ void alpha_blending_backward_kernel(
         const int eff_opacity_idx = p * num_tx * num_rx + tx * num_rx + rx;
         const int transmittance_idx_curr =
             p * num_tx * num_rx + tx * num_rx + rx;
-        const int transmittance_idx_next =
-            (p + 1) * num_tx * num_rx + tx * num_rx + rx;
 
         const T infl = influences[influence_idx];
         const T C_r = real_contributions[idx];
