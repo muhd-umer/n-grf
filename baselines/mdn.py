@@ -1,12 +1,11 @@
-# baselines/mlp.py
+# baselines/mdn.py
 
 import os
 import sys
 
-import torch
-
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np
+import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
@@ -15,27 +14,74 @@ from datasets.dataloader import get_wireless_dataloader
 from datasets.wireless_dataset import WirelessDataset
 
 
-class MLPBaseline(nn.Module):
+def mdn_loss(pi, mu, sigma, target):
     """
-    An MLP that takes as input concatenated features (receiver position,
-    transmitter position, and path loss) and predicts a flattened version
-    of the channel matrix. The output is arranged so that the real and imaginary
-    parts are concatenated.
+    Computes the MDN loss (negative log likelihood) for a Gaussian mixture model.
+
+    Args:
+        pi: Tensor of shape (batch_size, n_mixtures) of mixture weights.
+        mu: Tensor of shape (batch_size, n_mixtures, D) of means.
+        sigma: Tensor of shape (batch_size, n_mixtures, D) of standard deviations.
+        target: Tensor of shape (batch_size, D) with ground-truth target.
+
+    Returns:
+        Mean negative log-likelihood over the batch.
+    """
+    D = target.size(1)
+    target = target.unsqueeze(1)
+    exp_term = -0.5 * torch.sum(((target - mu) / sigma) ** 2, dim=2)
+    log_coeff = -0.5 * D * torch.log(
+        torch.tensor(2 * np.pi, device=target.device)
+    ) - torch.sum(torch.log(sigma), dim=2)
+    log_component_probs = torch.log(pi + 1e-8) + log_coeff + exp_term
+    log_prob = torch.logsumexp(log_component_probs, dim=1)
+    return -torch.mean(log_prob)
+
+
+class MDNBaseline(nn.Module):
+    """
+    A Mixture Density Network that takes as input concatenated features
+    (receiver position, transmitter position, and path loss) and outputs
+    the parameters of a Gaussian mixture over the flattened channel matrix.
+
+    The network uses an MLP architecture to produce the parameters:
+        - Mixture weights (pi)
+        - Means (mu)
+        - Standard deviations (sigma)
+
+    The final layer outputs n_mixtures * (1 + 2 * output_dim) numbers that are
+    then partitioned into the three sets.
     """
 
-    def __init__(self, input_dim, hidden_dims, output_dim):
-        super(MLPBaseline, self).__init__()
+    def __init__(self, input_dim, hidden_dims, output_dim, n_mixtures=5):
+        super(MDNBaseline, self).__init__()
+        self.n_mixtures = n_mixtures
+        self.output_dim = output_dim
+
         layers = []
         prev_dim = input_dim
         for h in hidden_dims:
             layers.append(nn.Linear(prev_dim, h))
             layers.append(nn.ReLU())
             prev_dim = h
-        layers.append(nn.Linear(prev_dim, output_dim))
-        self.mlp = nn.Sequential(*layers)
+        self.hidden = nn.Sequential(*layers)
+
+        self.mdn_linear = nn.Linear(prev_dim, n_mixtures * (1 + 2 * output_dim))
+        self.softplus = nn.Softplus()
 
     def forward(self, x):
-        return self.mlp(x)
+        batch_size = x.size(0)
+        hidden_out = self.hidden(x)
+        mdn_params = self.mdn_linear(hidden_out)
+        split_size = self.n_mixtures
+        pi = mdn_params[:, :split_size]
+        mu = mdn_params[:, split_size : split_size + self.n_mixtures * self.output_dim]
+        sigma = mdn_params[:, split_size + self.n_mixtures * self.output_dim :]
+        mu = mu.view(batch_size, self.n_mixtures, self.output_dim)
+        sigma = sigma.view(batch_size, self.n_mixtures, self.output_dim)
+        pi = nn.functional.softmax(pi, dim=1)
+        sigma = self.softplus(sigma) + 1e-8
+        return pi, mu, sigma
 
 
 def nmse_loss(H_true, H_pred):
@@ -78,7 +124,7 @@ def main():
     hidden_dims = [128, 256, 128]
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = MLPBaseline(input_dim, hidden_dims, output_dim).to(device)
+    model = MDNBaseline(input_dim, hidden_dims, output_dim, n_mixtures=5).to(device)
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 
     model.train()
@@ -93,7 +139,6 @@ def main():
             path_loss_batch = batch["path_loss"].to(device)
             if path_loss_batch.dim() == 1:
                 path_loss_batch = path_loss_batch.unsqueeze(1)
-
             H_batch = batch["channel_matrix"].to(device)
             if torch.is_complex(H_batch):
                 H_real = H_batch.real
@@ -109,14 +154,14 @@ def main():
                 tx_position.to(device).unsqueeze(0).repeat(rx_pos_batch.size(0), 1)
             )
             inputs = torch.cat([rx_pos_batch, tx_pos_batch, path_loss_batch], dim=1)
-            outputs = model(inputs)
-            loss_nmse = nmse_loss(H_target, outputs)
-            loss = loss_nmse
-
+            pi, mu, sigma = model(inputs)
+            loss_mdn = mdn_loss(pi, mu, sigma, H_target)
+            loss = loss_mdn
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
-            snr = -10 * torch.log10(loss_nmse + 1e-8)
+            weighted_mu = torch.sum(pi.unsqueeze(2) * mu, dim=1)
+            snr = -10 * torch.log10(nmse_loss(H_target, weighted_mu) + 1e-8)
             epoch_loss += loss.item()
             epoch_snr += snr.item()
             num_batches += 1

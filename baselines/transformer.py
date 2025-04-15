@@ -1,4 +1,4 @@
-# baselines/mlp.py
+# baselines/transformer.py
 
 import os
 import sys
@@ -15,29 +15,6 @@ from datasets.dataloader import get_wireless_dataloader
 from datasets.wireless_dataset import WirelessDataset
 
 
-class MLPBaseline(nn.Module):
-    """
-    An MLP that takes as input concatenated features (receiver position,
-    transmitter position, and path loss) and predicts a flattened version
-    of the channel matrix. The output is arranged so that the real and imaginary
-    parts are concatenated.
-    """
-
-    def __init__(self, input_dim, hidden_dims, output_dim):
-        super(MLPBaseline, self).__init__()
-        layers = []
-        prev_dim = input_dim
-        for h in hidden_dims:
-            layers.append(nn.Linear(prev_dim, h))
-            layers.append(nn.ReLU())
-            prev_dim = h
-        layers.append(nn.Linear(prev_dim, output_dim))
-        self.mlp = nn.Sequential(*layers)
-
-    def forward(self, x):
-        return self.mlp(x)
-
-
 def nmse_loss(H_true, H_pred):
     """
     Computes the Normalized Mean Squared Error (NMSE) defined as:
@@ -48,6 +25,53 @@ def nmse_loss(H_true, H_pred):
     norm = torch.norm(H_true, dim=1) ** 2
     nmse = error / norm
     return nmse.mean()
+
+
+class TransformerBaseline(nn.Module):
+    """
+    A transformer-based network that takes as input concatenated features
+    (receiver position, transmitter position, and path loss) and outputs a
+    flattened channel matrix prediction where the real and imaginary parts are concatenated.
+
+    The network first projects the input features into a sequence of tokens,
+    adds positional encoding, and processes the tokens with a transformer encoder.
+    The encoder output is then flattened and projected to the desired output dimension.
+    """
+
+    def __init__(
+        self,
+        input_dim,
+        output_dim,
+        num_tokens=4,
+        d_model=128,
+        num_layers=2,
+        nhead=4,
+        dim_feedforward=256,
+        dropout=0.1,
+    ):
+        super(TransformerBaseline, self).__init__()
+        self.num_tokens = num_tokens
+        self.d_model = d_model
+        self.input_proj = nn.Linear(input_dim, num_tokens * d_model)
+        self.pos_embedding = nn.Parameter(torch.randn(num_tokens, d_model))
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model, nhead, dim_feedforward, dropout
+        )
+        self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers)
+        self.output_proj = nn.Linear(num_tokens * d_model, output_dim)
+
+    def forward(self, x):
+        batch_size = x.size(0)
+        tokens = self.input_proj(x)
+        tokens = tokens.view(batch_size, self.num_tokens, self.d_model)
+        tokens = tokens.permute(1, 0, 2)
+        tokens = tokens + self.pos_embedding.unsqueeze(1)
+        encoded_tokens = self.transformer_encoder(tokens)
+        encoded_tokens = (
+            encoded_tokens.permute(1, 0, 2).contiguous().view(batch_size, -1)
+        )
+        output = self.output_proj(encoded_tokens)
+        return output
 
 
 def main():
@@ -75,12 +99,11 @@ def main():
     tx_ant = H.shape[1]
     rx_ant = H.shape[2]
     output_dim = 2 * (tx_ant * rx_ant)
-    hidden_dims = [128, 256, 128]
-
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = MLPBaseline(input_dim, hidden_dims, output_dim).to(device)
+    model = TransformerBaseline(
+        input_dim, output_dim, num_tokens=4, d_model=128, num_layers=2, nhead=4
+    ).to(device)
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
-
     model.train()
 
     for epoch in range(num_epochs):
@@ -93,7 +116,6 @@ def main():
             path_loss_batch = batch["path_loss"].to(device)
             if path_loss_batch.dim() == 1:
                 path_loss_batch = path_loss_batch.unsqueeze(1)
-
             H_batch = batch["channel_matrix"].to(device)
             if torch.is_complex(H_batch):
                 H_real = H_batch.real
@@ -112,7 +134,6 @@ def main():
             outputs = model(inputs)
             loss_nmse = nmse_loss(H_target, outputs)
             loss = loss_nmse
-
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
@@ -120,7 +141,6 @@ def main():
             epoch_loss += loss.item()
             epoch_snr += snr.item()
             num_batches += 1
-
         avg_loss = epoch_loss / num_batches
         avg_snr = epoch_snr / num_batches
         print(

@@ -8,6 +8,7 @@ dependencies = [
     "ipykernel>=6.29.5",
     "matplotlib>=3.10.0",
     "pymatreader>=1.0.0",
+    "scikit-learn>=1.6.1",
     "setuptools>=75.8.0",
     "tensorboard>=2.19.0",
     "torch>=2.6.0",
