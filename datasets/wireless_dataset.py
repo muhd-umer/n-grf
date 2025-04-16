@@ -109,8 +109,7 @@ class WirelessDataset(Dataset):
         def process_angle_data(angle_list):
             return [torch.from_numpy(np.array(d)).float() for d in angle_list]
 
-        # NOTE: AoD is unneeded as it is primarily related to the txsite
-        # self.aod = process_angle_data(data["channel"]["AoD"])
+        self.aod = process_angle_data(data["channel"]["AoD"])
         self.aoa = process_angle_data(data["channel"]["AoA"])
         self.env_dims = torch.from_numpy(data["environment"]["dimensions"]).float()
 
@@ -181,12 +180,20 @@ class WirelessDataset(Dataset):
         current_idx = self.indices[idx]
 
         aoa = self.aoa[current_idx]
+        aod = self.aod[current_idx]
 
         if aoa.dim() < 2:
             aoa = (
                 aoa.view(2, -1)
                 if aoa.numel() >= 2
                 else torch.zeros(2, 0, device=aoa.device)
+            )
+
+        if aod.dim() < 2:
+            aod = (
+                aod.view(2, -1)
+                if aod.numel() >= 2
+                else torch.zeros(2, 0, device=aod.device)
             )
 
         path_loss_per_ray = self.path_loss_per_ray[current_idx]
@@ -199,7 +206,7 @@ class WirelessDataset(Dataset):
         return {
             "rx_position": self.rx_positions[current_idx],
             "channel_matrix": self.channel_matrix[current_idx],
-            # "aod": self.aod[current_idx],
+            "aod": aod,
             "aoa": aoa,
             "path_loss_per_ray": path_loss_per_ray,
             "path_loss": self.path_loss[current_idx],

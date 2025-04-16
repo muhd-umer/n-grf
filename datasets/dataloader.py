@@ -20,7 +20,7 @@ def collate_wireless_batch(batch: list) -> Dict[str, Any]:
     collated = {}
 
     for key in keys:
-        if key in ["aoa", "path_loss_per_ray"]:
+        if key in ["aoa", "aod", "path_loss_per_ray"]:
             collated[key] = [item[key] for item in batch]
         else:
             collated[key] = torch.stack([item[key] for item in batch])
