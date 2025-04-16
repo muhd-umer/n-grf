@@ -208,9 +208,10 @@ dataset.channel.H = H;
 % dataset.channel.AoD = AoD_all;
 dataset.channel.path_loss = path_loss;
 
-% truncate data (max 30 paths)
-[AoA_trunc, path_loss_per_ray_trunc] = truncate_data(AoA_all, path_loss_per_ray, 30);
+% truncate data (max 10 paths)
+[AoA_trunc, AoD_trunc, path_loss_per_ray_trunc] = truncate_data(AoA_all, AoD_all, path_loss_per_ray, 10);
 dataset.channel.AoA = AoA_trunc;
+dataset.channel.AoD = AoD_trunc;
 dataset.channel.path_loss_per_ray = path_loss_per_ray_trunc;
 
 dataset.channel.ray_steps = ray_steps;
@@ -236,9 +237,10 @@ filename = sprintf('%s/conf_%dx%d_%du_%.1fghz_%sRT%s.mat', ...
 
 save(filename, 'dataset', '-v7.3');
 
-function [AoA_trunc, path_loss_trunc] = truncate_data(AoA, path_loss, max_paths)
+function [AoA_trunc, AoD_trunc, path_loss_trunc] = truncate_data(AoA, AoD, path_loss, max_paths)
     num_users = length(AoA);
     AoA_trunc = cell(num_users, 1);
+    AoD_trunc = cell(num_users, 1);
     path_loss_trunc = cell(num_users, 1);
     
     for i = 1:num_users
@@ -246,13 +248,16 @@ function [AoA_trunc, path_loss_trunc] = truncate_data(AoA, path_loss, max_paths)
             % sort paths by path loss
             [sorted_pl, sort_idx] = sort(path_loss{i});
             sorted_AoA = AoA{i}(:, sort_idx);
+            sorted_AoD = AoD{i}(:, sort_idx);
             
             % take top max_paths with lowest path loss
             num_paths = min(length(sorted_pl), max_paths);
             AoA_trunc{i} = sorted_AoA(:, 1:num_paths);
+            AoD_trunc{i} = sorted_AoD(:, 1:num_paths);
             path_loss_trunc{i} = sorted_pl(1:num_paths);
         else
             AoA_trunc{i} = [];
+            AoD_trunc{i} = [];
             path_loss_trunc{i} = [];
         end
     end

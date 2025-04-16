@@ -1,38 +1,42 @@
-function [v_tx, v_rx] = steering_vec(angles, txArray, rxArray, lambda)
+function [v_tx, v_rx] = steering_vec(aod_angles, aoa_angles, txArray, rxArray, lambda)
     % STEERING_VEC Compute array steering vectors for MIMO systems
     %
     % Description:
     %   Computes transmit and receive array steering vectors for a MIMO system
     %   with a Uniform Rectangular Array (URA) at transmitter and Uniform Linear
-    %   Array (ULA) at receiver.
+    %   Array (ULA) at receiver. Uses Angle of Departure (AoD) for Tx array
+    %   and Angle of Arrival (AoA) for Rx array.
     %
     % Inputs:
-    %   angles   - [2×1] vector containing [azimuth; elevation] in degrees
-    %   txArray  - phased.URA object for transmit array configuration
-    %   rxArray  - phased.ULA object for receive array configuration
-    %   lambda   - Scalar wavelength in meters
+    %   aod_angles - [2x1] vector containing Tx [azimuth; elevation] in degrees (AoD)
+    %   aoa_angles - [2x1] vector containing Rx [azimuth; elevation] in degrees (AoA)
+    %   txArray    - phased.URA object for transmit array configuration
+    %   rxArray    - phased.ULA object for receive array configuration
+    %   lambda     - Scalar wavelength in meters
     %
     % Outputs:
-    %   v_tx     - [(M×N)×1] transmit steering vector for URA of size M×N
-    %   v_rx     - [P×1] receive steering vector for ULA of size P
+    %   v_tx       - [(MxN)x1] transmit steering vector for URA of size MxN
+    %   v_rx       - [Px1] receive steering vector for ULA of size P
     %
     % Example:
-    %   angles = [30; 45];  % azimuth = 30°, elevation = 45°
+    %   aod = [30; 45];  % Tx azimuth = 30°, elevation = 45°
+    %   aoa = [60; 20];  % Rx azimuth = 60°, elevation = 20°
     %   txArray = phased.URA('Size', [4 4], 'ElementSpacing', [0.5 0.5]);
     %   rxArray = phased.ULA('NumElements', 8, 'ElementSpacing', 0.5);
     %   lambda = 0.1;  % 10cm wavelength
-    %   [v_tx, v_rx] = steering_vec(angles, txArray, rxArray, lambda);
+    %   [v_tx, v_rx] = steering_vec(aod, aoa, txArray, rxArray, lambda);
 
-    angles_rad = deg2rad(angles);
+    aod_angles_rad = deg2rad(aod_angles);
+    aoa_angles_rad = deg2rad(aoa_angles);
 
     if isa(txArray, 'phased.URA')
-        v_tx = steering_vector_tx(angles_rad, txArray.Size, txArray.ElementSpacing, lambda);
+        v_tx = steering_vector_tx(aod_angles_rad, txArray.Size, txArray.ElementSpacing, lambda);
     else
         error('Transmit array must be a phased.URA object');
     end
 
     if isa(rxArray, 'phased.ULA')
-        v_rx = steering_vector_rx(angles_rad, rxArray.NumElements, rxArray.ElementSpacing, lambda);
+        v_rx = steering_vector_rx(aoa_angles_rad, rxArray.NumElements, rxArray.ElementSpacing, lambda);
     else
         error('Receive array must be a phased.ULA object');
     end
@@ -41,27 +45,6 @@ end
 
 function v = steering_vector_tx(angles, array_size, element_spacing, lambda)
     % STEERING_VECTOR_TX Compute steering vector for Uniform Rectangular Array
-    %
-    % Description:
-    %   Computes the steering vector for a Uniform Rectangular Array (URA) given
-    %   the angles of arrival/departure, array size, element spacing, and wavelength.
-    %
-    % Inputs:
-    %   angles          - [2×1] vector [azimuth; elevation] in radians
-    %   array_size      - [1×2] vector [M N] specifying URA dimensions
-    %   element_spacing - [1×2] vector specifying spacing between array elements [dx dy]
-    %   lambda          - Scalar wavelength in meters
-    %
-    % Output:
-    %   v               - [(M×N)×1] steering vector for URA
-    %
-    % Example:
-    %   angles = [pi/6; pi/4];  % azimuth = 30°, elevation = 45°
-    %   array_size = [4 4];
-    %   element_spacing = [0.5 0.5];
-    %   lambda = 0.1;  % 10cm wavelength
-    %   v = steering_vector_tx(angles, array_size, element_spacing, lambda);
-
     az = angles(1);
     el = angles(2);
 
@@ -80,27 +63,6 @@ end
 
 function v = steering_vector_rx(angles, num_elements, element_spacing, lambda)
     % STEERING_VECTOR_RX Compute steering vector for Uniform Linear Array
-    %
-    % Description:
-    %   Computes the steering vector for a Uniform Linear Array (ULA) given
-    %   the angles of arrival/departure, number of elements, element spacing, and wavelength.
-    %
-    % Inputs:
-    %   angles          - [2×1] vector [azimuth; elevation] in radians
-    %   num_elements    - Scalar number of elements in the ULA
-    %   element_spacing - Scalar spacing between array elements
-    %   lambda          - Scalar wavelength in meters
-    %
-    % Output:
-    %   v               - [P×1] steering vector for ULA, where P is num_elements
-    %
-    % Example:
-    %   angles = [pi/6; pi/4];  % azimuth = 30°, elevation = 45°
-    %   num_elements = 8;
-    %   element_spacing = 0.5;
-    %   lambda = 0.1;  % 10cm wavelength
-    %   v = steering_vector_rx(angles, num_elements, element_spacing, lambda);
-
     az = angles(1);
     el = angles(2);
 
