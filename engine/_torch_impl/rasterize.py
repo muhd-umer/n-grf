@@ -1,14 +1,18 @@
-# engine/_torch_impl/rasterize.py
+# _torch_impl/rasterize.py
 
-from typing import Tuple
+from typing import Any, Dict, Tuple
 
 import torch
 
-from .transforms import project_to_channel_space
+from .transforms import (
+    compute_path_geometry,
+    compute_steering_vector,
+    project_to_channel_space,
+)
 
 
 @torch.jit.script
-def compute_gaussian_influence(
+def compute_spatial_influence(
     uv: torch.Tensor, cov2d: torch.Tensor, num_tx: int, num_rx: int
 ) -> torch.Tensor:
     """Compute influence of Gaussians on channel matrix elements using Mahalanobis distance
@@ -53,83 +57,158 @@ def compute_gaussian_influence(
     return influences
 
 
-@torch.jit.script
-def compute_channel(
-    attenuation: torch.Tensor,
-    phase_rotation: torch.Tensor,
-    distances: torch.Tensor,
+def compute_scattered_paths(
+    gamma_real: torch.Tensor,
+    gamma_imag: torch.Tensor,
+    dist_tx: torch.Tensor,
+    dist_rx: torch.Tensor,
+    sv_tx_real: torch.Tensor,
+    sv_tx_imag: torch.Tensor,
+    sv_rx_real: torch.Tensor,
+    sv_rx_imag: torch.Tensor,
     wavelength: float,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    """Compute channel from features of Gaussians based on physics
+    """Compute scattered path contributions to the channel.
 
     Args:
-        attenuation: Learned attenuation amplitude from neural network [N, 1]
-        phase_rotation: Learned phase rotation from neural network [N, 1]
-        distances: Distance from each Gaussian to receiver [N]
-        wavelength: Signal wavelength in meters
+        gamma_real: Real scattering coefficients [N]
+        gamma_imag: Imag scattering coefficients [N]
+        dist_tx: Distance from TX to Gaussian [N]
+        dist_rx: Distance from Gaussian to RX [N]
+        sv_tx_real: TX steering vector real part [N, Nt]
+        sv_tx_imag: TX steering vector imag part [N, Nt]
+        sv_rx_real: RX steering vector real part [N, Nr]
+        sv_rx_imag: RX steering vector imag part [N, Nr]
+        wavelength: Wavelength in meters
 
     Returns:
-        Tuple of tensors (real_part, imag_part) each of shape [N, 1]
+        Tuple of tensors (real_part, imag_part) of scattered paths [N, Nt, Nr]
     """
-    PI: float = 3.14159265358979323846
+    N = gamma_real.shape[0]
 
-    path_loss = wavelength / (4.0 * PI * distances.unsqueeze(1))
-    phase_shift = -2.0 * PI * distances.unsqueeze(1) / wavelength
+    dist_path = dist_tx + dist_rx
+    alpha_amp = wavelength / (4 * torch.pi * dist_path.clamp(min=1e-10))
+    alpha_phase = -2 * torch.pi * dist_path / wavelength
 
-    total_attenuation = attenuation * path_loss
-    total_phase = phase_rotation + phase_shift
+    alpha_real = alpha_amp * torch.cos(alpha_phase)
+    alpha_imag = alpha_amp * torch.sin(alpha_phase)
 
-    real_part = total_attenuation * torch.cos(total_phase)
-    imag_part = total_attenuation * torch.sin(total_phase)
+    scatter_coef_real = gamma_real * alpha_real - gamma_imag * alpha_imag
+    scatter_coef_imag = gamma_real * alpha_imag + gamma_imag * alpha_real
 
-    return real_part, imag_part
+    steering_product_real = torch.einsum(
+        "bi,bj->bji", sv_rx_real, sv_tx_real
+    ) + torch.einsum("bi,bj->bji", sv_rx_imag, sv_tx_imag)
+    steering_product_imag = torch.einsum(
+        "bi,bj->bji", sv_rx_imag, sv_tx_real
+    ) - torch.einsum("bi,bj->bji", sv_rx_real, sv_tx_imag)
+
+    scat_chan_real = (
+        scatter_coef_real.view(N, 1, 1) * steering_product_real
+        - scatter_coef_imag.view(N, 1, 1) * steering_product_imag
+    )
+    scat_chan_imag = (
+        scatter_coef_real.view(N, 1, 1) * steering_product_imag
+        + scatter_coef_imag.view(N, 1, 1) * steering_product_real
+    )
+
+    return scat_chan_real, scat_chan_imag
 
 
-@torch.jit.script
-def alpha_blending(
-    influences: torch.Tensor,
-    real_contributions: torch.Tensor,
-    imag_contributions: torch.Tensor,
+def compute_direct_path(
+    tx_params: Dict[str, Any], rx_params: Dict[str, Any], wavelength: float
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Compute direct path channel component.
+
+    Args:
+        tx_params: TX array parameters dictionary (including position)
+        rx_params: RX array parameters dictionary (including position)
+        wavelength: Wavelength in meters
+
+    Returns:
+        Tuple of direct path channel real and imag parts [Nt, Nr]
+    """
+    with torch.no_grad():
+        tx_pos = tx_params["position"]
+        rx_pos = rx_params["position"]
+
+        vec_tx_rx = rx_pos - tx_pos
+        dist_tx_rx = torch.norm(vec_tx_rx).clamp(min=1e-10)
+
+        alpha_fs_amp = wavelength / (4 * torch.pi * dist_tx_rx)
+        alpha_fs_phase = -2 * torch.pi * dist_tx_rx / wavelength
+
+        prop_coef_real = alpha_fs_amp * torch.cos(alpha_fs_phase)
+        prop_coef_imag = alpha_fs_amp * torch.sin(alpha_fs_phase)
+
+        aod_az = torch.atan2(vec_tx_rx[1], vec_tx_rx[0]).unsqueeze(0)
+        aod_el = torch.asin(
+            (vec_tx_rx[2] / dist_tx_rx).clamp(-1 + 1e-7, 1 - 1e-7)
+        ).unsqueeze(0)
+
+        aod = torch.cat([aod_az, aod_el], dim=0).unsqueeze(0)
+        aoa = aod  # For direct path, AoA = AoD
+
+        sv_tx_real, sv_tx_imag = compute_steering_vector(aod, tx_params, wavelength)
+        sv_rx_real, sv_rx_imag = compute_steering_vector(aoa, rx_params, wavelength)
+
+        steering_product_real = torch.einsum(
+            "bi,bj->bji", sv_rx_real, sv_tx_real
+        ) + torch.einsum("bi,bj->bji", sv_rx_imag, sv_tx_imag)
+        steering_product_imag = torch.einsum(
+            "bi,bj->bji", sv_rx_imag, sv_tx_real
+        ) - torch.einsum("bi,bj->bji", sv_rx_real, sv_tx_imag)
+
+        # apply coefficients
+        direct_chan_real = (
+            prop_coef_real * steering_product_real
+            - prop_coef_imag * steering_product_imag
+        )
+        direct_chan_imag = (
+            prop_coef_real * steering_product_imag
+            + prop_coef_imag * steering_product_real
+        )
+
+        direct_chan_real = direct_chan_real.squeeze(0)
+        direct_chan_imag = direct_chan_imag.squeeze(0)
+
+    return direct_chan_real.detach(), direct_chan_imag.detach()
+
+
+def weighted_superposition(
+    direct_path_real: torch.Tensor,
+    direct_path_imag: torch.Tensor,
+    scat_path_real: torch.Tensor,
+    scat_path_imag: torch.Tensor,
     opacity: torch.Tensor,
-    sort_indices: torch.Tensor,
-    num_tx: int,
-    num_rx: int,
-) -> torch.Tensor:
-    """Perform alpha blending to form the channel matrix
+    influence: torch.Tensor,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Perform weighted superposition of direct and scattered paths.
 
     Args:
-        influences: Gaussian influence on each channel element [N, num_tx, num_rx]
-        real_contributions: Real part of wireless contributions [N, 1]
-        imag_contributions: Imag part of wireless contributions [N, 1]
-        opacity: Opacity of each Gaussian [N, 1]
-        sort_indices: Indices to sort Gaussians by distance to receiver
-        num_tx: Number of transmit antennas
-        num_rx: Number of receive antennas
+        direct_path_real: Real part of direct path [Nt, Nr]
+        direct_path_imag: Imag part of direct path [Nt, Nr]
+        scat_path_real: Real part of scattered paths [N, Nt, Nr]
+        scat_path_imag: Imag part of scattered paths [N, Nt, Nr]
+        opacity: Opacity values [N, 1]
+        influence: Spatial influence values [N, Nt, Nr]
 
     Returns:
-        Channel matrix of shape [num_tx, 2*num_rx] with real and imaginary parts concatenated
+        Tuple of real and imaginary parts of channel [Nt, Nr]
     """
-    N = influences.shape[0]
-    device = influences.device
+    N = scat_path_real.shape[0]
 
-    # initialize channel matrices and transmittance
-    channel_real = torch.zeros((num_tx, num_rx), device=device, dtype=influences.dtype)
-    channel_imag = torch.zeros((num_tx, num_rx), device=device, dtype=influences.dtype)
-    transmittance = torch.ones((num_tx, num_rx), device=device, dtype=influences.dtype)
+    # apply weights (opacity * influence)
+    weights = opacity.view(N, 1, 1) * influence
 
-    for idx_pos, idx in enumerate(sort_indices):
-        eff_opacity = opacity[idx] * influences[idx]
+    # sum weighted scattered paths
+    sum_scatter_real = torch.sum(weights * scat_path_real, dim=0)
+    sum_scatter_imag = torch.sum(weights * scat_path_imag, dim=0)
 
-        channel_real = (
-            channel_real + transmittance * eff_opacity * real_contributions[idx]
-        )
-        channel_imag = (
-            channel_imag + transmittance * eff_opacity * imag_contributions[idx]
-        )
+    chan_pred_real = direct_path_real + sum_scatter_real
+    chan_pred_imag = direct_path_imag + sum_scatter_imag
 
-        transmittance = transmittance * (1.0 - eff_opacity)
-
-    return torch.cat([channel_real, channel_imag], dim=1)
+    return chan_pred_real, chan_pred_imag
 
 
 def compute_cov3d(
@@ -175,14 +254,10 @@ def rasterize(
     points: torch.Tensor,
     scaling: torch.Tensor,
     rotation: torch.Tensor,
-    attenuation: torch.Tensor,
-    phase_rotation: torch.Tensor,
+    gamma: torch.Tensor,  # Combined gamma (real, imag)
     opacity: torch.Tensor,
-    receiver: torch.Tensor,
-    transmitter: torch.Tensor,  # included but not used
-    num_tx: int,
-    num_rx: int,
-    frequency: float,
+    tx_params: Dict[str, Any],
+    rx_params: Dict[str, Any],
     scale_modifier: float = 1.0,
 ) -> torch.Tensor:
     """Rasterize the channel matrix for a specific receiver position
@@ -191,19 +266,27 @@ def rasterize(
         points: Gaussian centers [N, 3]
         scaling: Scaling factors [N, 3]
         rotation: Quaternion rotations [N, 4]
-        attenuation: Learned attenuation amplitude from neural network [N, 1]
-        phase_rotation: Learned phase rotation from neural network [N, 1]
+        gamma: Scattering coefficients [N, 2] (real, imag concatenated)
         opacity: Opacity values [N, 1]
-        receiver: Receiver position [3]
-        transmitter: Transmitter position [3]
-        num_tx: Number of transmit antennas
-        num_rx: Number of receive antennas
-        frequency: Signal frequency in Hz
+        tx_params: Transmitter parameters including position
+        rx_params: Receiver parameters including position
         scale_modifier: Global scaling modifier (default is 1.0)
 
     Returns:
-        Channel matrix of shape [num_tx, 2*num_rx] with real and imaginary parts concatenated
+        Channel matrix of shape [num_tx, 2*num_rx] with real and imaginary parts
+        concatenated
     """
+    device = points.device
+    num_tx = tx_params["num_antennas"]
+    num_rx = rx_params["num_antennas"]
+    tx_pos = tx_params["position"].to(device)
+    rx_pos = rx_params["position"].to(device)
+    frequency = tx_params["frequency"]
+
+    # split gamma into real and imaginary parts
+    gamma_real = gamma[:, 0]
+    gamma_imag = gamma[:, 1]
+
     c = 299792458.0  # speed of light in m/s
     wavelength = c / frequency
 
@@ -213,30 +296,44 @@ def rasterize(
 
     cov3d_compact = strip_symmetric(cov3d_full)
 
-    distances, uv, cov2d = project_to_channel_space(
+    _, uv, cov2d = project_to_channel_space(
         points=points,
         cov3d=cov3d_compact,
-        receiver=receiver,
+        receiver=rx_pos,
         num_tx=num_tx,
         num_rx=num_rx,
     )
-    sort_indices = torch.argsort(distances)
-    influences = compute_gaussian_influence(uv, cov2d, num_tx, num_rx)
-    real_contributions, imag_contributions = compute_channel(
-        attenuation,
-        phase_rotation,
-        distances,
+
+    influence = compute_spatial_influence(uv, cov2d, num_tx, num_rx)
+    dist_tx, dist_rx, aod, aoa = compute_path_geometry(points, tx_pos, rx_pos)
+
+    sv_tx_real, sv_tx_imag = compute_steering_vector(aod, tx_params, wavelength)
+    sv_rx_real, sv_rx_imag = compute_steering_vector(aoa, rx_params, wavelength)
+
+    scat_chan_real, scat_chan_imag = compute_scattered_paths(
+        gamma_real,
+        gamma_imag,
+        dist_tx,
+        dist_rx,
+        sv_tx_real,
+        sv_tx_imag,
+        sv_rx_real,
+        sv_rx_imag,
         wavelength,
     )
 
-    cat_channel = alpha_blending(
-        influences,
-        real_contributions,
-        imag_contributions,
+    direct_chan_real, direct_chan_imag = compute_direct_path(
+        tx_params, rx_params, wavelength
+    )
+    chan_real, chan_imag = weighted_superposition(
+        direct_chan_real,
+        direct_chan_imag,
+        scat_chan_real,
+        scat_chan_imag,
         opacity,
-        sort_indices,
-        num_tx,
-        num_rx,
+        influence,
     )
 
-    return cat_channel
+    chan = torch.cat([chan_real, chan_imag], dim=1)
+
+    return chan

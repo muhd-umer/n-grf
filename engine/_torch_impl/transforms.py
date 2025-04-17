@@ -1,11 +1,9 @@
 # _torch_impl/transforms.py
 
 import math
-from typing import Tuple
+from typing import Any, Dict, Tuple
 
 import torch
-
-from utils.transform_utils import symmetric_matrix
 
 
 @torch.jit.script
@@ -109,6 +107,111 @@ def project_cov3d_to_cov2d(
     return cov2d
 
 
+def compute_path_geometry(
+    points: torch.Tensor, tx_pos: torch.Tensor, rx_pos: torch.Tensor
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Compute path geometry parameters for wireless propagation.
+
+    Args:
+        points: Gaussian centers [N, 3]
+        tx_pos: Transmitter position [3]
+        rx_pos: Receiver position [3]
+
+    Returns:
+        Tuple containing distances from TX [N], distances from RX [N], angles of
+        departure [N, 2], and angles of arrival [N, 2]
+    """
+    vec_tx_gauss = points - tx_pos
+    vec_gauss_rx = rx_pos - points
+
+    dist_tx = torch.norm(vec_tx_gauss, dim=1).clamp(min=1e-7)
+    dist_rx = torch.norm(vec_gauss_rx, dim=1).clamp(min=1e-7)
+
+    aod_az = torch.atan2(vec_tx_gauss[:, 1], vec_tx_gauss[:, 0])
+    aod_el = torch.asin(
+        torch.clamp(vec_tx_gauss[:, 2] / dist_tx, -1.0 + 1e-7, 1.0 - 1e-7)
+    )
+    aod = torch.stack([aod_az, aod_el], dim=1)
+
+    aoa_az = torch.atan2(vec_gauss_rx[:, 1], vec_gauss_rx[:, 0])
+    aoa_el = torch.asin(
+        torch.clamp(vec_gauss_rx[:, 2] / dist_rx, -1.0 + 1e-7, 1.0 - 1e-7)
+    )
+    aoa = torch.stack([aoa_az, aoa_el], dim=1)
+
+    return dist_tx, dist_rx, aod, aoa
+
+
+def compute_steering_vector(
+    angles: torch.Tensor, array_params: Dict[str, Any], wavelength: float
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Compute steering vectors for antenna arrays.
+
+    Args:
+        angles: Angles in radians [N, 2] (azimuth, elevation)
+        array_params: Dictionary with array parameters
+            - type: 'ura' or 'ula'
+            - size: Array dimensions
+            - element_spacing: Element spacing
+        wavelength: Wavelength in meters
+
+    Returns:
+        Tuple containing real and imaginary parts of steering vectors
+    """
+    N = angles.shape[0]
+    az, el = angles[:, 0], angles[:, 1]
+    array_type = array_params["type"]
+    k = 2 * math.pi / wavelength
+
+    if array_type == "ura":
+        rows, cols = array_params["size"]
+        spacing_x, spacing_y = array_params["element_spacing"]
+
+        m_indices = (
+            torch.arange(rows, device=az.device, dtype=az.dtype) - (rows - 1) / 2.0
+        )
+        n_indices = (
+            torch.arange(cols, device=az.device, dtype=az.dtype) - (cols - 1) / 2.0
+        )
+        grid_m, grid_n = torch.meshgrid(m_indices, n_indices, indexing="ij")
+
+        x_pos = grid_m.reshape(-1) * spacing_x
+        y_pos = grid_n.reshape(-1) * spacing_y
+
+        cos_el = torch.cos(el).unsqueeze(-1)
+        cos_az = torch.cos(az).unsqueeze(-1)
+        sin_az = torch.sin(az).unsqueeze(-1)
+
+        x_pos_exp = x_pos.unsqueeze(0)
+        y_pos_exp = y_pos.unsqueeze(0)
+
+        phase = -k * cos_el * (x_pos_exp * cos_az + y_pos_exp * sin_az)
+
+    elif array_type == "ula":
+        num_ant = array_params["size"]
+        spacing_d = array_params["element_spacing"]
+
+        indices = (
+            torch.arange(num_ant, device=az.device, dtype=az.dtype)
+            - (num_ant - 1) / 2.0
+        )
+        x_pos = indices * spacing_d
+
+        cos_el = torch.cos(el)
+        cos_az = torch.cos(az)
+
+        x_pos_exp = x_pos.unsqueeze(0)
+        phase = -k * x_pos_exp * (cos_el * cos_az).unsqueeze(-1)
+
+    else:
+        raise ValueError(f"Unsupported array type: {array_type}")
+
+    sv_real = torch.cos(phase)
+    sv_imag = torch.sin(phase)
+
+    return sv_real, sv_imag
+
+
 def project_to_channel_space(
     points: torch.Tensor,
     cov3d: torch.Tensor,
@@ -134,6 +237,9 @@ def project_to_channel_space(
 
     distances, d, uv = project_to_channel_coords(points, receiver, num_tx, num_rx)
     jacobian = compute_jacobian(d, num_tx, num_rx)
+
+    from utils.transform_utils import symmetric_matrix
+
     cov3d_mat = symmetric_matrix(cov3d)
     cov2d = project_cov3d_to_cov2d(cov3d_mat, jacobian)
 

@@ -1,10 +1,13 @@
 # engine/_torch_impl/__init__.py
 
 from .rasterize import (
-    alpha_blending,
-    compute_channel,
-    compute_gaussian_influence,
+    compute_direct_path,
+    compute_path_geometry,
+    compute_scattered_paths,
+    compute_spatial_influence,
+    compute_steering_vector,
     rasterize,
+    weighted_superposition,
 )
 from .transforms import (
     compute_jacobian,
@@ -15,9 +18,12 @@ from .transforms import (
 
 __all__ = [
     "rasterize",
-    "alpha_blending",
-    "compute_channel",
-    "compute_gaussian_influence",
+    "compute_spatial_influence",
+    "compute_path_geometry",
+    "compute_steering_vector",
+    "compute_scattered_paths",
+    "compute_direct_path",
+    "weighted_superposition",
     "compute_jacobian",
     "project_cov3d_to_cov2d",
     "project_to_channel_coords",
