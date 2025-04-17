@@ -104,7 +104,7 @@ def parse_args():
     parser.add_argument(
         "--gradient_clip_val",
         type=float,
-        default=0.5,
+        default=0,
         help="Value to clip gradient norm to (0 to disable)",
     )
     parser.add_argument(
@@ -603,7 +603,7 @@ def train(args, logger, writer, log_dir):
             device,
             update_features=True,
         )
-        print("pred_channels", pred_channels)
+        # print("pred_channels", pred_channels)
 
         gt_channels = get_gt_batch(batch, device)
 
