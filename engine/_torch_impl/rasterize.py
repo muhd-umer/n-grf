@@ -52,6 +52,8 @@ def compute_spatial_influence(
                 inv_10 * d_x + inv_11 * d_y
             )
 
+            # Clamp md to avoid overflow in exp
+            md = torch.clamp(md, max=30.0)
             influences[:, i, j] = torch.exp(-0.5 * md)
 
     return influences
@@ -87,7 +89,9 @@ def compute_scattered_paths(
     N = gamma_real.shape[0]
 
     dist_path = dist_tx + dist_rx
-    alpha_amp = wavelength / (4 * torch.pi * dist_path.clamp(min=1e-10))
+    dist_path = torch.clamp(dist_path, min=1e-8)
+
+    alpha_amp = wavelength / (4 * torch.pi * dist_path)
     alpha_phase = -2 * torch.pi * dist_path / wavelength
 
     alpha_real = alpha_amp * torch.cos(alpha_phase)
@@ -133,17 +137,19 @@ def compute_direct_path(
         rx_pos = rx_params["position"]
 
         vec_tx_rx = rx_pos - tx_pos
-        dist_tx_rx = torch.norm(vec_tx_rx).clamp(min=1e-10)
+        dist_tx_rx = torch.norm(vec_tx_rx).clamp(min=1e-8)
 
         alpha_fs_amp = wavelength / (4 * torch.pi * dist_tx_rx)
         alpha_fs_phase = -2 * torch.pi * dist_tx_rx / wavelength
+
+        # alpha_fs_amp = torch.clamp(alpha_fs_amp, max=1e3)
 
         prop_coef_real = alpha_fs_amp * torch.cos(alpha_fs_phase)
         prop_coef_imag = alpha_fs_amp * torch.sin(alpha_fs_phase)
 
         aod_az = torch.atan2(vec_tx_rx[1], vec_tx_rx[0]).unsqueeze(0)
         aod_el = torch.asin(
-            (vec_tx_rx[2] / dist_tx_rx).clamp(-1 + 1e-7, 1 - 1e-7)
+            torch.clamp(vec_tx_rx[2] / dist_tx_rx, -1.0 + 1e-8, 1.0 - 1e-8)
         ).unsqueeze(0)
 
         aod = torch.cat([aod_az, aod_el], dim=0).unsqueeze(0)
@@ -225,6 +231,7 @@ def compute_cov3d(
         Covariance matrices [N, 3, 3]
     """
     scaled_scaling = scaling * scale_modifier
+    scaled_scaling = torch.clamp(scaled_scaling, min=1e-6)
     scaling_mat = torch.diag_embed(scaled_scaling)
     w, x, y, z = rotation[:, 0], rotation[:, 1], rotation[:, 2], rotation[:, 3]
 
@@ -254,7 +261,7 @@ def rasterize(
     points: torch.Tensor,
     scaling: torch.Tensor,
     rotation: torch.Tensor,
-    gamma: torch.Tensor,  # Combined gamma (real, imag)
+    gamma: torch.Tensor,
     opacity: torch.Tensor,
     tx_params: Dict[str, Any],
     rx_params: Dict[str, Any],

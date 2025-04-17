@@ -24,9 +24,10 @@ def project_to_channel_coords(
     """
     d = points - receiver
     r = torch.sqrt(torch.sum(d**2, dim=1))
+    r = torch.clamp(r, min=1e-6)
 
     longitude = torch.atan2(d[:, 1], d[:, 0])
-    latitude = torch.asin(torch.clamp(d[:, 2] / r, -1.0, 1.0))
+    latitude = torch.asin(torch.clamp(d[:, 2], -1.0 + 1e-6, 1.0 - 1e-6))
 
     # transform to uniform coordinates
     s_x = longitude / math.pi
@@ -57,11 +58,12 @@ def compute_jacobian(d: torch.Tensor, num_tx: int, num_rx: int) -> torch.Tensor:
     z = d[:, 2]
 
     r = torch.sqrt(torch.sum(d**2, dim=1))
+    r = torch.clamp(r, min=1e-6)
 
     xy_sq = x**2 + y**2
-    xy_sq = torch.clamp(xy_sq, min=1e-10)
+    xy_sq = torch.clamp(xy_sq, min=1e-6)
 
-    cos_lat = torch.sqrt(torch.clamp(1.0 - (z / r) ** 2, min=1e-10))
+    cos_lat = torch.sqrt(torch.clamp(1.0 - (z / r) ** 2, min=1e-6))
 
     tx_factor = (num_tx - 1) / (2.0 * torch.tensor(math.pi))
     rx_factor = (num_rx - 1) / torch.tensor(math.pi)
@@ -76,7 +78,7 @@ def compute_jacobian(d: torch.Tensor, num_tx: int, num_rx: int) -> torch.Tensor:
 
     # second row: v-coordinates derivatives (latitude)
     r_cos_lat_xy = r * cos_lat * xy_sq
-    r_cos_lat_xy = torch.clamp(r_cos_lat_xy, min=1e-10)
+    r_cos_lat_xy = torch.clamp(r_cos_lat_xy, min=1e-6)
 
     J[:, 1, 0] = rx_factor * (z * x) / r_cos_lat_xy
     J[:, 1, 1] = rx_factor * (z * y) / r_cos_lat_xy
@@ -124,18 +126,18 @@ def compute_path_geometry(
     vec_tx_gauss = points - tx_pos
     vec_gauss_rx = rx_pos - points
 
-    dist_tx = torch.norm(vec_tx_gauss, dim=1).clamp(min=1e-7)
-    dist_rx = torch.norm(vec_gauss_rx, dim=1).clamp(min=1e-7)
+    dist_tx = torch.norm(vec_tx_gauss, dim=1).clamp(min=1e-6)
+    dist_rx = torch.norm(vec_gauss_rx, dim=1).clamp(min=1e-6)
 
     aod_az = torch.atan2(vec_tx_gauss[:, 1], vec_tx_gauss[:, 0])
     aod_el = torch.asin(
-        torch.clamp(vec_tx_gauss[:, 2] / dist_tx, -1.0 + 1e-7, 1.0 - 1e-7)
+        torch.clamp(vec_tx_gauss[:, 2] / dist_tx, -1.0 + 1e-6, 1.0 - 1e-6)
     )
     aod = torch.stack([aod_az, aod_el], dim=1)
 
     aoa_az = torch.atan2(vec_gauss_rx[:, 1], vec_gauss_rx[:, 0])
     aoa_el = torch.asin(
-        torch.clamp(vec_gauss_rx[:, 2] / dist_rx, -1.0 + 1e-7, 1.0 - 1e-7)
+        torch.clamp(vec_gauss_rx[:, 2] / dist_rx, -1.0 + 1e-6, 1.0 - 1e-6)
     )
     aoa = torch.stack([aoa_az, aoa_el], dim=1)
 
