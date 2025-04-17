@@ -1,5 +1,6 @@
 # models/gaussian_model.py
 
+import warnings
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Union
 
@@ -30,8 +31,7 @@ class GaussianModel(nn.Module):
     - rotation: 4D quaternions initialized as [1,0,0,0] (identity)
     - scaling: Log of point-wise distances to enforce minimum scale
     - opacity: Inverse sigmoid of constant value (0.1)
-    - features_dc: Main spherical harmonic features
-    - features_rest: Higher order spherical harmonics initialized to zero
+    - features: Static wireless features (attenuation, phase) learned by encoder
 
     Args:
         encoder_cfg: Configuration for the encoder
@@ -55,6 +55,7 @@ class GaussianModel(nn.Module):
 
         # training state
         self.optimizer = None
+        self.encoder_optimizer = None
 
         self.setup_functions()
 
@@ -106,18 +107,16 @@ class GaussianModel(nn.Module):
         self._xyz = nn.Parameter(points.to(device))
 
         # compute scales based on point cloud density
-        dist2 = torch.clamp_min(distCUDA2(points), 0.0000001)
+        dist2 = torch.clamp_min(distCUDA2(points.float()), 1e-5)
         scales = torch.log(torch.sqrt(dist2))[..., None].repeat(1, 3)
-        self._scaling = nn.Parameter(scales.to(device))
+        self._scaling = nn.Parameter(scales.to(device).to(points.dtype))
 
-        rots = torch.zeros((num_points, 4), device=device)
+        rots = torch.zeros((num_points, 4), device=device, dtype=points.dtype)
         rots[:, 0] = 1
         self._rotation = nn.Parameter(rots)
 
         # features
         if use_physics_init and tx_position is not None and frequency is not None:
-            from utils.prop_utils import compute_path_loss, compute_phase_rotation
-
             tx_distances = torch.sqrt(torch.sum((self._xyz - tx_position) ** 2, dim=1))
             c = 299792458.0
             wavelength = c / frequency
@@ -125,15 +124,26 @@ class GaussianModel(nn.Module):
             attenuation = compute_path_loss(tx_distances, wavelength)
             phase_rotation = compute_phase_rotation(tx_distances, wavelength)
 
-            self.features = torch.cat([attenuation, phase_rotation], dim=1).to(device)
+            self.features = (
+                torch.cat([attenuation, phase_rotation], dim=1)
+                .to(device)
+                .to(points.dtype)
+            )
         else:
             self.features = torch.zeros(
-                (num_points, 2), device=device  # 0: attenuation, 1: phase_rotation
-            ).float()
+                (num_points, 2),
+                device=device,
+                dtype=points.dtype,
+            )
 
         # initialize opacity
-        init_opacity = 0.1 * torch.ones((num_points, 1), device=device)
+        init_opacity = 0.1 * torch.ones(
+            (num_points, 1), device=device, dtype=points.dtype
+        )
         self._opacity = nn.Parameter(inverse_sigmoid(init_opacity))
+
+        if tx_position is not None:
+            self.embed_features({"tx_pos": tx_position})
 
     def init_randomly(
         self,
@@ -184,7 +194,7 @@ class GaussianModel(nn.Module):
 
     @property
     def get_features(self):
-        """Get wireless-related features."""
+        """Get static wireless-related features."""
         return self.features
 
     def get_covariance(self, scaling_modifier: float = 1.0):
@@ -216,11 +226,12 @@ class GaussianModel(nn.Module):
 
         model_state: Dict[str, Any] = {
             "encoder_config": self.encoder_cfg,
-            "xyz": self._xyz,
-            "rotation": self._rotation,
-            "scaling": self._scaling,
-            "opacity": self._opacity,
-            "features": self.features,
+            "xyz": self._xyz.detach().cpu(),
+            "rotation": self._rotation.detach().cpu(),
+            "scaling": self._scaling.detach().cpu(),
+            "opacity": self._opacity.detach().cpu(),
+            "features": self.features.detach().cpu(),
+            "encoder_state": self.encoder.state_dict(),
         }
 
         if save_optimizer:
@@ -231,7 +242,7 @@ class GaussianModel(nn.Module):
                     ),
                     "encoder_optimizer_state": (
                         self.encoder_optimizer.state_dict()
-                        if hasattr(self, "encoder_optimizer")
+                        if self.encoder_optimizer
                         else None
                     ),
                     "iteration": iteration,
@@ -260,63 +271,89 @@ class GaussianModel(nn.Module):
         state = torch.load(filepath, map_location=device, weights_only=False)
 
         encoder_cfg = state.get("encoder_config", None)
+        if encoder_cfg is None:
+            warnings.warn(
+                "Warning: Encoder config not found in checkpoint, using default."
+            )
+            encoder_cfg = EncoderConfig()
 
         model = cls(
             encoder_cfg=encoder_cfg,
         )
 
-        model._xyz = state["xyz"].to(device)
-        model._rotation = state["rotation"].to(device)
-        model._scaling = state["scaling"].to(device)
-        model._opacity = state["opacity"].to(device)
+        model._xyz = nn.Parameter(state["xyz"].to(device))
+        model._rotation = nn.Parameter(state["rotation"].to(device))
+        model._scaling = nn.Parameter(state["scaling"].to(device))
+        model._opacity = nn.Parameter(state["opacity"].to(device))
         model.features = state["features"].to(device)
 
-        if training_args is not None and "optimizer_state" in state:
+        model.encoder.load_state_dict(state["encoder_state"])
+        model.encoder.to(device)
+
+        if training_args is not None:
             model.training_setup(training_args)
 
-            if state["optimizer_state"] is not None:
-                model.optimizer.load_state_dict(state["optimizer_state"])
-
-                for param_group in model.optimizer.param_groups:
-                    for param in param_group["params"]:
-                        if param.grad is not None:
-                            param.grad = param.grad.to(device)
+            if (
+                "optimizer_state" in state
+                and state["optimizer_state"] is not None
+                and model.optimizer
+            ):
+                try:
+                    model.optimizer.load_state_dict(state["optimizer_state"])
+                    for state_dict in model.optimizer.state.values():
+                        for k, v in state_dict.items():
+                            if isinstance(v, torch.Tensor):
+                                state_dict[k] = v.to(device)
+                except Exception as e:
+                    print(f"Could not load Gaussian optimizer state: {e}")
 
             if (
                 "encoder_optimizer_state" in state
                 and state["encoder_optimizer_state"] is not None
+                and model.encoder_optimizer
             ):
-                model.encoder_optimizer.load_state_dict(
-                    state["encoder_optimizer_state"]
-                )
+                try:
+                    model.encoder_optimizer.load_state_dict(
+                        state["encoder_optimizer_state"]
+                    )
+                    for state_dict in model.encoder_optimizer.state.values():
+                        for k, v in state_dict.items():
+                            if isinstance(v, torch.Tensor):
+                                state_dict[k] = v.to(device)
+                except Exception as e:
+                    print(f"Could not load encoder optimizer state: {e}")
 
         model.to(device)
         return model
 
+    @torch.no_grad()
     def embed_features(self, enc_data: Dict[str, Union[torch.Tensor, float]]):
-        """Embed iteration of wireless data into Gaussian features.
+        """Embed static wireless data into Gaussian features using the encoder.
 
-        The wireless data should contain the following keys:
+        The enc_data should contain:
         - tx_pos: Transmitter position (3,)
-        - rx_pos: Receiver position (3,)
 
         Args:
-            enc_data: Dictionary containing wireless data tensors with keys
+            enc_data: Dictionary containing static wireless data tensors.
         """
-        # extract data
+        if "tx_pos" not in enc_data:
+            raise ValueError("tx_pos must be provided in enc_data for embed_features")
         tx_pos = enc_data["tx_pos"]
-        rx_pos = enc_data.get("rx_pos", None)
 
-        # compute features
-        attenuation, phase_rotation = self.encoder(self._xyz, tx_pos, rx_pos)
+        device = next(self.encoder.parameters()).device
+        xyz_input = self._xyz.detach().to(device)
+        tx_pos_input = tx_pos.to(device)
 
-        # update features
-        self.features = torch.cat([attenuation, phase_rotation], dim=-1)
+        attenuation, phase_rotation = self.encoder(xyz_input, tx_pos_input)
+        self.features = torch.cat([attenuation, phase_rotation], dim=-1).detach()
 
     def to(self, device):
         """Override to() to ensure encoder also moves to the same device."""
         self.encoder = self.encoder.to(device)
-        return super().to(device)
+        super().to(device)
+        if hasattr(self, "features") and isinstance(self.features, torch.Tensor):
+            self.features = self.features.to(device)
+        return self
 
     def training_setup(self, training_args):
         """Setup optimizer and training parameters.
@@ -324,7 +361,7 @@ class GaussianModel(nn.Module):
         Args:
             training_args: Training arguments including learning rates
         """
-        param_groups = [
+        gaussian_params = [
             {
                 "params": [self._xyz],
                 "lr": training_args.position_lr_init,
@@ -346,18 +383,26 @@ class GaussianModel(nn.Module):
                 "name": "opacity",
             },
         ]
+        encoder_params = list(self.encoder.parameters())
 
         self.optimizer = torch.optim.Adam(
-            param_groups,
+            gaussian_params,
             lr=0.0,
-            fused=True,
+            fused=torch.cuda.is_available(),
         )
-        self.encoder_optimizer = torch.optim.Adam(
-            self.encoder.parameters(),
-            lr=training_args.encoder_lr,
-            weight_decay=training_args.weight_decay,
-            fused=True,
-        )
+
+        if encoder_params:
+            self.encoder_optimizer = torch.optim.Adam(
+                encoder_params,
+                lr=training_args.encoder_lr,
+                weight_decay=training_args.weight_decay,
+                fused=torch.cuda.is_available(),
+            )
+        else:
+            self.encoder_optimizer = None
+            warnings.warn(
+                "Warning: Encoder has no parameters, encoder optimizer not created."
+            )
 
         from utils.train_utils import get_expon_lr_func
 
@@ -374,28 +419,37 @@ class GaussianModel(nn.Module):
         Args:
             iteration: Current training iteration
         """
-        for param_group in self.optimizer.param_groups:
-            if param_group["name"] == "xyz":
-                param_group["lr"] = self.position_lr_scheduler(iteration)
+        if self.optimizer:
+            for param_group in self.optimizer.param_groups:
+                if param_group["name"] == "xyz":
+                    param_group["lr"] = self.position_lr_scheduler(iteration)
 
     def reset_opacity(self):
         """Reset opacity for Gaussians with very low opacity."""
-        opacities_new = self.inverse_opacity_activation(
-            torch.min(self.get_opacity, torch.ones_like(self.get_opacity) * 0.01)
-        )
+        if (
+            not hasattr(self, "_opacity")
+            or self._opacity is None
+            or self._opacity.numel() == 0
+        ):
+            warnings.warn(
+                "Warning: Opacity parameters not initialized, skipping reset."
+            )
+            return
 
-        for group in self.optimizer.param_groups:
-            if group["name"] == "opacity":
-                stored_state = self.optimizer.state.get(group["params"][0], None)
-                if stored_state is not None:
-                    del self.optimizer.state[group["params"][0]]
+        with torch.no_grad():
+            opacities_new = self.inverse_opacity_activation(
+                torch.min(self.get_opacity, torch.ones_like(self.get_opacity) * 0.01)
+            )
+            self._opacity.copy_(opacities_new)
 
-                group["params"][0] = nn.Parameter(opacities_new.requires_grad_(True))
-
-                if stored_state is not None:
-                    stored_state["exp_avg"] = torch.zeros_like(opacities_new)
-                    stored_state["exp_avg_sq"] = torch.zeros_like(opacities_new)
-                    self.optimizer.state[group["params"][0]] = stored_state
-
-                self._opacity = group["params"][0]
-                break
+        if self.optimizer:
+            for group in self.optimizer.param_groups:
+                if group["name"] == "opacity":
+                    param_state = self.optimizer.state.get(group["params"][0], None)
+                    if param_state:
+                        if "exp_avg" in param_state:
+                            param_state["exp_avg"].zero_()
+                        if "exp_avg_sq" in param_state:
+                            param_state["exp_avg_sq"].zero_()
+                        print(f"Reset optimizer state for opacity at iteration.")
+                    break

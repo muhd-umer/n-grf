@@ -34,8 +34,9 @@ class EncoderConfig:
 class FeatureEncoder(nn.Module):
     """Encoder network for channel reconstruction.
 
-    Maps environment geometry and wireless properties to features for Gaussian
-    splatting, specifically attenuation and phase rotation.
+    Maps environment geometry (Gaussian positions) and transmitter position
+    to static features for Gaussian splatting, specifically attenuation
+    and phase rotation. These features are independent of the receiver position.
     """
 
     def __init__(self, config: EncoderConfig):
@@ -49,13 +50,14 @@ class FeatureEncoder(nn.Module):
             )
             point_feat_dim = pos_embed_dim
             tx_feat_dim = pos_embed_dim
-            rx_feat_dim = pos_embed_dim
+            # CHANGE: Removed rx_feat_dim as rx_pos is no longer an input
         else:
             point_feat_dim = 3
             tx_feat_dim = 3
-            rx_feat_dim = 3
+            # CHANGE: Removed rx_feat_dim
 
-        input_dim = point_feat_dim + tx_feat_dim + rx_feat_dim
+        # CHANGE: Updated input_dim calculation
+        input_dim = point_feat_dim + tx_feat_dim
 
         self.layers = nn.ModuleList()
         self.layers.append(nn.Linear(input_dim, config.hidden_size))
@@ -80,30 +82,34 @@ class FeatureEncoder(nn.Module):
         self,
         points: torch.Tensor,
         tx_pos: torch.Tensor,
-        rx_pos: torch.Tensor,
+        # CHANGE: Removed rx_pos from arguments
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Forward pass to generate SH features for Gaussian virtual transmitters.
+        Forward pass to generate static wireless features for Gaussians.
 
         Args:
             points: Point positions (N, 3)
-            tx_pos: Transmitter position (3,)
-            rx_pos: Receiver position (3,)
+            tx_pos: Transmitter position (3,) -> broadcasted to (N, 3)
 
         Returns:
             Tuple of tensors (attenuation, phase_rotation) each of shape (N, 1)
+            representing static properties.
         """
+        num_points = points.shape[0]
+        if tx_pos.dim() == 1:
+            tx_pos_expanded = tx_pos.expand(num_points, -1)
+        else:
+            tx_pos_expanded = tx_pos
+
         if self.use_positional_encoding:
             points_embed = self.pos_embedder(points)
-            tx_embed = self.pos_embedder(tx_pos.expand(points.shape[0], -1))
-            rx_embed = self.pos_embedder(rx_pos.expand(points.shape[0], -1))
-            x = torch.cat([points_embed, tx_embed, rx_embed], dim=-1)
+            tx_embed = self.pos_embedder(tx_pos_expanded)
+            x = torch.cat([points_embed, tx_embed], dim=-1)
         else:
             x = torch.cat(
                 [
                     points,
-                    tx_pos.expand(points.shape[0], -1),
-                    rx_pos.expand(points.shape[0], -1),
+                    tx_pos_expanded,
                 ],
                 dim=-1,
             )
