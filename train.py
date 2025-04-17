@@ -55,11 +55,6 @@ def parse_args():
         help="Method to initialize Gaussian points (point_cloud or random)",
     )
     parser.add_argument(
-        "--physics_init",
-        action="store_true",
-        help="Enable physics-based initialization for features",
-    )
-    parser.add_argument(
         "--positional_encoding",
         action="store_true",
         dest="use_positional_encoding",
@@ -234,7 +229,7 @@ def parse_args():
         try:
             from engine import rasterize as cuda_rasterize_fn
 
-            args.rasterize_fn = cuda_rasterize_fn
+            args.rasterize_fn = _torch_impl.rasterize
             print("Using CUDA rasterization implementation.")
         except ImportError:
             from engine import _torch_impl
@@ -247,22 +242,16 @@ def parse_args():
     return args
 
 
-def rasterize_channel(
-    model, rx_position, tx_position, num_tx_ant, num_rx_ant, frequency, args
-):
+def rasterize_channel(model, rx_params, tx_params, args):
     """Helper function to rasterize the channel using the selected function"""
     return args.rasterize_fn(
         points=model.get_xyz,
         scaling=model.get_scaling,
         rotation=model.get_rotation,
-        attenuation=model.get_features[:, 0:1].contiguous(),
-        phase_rotation=model.get_features[:, 1:2].contiguous(),
+        gamma=model.get_features,
         opacity=model.get_opacity,
-        receiver=rx_position,
-        transmitter=tx_position,
-        num_tx=num_tx_ant,
-        num_rx=num_rx_ant,
-        frequency=frequency,
+        tx_params=tx_params,
+        rx_params=rx_params,
         scale_modifier=args.scale_modifier,
     )
 
@@ -270,10 +259,8 @@ def rasterize_channel(
 def sequential_fwd(
     model,
     batch,
-    tx_position,
-    num_tx_ant,
-    num_rx_ant,
-    frequency,
+    tx_params,
+    rx_params,
     args,
     device,
     update_features=False,
@@ -288,7 +275,7 @@ def sequential_fwd(
 
     if update_features:
         enc_data = {
-            "tx_pos": tx_position,
+            "tx_pos": tx_params["position"],
         }
         if any(p.requires_grad for p in model.encoder.parameters()):
             with torch.enable_grad():
@@ -299,9 +286,10 @@ def sequential_fwd(
 
     for i in range(batch_size):
         rx_position = batch["rx_position"][i].to(device)
-        pred_channel = rasterize_channel(
-            model, rx_position, tx_position, num_tx_ant, num_rx_ant, frequency, args
-        )
+        rx_params_i = rx_params.copy()
+        rx_params_i["position"] = rx_position
+
+        pred_channel = rasterize_channel(model, rx_params_i, tx_params, args)
         pred_channels.append(pred_channel)
 
     return torch.stack(pred_channels)
@@ -350,10 +338,8 @@ def setup_experiment(args):
 def evaluate(
     model,
     dataloader,
-    tx_position,
-    frequency,
-    num_tx_ant,
-    num_rx_ant,
+    tx_params,
+    rx_params,
     device,
     logger,
     writer,
@@ -370,7 +356,7 @@ def evaluate(
     logger.info(f"Evaluating at iteration {iteration}...")
 
     with torch.no_grad():
-        enc_data = {"tx_pos": tx_position}
+        enc_data = {"tx_pos": tx_params["position"]}
         model.embed_features(enc_data)
 
         for batch in tqdm(dataloader, desc="Evaluating"):
@@ -380,10 +366,8 @@ def evaluate(
             pred_channels = sequential_fwd(
                 model,
                 batch,
-                tx_position,
-                num_tx_ant,
-                num_rx_ant,
-                frequency,
+                tx_params,
+                rx_params,
                 args,
                 device,
                 update_features=False,
@@ -500,6 +484,29 @@ def train(args, logger, writer, log_dir):
         num_tx_ant = train_dataloader.dataset.num_tx_ant
         num_rx_ant = train_dataloader.dataset.num_rx_ant
         scene_extent = (env_dims[:, 1] - env_dims[:, 0]).max().item()
+
+        wavelength = 299792458.0 / frequency  # speed of light / frequency
+
+        tx_params = {
+            "position": tx_position,
+            "type": "ura",
+            "size": [int(num_tx_ant**0.5), int(num_tx_ant**0.5)],
+            "element_spacing": [
+                wavelength / 2,
+                wavelength / 2,
+            ],  # half-wavelength spacing
+            "frequency": frequency,
+            "num_antennas": num_tx_ant,
+        }
+
+        rx_params = {
+            "position": None,
+            "type": "ula",
+            "size": num_rx_ant,
+            "element_spacing": wavelength / 2,
+            "num_antennas": num_rx_ant,
+        }
+
     except Exception as e:
         logger.error(f"Failed to load dataset properties: {e}")
         raise
@@ -545,9 +552,7 @@ def train(args, logger, writer, log_dir):
         if args.init_method == "point_cloud":
             model.init_from_pc(
                 point_cloud.to(device),
-                tx_position=tx_position if args.physics_init else None,
-                frequency=frequency if args.physics_init else None,
-                use_physics_init=args.physics_init,
+                tx_position=tx_position,
             )
             logger.info(
                 f"Initialized model with {point_cloud.shape[0]} Gaussians from point cloud"
@@ -556,9 +561,7 @@ def train(args, logger, writer, log_dir):
             model.init_randomly(
                 args.num_points,
                 env_dims.to(device),
-                tx_position=tx_position if args.physics_init else None,
-                frequency=frequency if args.physics_init else None,
-                use_physics_init=args.physics_init,
+                tx_position=tx_position,
             )
             logger.info(f"Initialized model with {args.num_points} random Gaussians")
 
@@ -594,14 +597,13 @@ def train(args, logger, writer, log_dir):
         pred_channels = sequential_fwd(
             model,
             batch,
-            tx_position,
-            num_tx_ant,
-            num_rx_ant,
-            frequency,
+            tx_params,
+            rx_params,
             args,
             device,
             update_features=True,
         )
+        print("pred_channels", pred_channels)
 
         gt_channels = get_gt_batch(batch, device)
 
@@ -717,10 +719,8 @@ def train(args, logger, writer, log_dir):
             val_loss = evaluate(
                 model,
                 val_dataloader,
-                tx_position,
-                frequency,
-                num_tx_ant,
-                num_rx_ant,
+                tx_params,
+                rx_params,
                 device,
                 logger,
                 writer,

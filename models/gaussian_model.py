@@ -9,7 +9,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from simple_knn._C import distCUDA2  # type: ignore
 
-from utils.prop_utils import compute_path_loss, compute_phase_rotation
 from utils.transform_utils import (
     build_scaling_rotation,
     inverse_sigmoid,
@@ -31,7 +30,7 @@ class GaussianModel(nn.Module):
     - rotation: 4D quaternions initialized as [1,0,0,0] (identity)
     - scaling: Log of point-wise distances to enforce minimum scale
     - opacity: Inverse sigmoid of constant value (0.1)
-    - features: Static wireless features (attenuation, phase) learned by encoder
+    - features: Scattering coefficients (gamma_real, gamma_imag) learned by encoder
 
     Args:
         encoder_cfg: Configuration for the encoder
@@ -51,7 +50,7 @@ class GaussianModel(nn.Module):
         self._rotation = torch.empty(0)  # rotation quaternions
         self._scaling = torch.empty(0)  # scaling factors
         self._opacity = torch.empty(0)  # opacity values
-        self.features = torch.empty(0)  # wireless features
+        self.features = torch.empty(0)  # scattering features (gamma_real, gamma_imag)
 
         # training state
         self.optimizer = None
@@ -86,20 +85,12 @@ class GaussianModel(nn.Module):
         self.rotation_activation = torch.nn.functional.normalize
         self.covariance_activation = build_covariance_from_scaling_rotation
 
-    def init_from_pc(
-        self,
-        points: torch.Tensor,
-        tx_position: torch.Tensor = None,
-        frequency: float = None,
-        use_physics_init: bool = False,
-    ):
+    def init_from_pc(self, points: torch.Tensor, tx_position: torch.Tensor = None):
         """Initialize Gaussian properties from point cloud.
 
         Args:
             points: Point cloud tensor of shape [N, 3]
             tx_position: Transmitter position [3], required for physics init
-            frequency: Signal frequency in Hz, required for physics init
-            use_physics_init: Whether to use physics-based feature initialization
         """
         num_points = points.shape[0]
         device = points.device
@@ -115,26 +106,12 @@ class GaussianModel(nn.Module):
         rots[:, 0] = 1
         self._rotation = nn.Parameter(rots)
 
-        # features
-        if use_physics_init and tx_position is not None and frequency is not None:
-            tx_distances = torch.sqrt(torch.sum((self._xyz - tx_position) ** 2, dim=1))
-            c = 299792458.0
-            wavelength = c / frequency
-
-            attenuation = compute_path_loss(tx_distances, wavelength)
-            phase_rotation = compute_phase_rotation(tx_distances, wavelength)
-
-            self.features = (
-                torch.cat([attenuation, phase_rotation], dim=1)
-                .to(device)
-                .to(points.dtype)
-            )
-        else:
-            self.features = torch.zeros(
-                (num_points, 2),
-                device=device,
-                dtype=points.dtype,
-            )
+        # features initialization
+        self.features = torch.zeros(
+            (num_points, 2),  # [gamma_real, gamma_imag]
+            device=device,
+            dtype=points.dtype,
+        )
 
         # initialize opacity
         init_opacity = 0.1 * torch.ones(
@@ -146,12 +123,7 @@ class GaussianModel(nn.Module):
             self.embed_features({"tx_pos": tx_position})
 
     def init_randomly(
-        self,
-        num_points: int,
-        env_dims: torch.Tensor,
-        tx_position: torch.Tensor = None,
-        frequency: float = None,
-        use_physics_init: bool = False,
+        self, num_points: int, env_dims: torch.Tensor, tx_position: torch.Tensor = None
     ):
         """Initialize Gaussian properties randomly within environment dimensions.
 
@@ -159,8 +131,6 @@ class GaussianModel(nn.Module):
             num_points: Number of random points to initialize
             env_dims: Environment dimensions as [3, 2] tensor with min/max per dimension
             tx_position: Transmitter position [3], required for physics init
-            frequency: Signal frequency in Hz, required for physics init
-            use_physics_init: Whether to use physics-based feature initialization
         """
         device = env_dims.device
 
@@ -170,7 +140,7 @@ class GaussianModel(nn.Module):
         random_points = torch.rand(num_points, 3, device=device)
         random_points = random_points * (env_max - env_min) + env_min
 
-        self.init_from_pc(random_points, tx_position, frequency, use_physics_init)
+        self.init_from_pc(random_points, tx_position)
 
     @property
     def get_scaling(self):
@@ -194,7 +164,7 @@ class GaussianModel(nn.Module):
 
     @property
     def get_features(self):
-        """Get static wireless-related features."""
+        """Get scattering coefficients (gamma)."""
         return self.features
 
     def get_covariance(self, scaling_modifier: float = 1.0):
@@ -328,13 +298,13 @@ class GaussianModel(nn.Module):
 
     @torch.no_grad()
     def embed_features(self, enc_data: Dict[str, Union[torch.Tensor, float]]):
-        """Embed static wireless data into Gaussian features using the encoder.
+        """Embed features into Gaussian scattering coefficients using the encoder.
 
         The enc_data should contain:
         - tx_pos: Transmitter position (3,)
 
         Args:
-            enc_data: Dictionary containing static wireless data tensors.
+            enc_data: Dictionary containing data tensors.
         """
         if "tx_pos" not in enc_data:
             raise ValueError("tx_pos must be provided in enc_data for embed_features")
@@ -344,8 +314,8 @@ class GaussianModel(nn.Module):
         xyz_input = self._xyz.detach().to(device)
         tx_pos_input = tx_pos.to(device)
 
-        attenuation, phase_rotation = self.encoder(xyz_input, tx_pos_input)
-        self.features = torch.cat([attenuation, phase_rotation], dim=-1).detach()
+        gamma_real, gamma_imag = self.encoder(xyz_input, tx_pos_input)
+        self.features = torch.cat([gamma_real, gamma_imag], dim=-1).detach()
 
     def to(self, device):
         """Override to() to ensure encoder also moves to the same device."""

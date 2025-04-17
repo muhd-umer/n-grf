@@ -34,9 +34,8 @@ class EncoderConfig:
 class FeatureEncoder(nn.Module):
     """Encoder network for channel reconstruction.
 
-    Maps environment geometry (Gaussian positions) and transmitter position
-    to static features for Gaussian splatting, specifically attenuation
-    and phase rotation. These features are independent of the receiver position.
+    Maps environment geometry (Gaussian positions) and transmitter position to
+    scattering coefficients (gamma_real, gamma_imag) for Gaussian splatting.
     """
 
     def __init__(self, config: EncoderConfig):
@@ -50,13 +49,10 @@ class FeatureEncoder(nn.Module):
             )
             point_feat_dim = pos_embed_dim
             tx_feat_dim = pos_embed_dim
-            # CHANGE: Removed rx_feat_dim as rx_pos is no longer an input
         else:
             point_feat_dim = 3
             tx_feat_dim = 3
-            # CHANGE: Removed rx_feat_dim
 
-        # CHANGE: Updated input_dim calculation
         input_dim = point_feat_dim + tx_feat_dim
 
         self.layers = nn.ModuleList()
@@ -75,25 +71,25 @@ class FeatureEncoder(nn.Module):
                 self.layers.append(nn.LayerNorm(config.hidden_size))
             self.layers.append(nn.ReLU())
 
-        self.attenuation_head = nn.Linear(config.hidden_size, 1)
-        self.phase_rotation_head = nn.Linear(config.hidden_size, 1)
+        # updated output heads for gamma_real and gamma_imag
+        self.gamma_real_head = nn.Linear(config.hidden_size, 1)
+        self.gamma_imag_head = nn.Linear(config.hidden_size, 1)
 
     def forward(
         self,
         points: torch.Tensor,
         tx_pos: torch.Tensor,
-        # CHANGE: Removed rx_pos from arguments
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Forward pass to generate static wireless features for Gaussians.
+        Forward pass to generate scattering coefficients for Gaussians.
 
         Args:
             points: Point positions (N, 3)
             tx_pos: Transmitter position (3,) -> broadcasted to (N, 3)
 
         Returns:
-            Tuple of tensors (attenuation, phase_rotation) each of shape (N, 1)
-            representing static properties.
+            Tuple of tensors (gamma_real, gamma_imag) each of shape (N, 1)
+            representing scattering coefficients.
         """
         num_points = points.shape[0]
         if tx_pos.dim() == 1:
@@ -135,10 +131,11 @@ class FeatureEncoder(nn.Module):
             layer_idx += 1
 
         final_hidden_state = hidden_state
-        raw_attenuation = self.attenuation_head(final_hidden_state)
-        raw_phase_rotation = self.phase_rotation_head(final_hidden_state)
+        gamma_real = self.gamma_real_head(final_hidden_state)
+        gamma_imag = self.gamma_imag_head(final_hidden_state)
 
-        attenuation = F.softplus(raw_attenuation)
-        phase_rotation = torch.sigmoid(raw_phase_rotation) * 2 * torch.pi
+        # apply activation; small values to avoid initial saturation
+        gamma_real = torch.tanh(gamma_real)
+        gamma_imag = torch.tanh(gamma_imag)
 
-        return attenuation, phase_rotation
+        return gamma_real, gamma_imag
