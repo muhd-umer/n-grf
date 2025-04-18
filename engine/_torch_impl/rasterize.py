@@ -142,8 +142,6 @@ def compute_direct_path(
         alpha_fs_amp = wavelength / (4 * torch.pi * dist_tx_rx)
         alpha_fs_phase = -2 * torch.pi * dist_tx_rx / wavelength
 
-        # alpha_fs_amp = torch.clamp(alpha_fs_amp, max=1e3)
-
         prop_coef_real = alpha_fs_amp * torch.cos(alpha_fs_phase)
         prop_coef_imag = alpha_fs_amp * torch.sin(alpha_fs_phase)
 
@@ -151,9 +149,14 @@ def compute_direct_path(
         aod_el = torch.asin(
             torch.clamp(vec_tx_rx[2] / dist_tx_rx, -1.0 + 1e-8, 1.0 - 1e-8)
         ).unsqueeze(0)
-
         aod = torch.cat([aod_az, aod_el], dim=0).unsqueeze(0)
-        aoa = aod  # For direct path, AoA = AoD
+
+        vec_rx_tx = tx_pos - rx_pos
+        aoa_az = torch.atan2(vec_rx_tx[1], vec_rx_tx[0]).unsqueeze(0)
+        aoa_el = torch.asin(
+            torch.clamp(vec_rx_tx[2] / dist_tx_rx, -1.0 + 1e-8, 1.0 - 1e-8)
+        ).unsqueeze(0)
+        aoa = torch.cat([aoa_az, aoa_el], dim=0).unsqueeze(0)
 
         sv_tx_real, sv_tx_imag = compute_steering_vector(aod, tx_params, wavelength)
         sv_rx_real, sv_rx_imag = compute_steering_vector(aoa, rx_params, wavelength)
