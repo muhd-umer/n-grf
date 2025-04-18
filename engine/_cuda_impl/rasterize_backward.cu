@@ -10,8 +10,22 @@
 #include "checks.cuh"
 #include "matrix.cuh"
 
-#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 600
+constexpr int RAST_BW_BLOCK_DIM_X = 4;
+constexpr int RAST_BW_BLOCK_DIM_Y = 8;
+constexpr int RAST_BW_BLOCK_DIM_Z = 8;
 
+constexpr int SV_BW_BLOCK_DIM_X = 16;
+constexpr int SV_BW_BLOCK_DIM_Y = 16;
+
+constexpr int SCAT_BW_BLOCK_DIM_X = 4;
+constexpr int SCAT_BW_BLOCK_DIM_Y = 8;
+constexpr int SCAT_BW_BLOCK_DIM_Z = 8;
+
+constexpr int WS_BW_BLOCK_DIM_X = 4;
+constexpr int WS_BW_BLOCK_DIM_Y = 8;
+constexpr int WS_BW_BLOCK_DIM_Z = 8;
+
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 600
 __device__ double atomicAdd(double* address, double val) {
     unsigned long long int* address_as_ull = (unsigned long long int*)address;
     unsigned long long int old = *address_as_ull, assumed;
@@ -32,27 +46,28 @@ __global__ void compute_spatial_influence_backward_kernel(
     const int num_tx, const int num_rx, const int N, T* __restrict__ grad_uv,
     T* __restrict__ grad_cov2d) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= N) {
+    const int tx = blockIdx.y * blockDim.y + threadIdx.y;
+    const int rx = blockIdx.z * blockDim.z + threadIdx.z;
+
+    if (i >= N || tx >= num_tx || rx >= num_rx) {
         return;
     }
 
-    const T a = cov2d[i * 4 + 0];
-    const T b = cov2d[i * 4 + 1];
-    const T c = cov2d[i * 4 + 2];
-    const T d_cov = cov2d[i * 4 + 3];
+    const int influence_idx = i * num_tx * num_rx + tx * num_rx + rx;
+    const T grad_influence = grad_influences[influence_idx];
+
+    if (abs(grad_influence) < T(1e-15)) {
+        return;
+    }
+
+    const T* cov2d_ptr = cov2d + i * 4;
+    const T a = cov2d_ptr[0];
+    const T b = cov2d_ptr[1];
+    const T c = cov2d_ptr[2];
+    const T d_cov = cov2d_ptr[3];
 
     const T det = a * d_cov - b * c;
-    const T det_safe = max(det, T(ROBUST_EPSILON));
-    if (abs(det_safe) < T(1e-15)) {
-        grad_uv[i * 2 + 0] = T(0.0);
-        grad_uv[i * 2 + 1] = T(0.0);
-        grad_cov2d[i * 4 + 0] = T(0.0);
-        grad_cov2d[i * 4 + 1] = T(0.0);
-        grad_cov2d[i * 4 + 2] = T(0.0);
-        grad_cov2d[i * 4 + 3] = T(0.0);
-        return;
-    }
-    const T inv_det = T(1.0) / det_safe;
+    const T inv_det = T(1.0) / max(det, T(ROBUST_EPSILON));
 
     T inv_cov[4];
     inv_cov[0] = d_cov * inv_det;
@@ -63,62 +78,40 @@ __global__ void compute_spatial_influence_backward_kernel(
     const T u_i = uv[i * 2 + 0];
     const T v_i = uv[i * 2 + 1];
 
-    T grad_u_sum = T(0.0);
-    T grad_v_sum = T(0.0);
-    T grad_cov2d_sum[4] = {T(0.0), T(0.0), T(0.0), T(0.0)};
+    const T antenna_u = T(tx) + T(0.5);
+    const T antenna_v = T(rx) + T(0.5);
 
-    for (int tx = 0; tx < num_tx; tx++) {
-        for (int rx = 0; rx < num_rx; rx++) {
-            const int influence_idx = i * num_tx * num_rx + tx * num_rx + rx;
-            const T grad_influence = grad_influences[influence_idx];
+    T disp[2];
+    disp[0] = u_i - antenna_u;
+    disp[1] = v_i - antenna_v;
 
-            if (abs(grad_influence) > T(1e-10)) {
-                const T antenna_u = tx + T(0.5);
-                const T antenna_v = rx + T(0.5);
+    const T influence = influences[influence_idx];
+    const T grad_infl_times_infl = grad_influence * influence;
 
-                T disp[2];
-                disp[0] = u_i - antenna_u;
-                disp[1] = v_i - antenna_v;
+    T grad_component[2];
+    grad_component[0] = -(inv_cov[0] * disp[0] + inv_cov[1] * disp[1]);
+    grad_component[1] = -(inv_cov[2] * disp[0] + inv_cov[3] * disp[1]);
 
-                const T influence = influences[influence_idx];
+    atomicAdd(&grad_uv[i * 2 + 0], grad_infl_times_infl * grad_component[0]);
+    atomicAdd(&grad_uv[i * 2 + 1], grad_infl_times_infl * grad_component[1]);
 
-                T grad_component[2];
-                grad_component[0] =
-                    -(inv_cov[0] * disp[0] + inv_cov[1] * disp[1]);
-                grad_component[1] =
-                    -(inv_cov[2] * disp[0] + inv_cov[3] * disp[1]);
+    T d_outer[4];
+    d_outer[0] = disp[0] * disp[0];
+    d_outer[1] = disp[0] * disp[1];
+    d_outer[2] = disp[1] * disp[0];
+    d_outer[3] = disp[1] * disp[1];
 
-                grad_u_sum += grad_influence * influence * grad_component[0];
-                grad_v_sum += grad_influence * influence * grad_component[1];
+    T temp_mat1[4];
+    matrix_multiply<T>(inv_cov, d_outer, temp_mat1, 2, 2, 2);
 
-                T d_outer[4];
-                d_outer[0] = disp[0] * disp[0];
-                d_outer[1] = disp[0] * disp[1];
-                d_outer[2] = disp[1] * disp[0];
-                d_outer[3] = disp[1] * disp[1];
+    T temp_mat2[4];
+    matrix_multiply<T>(temp_mat1, inv_cov, temp_mat2, 2, 2, 2);
 
-                T temp_mat1[4];
-                matrix_multiply<T>(inv_cov, d_outer, temp_mat1, 2, 2, 2);
-
-                T temp_mat2[4];
-                matrix_multiply<T>(temp_mat1, inv_cov, temp_mat2, 2, 2, 2);
-
-                T factor = T(0.5) * grad_influence * influence;
-                grad_cov2d_sum[0] += factor * temp_mat2[0];
-                grad_cov2d_sum[1] += factor * temp_mat2[1];
-                grad_cov2d_sum[2] += factor * temp_mat2[2];
-                grad_cov2d_sum[3] += factor * temp_mat2[3];
-            }
-        }
-    }
-
-    grad_uv[i * 2 + 0] = grad_u_sum;
-    grad_uv[i * 2 + 1] = grad_v_sum;
-
-    grad_cov2d[i * 4 + 0] = grad_cov2d_sum[0];
-    grad_cov2d[i * 4 + 1] = grad_cov2d_sum[1];
-    grad_cov2d[i * 4 + 2] = grad_cov2d_sum[2];
-    grad_cov2d[i * 4 + 3] = grad_cov2d_sum[3];
+    T factor = T(0.5) * grad_infl_times_infl;
+    atomicAdd(&grad_cov2d[i * 4 + 0], factor * temp_mat2[0]);
+    atomicAdd(&grad_cov2d[i * 4 + 1], factor * temp_mat2[1]);
+    atomicAdd(&grad_cov2d[i * 4 + 2], factor * temp_mat2[2]);
+    atomicAdd(&grad_cov2d[i * 4 + 3], factor * temp_mat2[3]);
 }
 
 void compute_spatial_influence_backward_cuda(
@@ -138,24 +131,25 @@ void compute_spatial_influence_backward_cuda(
                 "cov2d must have shape Nx2x2");
     TORCH_CHECK(influences.size(0) == N && influences.size(1) == num_tx &&
                     influences.size(2) == num_rx,
-                "influences must have shape Nx" + std::to_string(num_tx) + "x" +
-                    std::to_string(num_rx));
+                "influences shape mismatch");
     TORCH_CHECK(grad_influences.size(0) == N &&
                     grad_influences.size(1) == num_tx &&
                     grad_influences.size(2) == num_rx,
-                "grad_influences must have shape Nx" + std::to_string(num_tx) +
-                    "x" + std::to_string(num_rx));
+                "grad_influences shape mismatch");
     TORCH_CHECK(grad_uv.size(0) == N && grad_uv.size(1) == 2,
                 "grad_uv must have shape Nx2");
     TORCH_CHECK(grad_cov2d.size(0) == N && grad_cov2d.size(1) == 2 &&
                     grad_cov2d.size(2) == 2,
                 "grad_cov2d must have shape Nx2x2");
 
-    const int max_threads_per_block = 1024;
-    const int num_blocks =
-        (N + max_threads_per_block - 1) / max_threads_per_block;
-    dim3 gridsize(num_blocks, 1, 1);
-    dim3 blocksize(max_threads_per_block, 1, 1);
+    grad_uv.zero_();
+    grad_cov2d.zero_();
+
+    dim3 blocksize(RAST_BW_BLOCK_DIM_X, RAST_BW_BLOCK_DIM_Y,
+                   RAST_BW_BLOCK_DIM_Z);
+    dim3 gridsize((N + blocksize.x - 1) / blocksize.x,
+                  (num_tx + blocksize.y - 1) / blocksize.y,
+                  (num_rx + blocksize.z - 1) / blocksize.z);
 
     if (uv.dtype() == torch::kFloat32) {
         CHECK_FLOAT_TENSOR(cov2d);
@@ -184,15 +178,17 @@ void compute_spatial_influence_backward_cuda(
     } else {
         AT_ERROR("Unsupported data type: ", uv.dtype());
     }
-    cudaDeviceSynchronize();
+    cudaError_t err = cudaGetLastError();
+    TORCH_CHECK(err == cudaSuccess,
+                "CUDA error after compute_spatial_influence_backward: ",
+                cudaGetErrorString(err));
 }
 
 template <typename T>
 __global__ void compute_path_geometry_backward_kernel(
     const T* __restrict__ points, const T* __restrict__ tx_pos,
     const T* __restrict__ rx_pos, const T* __restrict__ dist_tx,
-    const T* __restrict__ dist_rx, const T* __restrict__ aod,
-    const T* __restrict__ aoa, const T* __restrict__ grad_dist_tx,
+    const T* __restrict__ dist_rx, const T* __restrict__ grad_dist_tx,
     const T* __restrict__ grad_dist_rx, const T* __restrict__ grad_aod,
     const T* __restrict__ grad_aoa, const int N, T* __restrict__ grad_points) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
@@ -200,77 +196,94 @@ __global__ void compute_path_geometry_backward_kernel(
         return;
     }
 
-    T vec_tx_gauss[3];
-    vec_tx_gauss[0] = points[i * 3 + 0] - tx_pos[0];
-    vec_tx_gauss[1] = points[i * 3 + 1] - tx_pos[1];
-    vec_tx_gauss[2] = points[i * 3 + 2] - tx_pos[2];
+    const T tx_x = tx_pos[0];
+    const T tx_y = tx_pos[1];
+    const T tx_z = tx_pos[2];
+    const T rx_x = rx_pos[0];
+    const T rx_y = rx_pos[1];
+    const T rx_z = rx_pos[2];
 
-    T vec_gauss_rx[3];
-    vec_gauss_rx[0] = rx_pos[0] - points[i * 3 + 0];
-    vec_gauss_rx[1] = rx_pos[1] - points[i * 3 + 1];
-    vec_gauss_rx[2] = rx_pos[2] - points[i * 3 + 2];
+    const T px = points[i * 3 + 0];
+    const T py = points[i * 3 + 1];
+    const T pz = points[i * 3 + 2];
+
+    const T vec_tx_gauss_x = px - tx_x;
+    const T vec_tx_gauss_y = py - tx_y;
+    const T vec_tx_gauss_z = pz - tx_z;
+
+    const T vec_gauss_rx_x = rx_x - px;
+    const T vec_gauss_rx_y = rx_y - py;
+    const T vec_gauss_rx_z = rx_z - pz;
 
     const T d_tx = dist_tx[i];
     const T d_rx = dist_rx[i];
+    const T inv_d_tx = T(1.0) / d_tx;
+    const T inv_d_rx = T(1.0) / d_rx;
 
-    const T grad_d_tx = grad_dist_tx[i];
-    const T grad_d_rx = grad_dist_rx[i];
+    const T grad_d_tx_val = grad_dist_tx[i];
+    const T grad_d_rx_val = grad_dist_rx[i];
     const T grad_aod_az = grad_aod[i * 2 + 0];
     const T grad_aod_el = grad_aod[i * 2 + 1];
     const T grad_aoa_az = grad_aoa[i * 2 + 0];
     const T grad_aoa_el = grad_aoa[i * 2 + 1];
 
-    T grad_p[3] = {T(0.0), T(0.0), T(0.0)};
+    T grad_px = T(0.0);
+    T grad_py = T(0.0);
+    T grad_pz = T(0.0);
 
-    grad_p[0] += grad_d_tx * vec_tx_gauss[0] / d_tx;
-    grad_p[1] += grad_d_tx * vec_tx_gauss[1] / d_tx;
-    grad_p[2] += grad_d_tx * vec_tx_gauss[2] / d_tx;
+    grad_px += grad_d_tx_val * vec_tx_gauss_x * inv_d_tx;
+    grad_py += grad_d_tx_val * vec_tx_gauss_y * inv_d_tx;
+    grad_pz += grad_d_tx_val * vec_tx_gauss_z * inv_d_tx;
 
-    grad_p[0] += grad_d_rx * (-vec_gauss_rx[0]) / d_rx;
-    grad_p[1] += grad_d_rx * (-vec_gauss_rx[1]) / d_rx;
-    grad_p[2] += grad_d_rx * (-vec_gauss_rx[2]) / d_rx;
+    grad_px += grad_d_rx_val * (-vec_gauss_rx_x) * inv_d_rx;
+    grad_py += grad_d_rx_val * (-vec_gauss_rx_y) * inv_d_rx;
+    grad_pz += grad_d_rx_val * (-vec_gauss_rx_z) * inv_d_rx;
 
-    const T x_tx = vec_tx_gauss[0];
-    const T y_tx = vec_tx_gauss[1];
-    const T z_tx = vec_tx_gauss[2];
-    const T xy_sq_tx = max(x_tx * x_tx + y_tx * y_tx, T(ROBUST_EPSILON));
+    const T x_tx = vec_tx_gauss_x;
+    const T y_tx = vec_tx_gauss_y;
+    const T z_tx = vec_tx_gauss_z;
+    const T xy_sq_tx = x_tx * x_tx + y_tx * y_tx;
+    const T xy_sq_tx_safe = max(xy_sq_tx, T(ROBUST_EPSILON));
+    const T inv_xy_sq_tx_safe = T(1.0) / xy_sq_tx_safe;
 
-    grad_p[0] += grad_aod_az * (-y_tx / xy_sq_tx);
-    grad_p[1] += grad_aod_az * (x_tx / xy_sq_tx);
+    grad_px += grad_aod_az * (-y_tx * inv_xy_sq_tx_safe);
+    grad_py += grad_aod_az * (x_tx * inv_xy_sq_tx_safe);
 
-    T aod_el_arg = z_tx / d_tx;
+    T aod_el_arg = z_tx * inv_d_tx;
     aod_el_arg = min(max(aod_el_arg, T(-1.0)), T(1.0));
     T cos_aod_el_sq = T(1.0) - aod_el_arg * aod_el_arg;
     T cos_aod_el = sqrt(max(cos_aod_el_sq, T(ROBUST_EPSILON)));
     T r_cubed_cos_el_tx = d_tx * d_tx * d_tx * cos_aod_el;
-    r_cubed_cos_el_tx = max(r_cubed_cos_el_tx, T(ROBUST_EPSILON));
+    T inv_r_cubed_cos_el_tx = T(1.0) / max(r_cubed_cos_el_tx, T(1e-15));
 
-    grad_p[0] += grad_aod_el * (-x_tx * z_tx) / r_cubed_cos_el_tx;
-    grad_p[1] += grad_aod_el * (-y_tx * z_tx) / r_cubed_cos_el_tx;
-    grad_p[2] += grad_aod_el * (x_tx * x_tx + y_tx * y_tx) / r_cubed_cos_el_tx;
+    grad_px += grad_aod_el * (-x_tx * z_tx) * inv_r_cubed_cos_el_tx;
+    grad_py += grad_aod_el * (-y_tx * z_tx) * inv_r_cubed_cos_el_tx;
+    grad_pz += grad_aod_el * xy_sq_tx * inv_r_cubed_cos_el_tx;
 
-    const T x_rx = vec_gauss_rx[0];
-    const T y_rx = vec_gauss_rx[1];
-    const T z_rx = vec_gauss_rx[2];
-    const T xy_sq_rx = max(x_rx * x_rx + y_rx * y_rx, T(ROBUST_EPSILON));
+    const T x_rx = vec_gauss_rx_x;
+    const T y_rx = vec_gauss_rx_y;
+    const T z_rx = vec_gauss_rx_z;
+    const T xy_sq_rx = x_rx * x_rx + y_rx * y_rx;
+    const T xy_sq_rx_safe = max(xy_sq_rx, T(ROBUST_EPSILON));
+    const T inv_xy_sq_rx_safe = T(1.0) / xy_sq_rx_safe;
 
-    grad_p[0] += grad_aoa_az * (y_rx / xy_sq_rx);
-    grad_p[1] += grad_aoa_az * (-x_rx / xy_sq_rx);
+    grad_px += grad_aoa_az * (y_rx * inv_xy_sq_rx_safe);
+    grad_py += grad_aoa_az * (-x_rx * inv_xy_sq_rx_safe);
 
-    T aoa_el_arg = z_rx / d_rx;
+    T aoa_el_arg = z_rx * inv_d_rx;
     aoa_el_arg = min(max(aoa_el_arg, T(-1.0)), T(1.0));
     T cos_aoa_el_sq = T(1.0) - aoa_el_arg * aoa_el_arg;
     T cos_aoa_el = sqrt(max(cos_aoa_el_sq, T(ROBUST_EPSILON)));
     T r_cubed_cos_el_rx = d_rx * d_rx * d_rx * cos_aoa_el;
-    r_cubed_cos_el_rx = max(r_cubed_cos_el_rx, T(ROBUST_EPSILON));
+    T inv_r_cubed_cos_el_rx = T(1.0) / max(r_cubed_cos_el_rx, T(1e-15));
 
-    grad_p[0] += grad_aoa_el * (x_rx * z_rx) / r_cubed_cos_el_rx;
-    grad_p[1] += grad_aoa_el * (y_rx * z_rx) / r_cubed_cos_el_rx;
-    grad_p[2] += grad_aoa_el * -(x_rx * x_rx + y_rx * y_rx) / r_cubed_cos_el_rx;
+    grad_px += grad_aoa_el * (x_rx * z_rx) * inv_r_cubed_cos_el_rx;
+    grad_py += grad_aoa_el * (y_rx * z_rx) * inv_r_cubed_cos_el_rx;
+    grad_pz += grad_aoa_el * (-xy_sq_rx) * inv_r_cubed_cos_el_rx;
 
-    grad_points[i * 3 + 0] = grad_p[0];
-    grad_points[i * 3 + 1] = grad_p[1];
-    grad_points[i * 3 + 2] = grad_p[2];
+    grad_points[i * 3 + 0] = grad_px;
+    grad_points[i * 3 + 1] = grad_py;
+    grad_points[i * 3 + 2] = grad_pz;
 }
 
 void compute_path_geometry_backward_cuda(
@@ -298,24 +311,21 @@ void compute_path_geometry_backward_cuda(
     TORCH_CHECK(rx_pos.size(0) == 3, "rx_pos must have shape 3");
     TORCH_CHECK(dist_tx.size(0) == N, "dist_tx must have shape N");
     TORCH_CHECK(dist_rx.size(0) == N, "dist_rx must have shape N");
-    TORCH_CHECK(aod.size(0) == N && aod.size(1) == 2,
-                "aod must have shape Nx2");
-    TORCH_CHECK(aoa.size(0) == N && aoa.size(1) == 2,
-                "aoa must have shape Nx2");
-    TORCH_CHECK(grad_dist_tx.size(0) == N, "grad_dist_tx must have shape N");
-    TORCH_CHECK(grad_dist_rx.size(0) == N, "grad_dist_rx must have shape N");
+    TORCH_CHECK(aod.size(0) == N && aod.size(1) == 2, "aod shape mismatch");
+    TORCH_CHECK(aoa.size(0) == N && aoa.size(1) == 2, "aoa shape mismatch");
+    TORCH_CHECK(grad_dist_tx.size(0) == N, "grad_dist_tx shape mismatch");
+    TORCH_CHECK(grad_dist_rx.size(0) == N, "grad_dist_rx shape mismatch");
     TORCH_CHECK(grad_aod.size(0) == N && grad_aod.size(1) == 2,
-                "grad_aod must have shape Nx2");
+                "grad_aod shape mismatch");
     TORCH_CHECK(grad_aoa.size(0) == N && grad_aoa.size(1) == 2,
-                "grad_aoa must have shape Nx2");
+                "grad_aoa shape mismatch");
     TORCH_CHECK(grad_points.size(0) == N && grad_points.size(1) == 3,
-                "grad_points must have shape Nx3");
+                "grad_points shape mismatch");
 
-    const int max_threads_per_block = 1024;
-    const int num_blocks =
-        (N + max_threads_per_block - 1) / max_threads_per_block;
-    dim3 gridsize(num_blocks, 1, 1);
-    dim3 blocksize(max_threads_per_block, 1, 1);
+    const int threads = 256;
+    const int num_blocks = (N + threads - 1) / threads;
+    dim3 gridsize(num_blocks);
+    dim3 blocksize(threads);
 
     grad_points.zero_();
 
@@ -334,8 +344,7 @@ void compute_path_geometry_backward_cuda(
         compute_path_geometry_backward_kernel<float><<<gridsize, blocksize>>>(
             points.data_ptr<float>(), tx_pos.data_ptr<float>(),
             rx_pos.data_ptr<float>(), dist_tx.data_ptr<float>(),
-            dist_rx.data_ptr<float>(), aod.data_ptr<float>(),
-            aoa.data_ptr<float>(), grad_dist_tx.data_ptr<float>(),
+            dist_rx.data_ptr<float>(), grad_dist_tx.data_ptr<float>(),
             grad_dist_rx.data_ptr<float>(), grad_aod.data_ptr<float>(),
             grad_aoa.data_ptr<float>(), N, grad_points.data_ptr<float>());
     } else if (points.dtype() == torch::kFloat64) {
@@ -353,14 +362,16 @@ void compute_path_geometry_backward_cuda(
         compute_path_geometry_backward_kernel<double><<<gridsize, blocksize>>>(
             points.data_ptr<double>(), tx_pos.data_ptr<double>(),
             rx_pos.data_ptr<double>(), dist_tx.data_ptr<double>(),
-            dist_rx.data_ptr<double>(), aod.data_ptr<double>(),
-            aoa.data_ptr<double>(), grad_dist_tx.data_ptr<double>(),
+            dist_rx.data_ptr<double>(), grad_dist_tx.data_ptr<double>(),
             grad_dist_rx.data_ptr<double>(), grad_aod.data_ptr<double>(),
             grad_aoa.data_ptr<double>(), N, grad_points.data_ptr<double>());
     } else {
         AT_ERROR("Unsupported data type: ", points.dtype());
     }
-    cudaDeviceSynchronize();
+    cudaError_t err = cudaGetLastError();
+    TORCH_CHECK(err == cudaSuccess,
+                "CUDA error after compute_path_geometry_backward: ",
+                cudaGetErrorString(err));
 }
 
 template <typename T>
@@ -376,15 +387,14 @@ __global__ void compute_steering_vector_backward_kernel(
         return;
     }
 
-    const T PI = T(3.14159265358979323846);
+    constexpr T PI = T(M_PI);
     const T k = T(2.0) * PI / wavelength;
 
     const T az = angles[i * 2 + 0];
     const T el = angles[i * 2 + 1];
-    const T cos_az = cos(az);
-    const T sin_az = sin(az);
-    const T cos_el = cos(el);
-    const T sin_el = sin(el);
+    T cos_az, sin_az, cos_el, sin_el;
+    sincos(az, &sin_az, &cos_az);
+    sincos(el, &sin_el, &cos_el);
 
     T grad_az_sum = T(0.0);
     T grad_el_sum = T(0.0);
@@ -408,15 +418,15 @@ __global__ void compute_steering_vector_backward_kernel(
             const T spacing_y = element_spacing[1];
             const int row_idx = m / cols;
             const int col_idx = m % cols;
-            const T x_pos = (row_idx - (rows - T(1.0)) / T(2.0)) * spacing_x;
-            const T y_pos = (col_idx - (cols - T(1.0)) / T(2.0)) * spacing_y;
+            const T x_pos = (row_idx - (rows - T(1.0)) * T(0.5)) * spacing_x;
+            const T y_pos = (col_idx - (cols - T(1.0)) * T(0.5)) * spacing_y;
 
             dPh_dAz = -k * cos_el * (-x_pos * sin_az + y_pos * cos_az);
             dPh_dEl = k * sin_el * (x_pos * cos_az + y_pos * sin_az);
         } else if (array_type == 1) {
             const int num_ant = static_cast<int>(array_size[0]);
             const T spacing_d = element_spacing[0];
-            const T x_pos = (m - (num_ant - T(1.0)) / T(2.0)) * spacing_d;
+            const T x_pos = (m - (num_ant - T(1.0)) * T(0.5)) * spacing_d;
 
             dPh_dAz = k * x_pos * cos_el * sin_az;
             dPh_dEl = k * x_pos * sin_el * cos_az;
@@ -448,7 +458,7 @@ void compute_steering_vector_backward_cuda(
     const int M = sv_real.size(1);
     TORCH_CHECK(angles.size(1) == 2, "angles must have shape Nx2");
     TORCH_CHECK(sv_real.size(0) == N && sv_imag.size(0) == N,
-                "sv_real/imag must have shape NxM");
+                "sv_real/imag shape mismatch");
     TORCH_CHECK(sv_imag.size(1) == M, "sv_imag shape mismatch");
     TORCH_CHECK(grad_sv_real.size(0) == N && grad_sv_real.size(1) == M,
                 "grad_sv_real shape mismatch");
@@ -457,11 +467,10 @@ void compute_steering_vector_backward_cuda(
     TORCH_CHECK(grad_angles.size(0) == N && grad_angles.size(1) == 2,
                 "grad_angles must have shape Nx2");
 
-    const int max_threads_per_block = 1024;
-    const int num_blocks =
-        (N + max_threads_per_block - 1) / max_threads_per_block;
-    dim3 gridsize(num_blocks, 1, 1);
-    dim3 blocksize(max_threads_per_block, 1, 1);
+    const int threads = 256;
+    const int num_blocks = (N + threads - 1) / threads;
+    dim3 gridsize(num_blocks);
+    dim3 blocksize(threads);
 
     grad_angles.zero_();
 
@@ -498,7 +507,10 @@ void compute_steering_vector_backward_cuda(
     } else {
         AT_ERROR("Unsupported data type: ", angles.dtype());
     }
-    cudaDeviceSynchronize();
+    cudaError_t err = cudaGetLastError();
+    TORCH_CHECK(err == cudaSuccess,
+                "CUDA error after compute_steering_vector_backward: ",
+                cudaGetErrorString(err));
 }
 
 template <typename T>
@@ -515,21 +527,29 @@ __global__ void compute_scattered_paths_backward_kernel(
     T* __restrict__ grad_sv_tx_imag, T* __restrict__ grad_sv_rx_real,
     T* __restrict__ grad_sv_rx_imag) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= N) {
+    const int tx_ant = blockIdx.y * blockDim.y + threadIdx.y;
+    const int rx_ant = blockIdx.z * blockDim.z + threadIdx.z;
+
+    if (i >= N || tx_ant >= Nt || rx_ant >= Nr) {
         return;
     }
 
-    const T PI = T(3.14159265358979323846);
+    constexpr T PI = T(M_PI);
+    constexpr T FOUR_PI = T(4.0) * PI;
+    constexpr T TWO_PI = T(2.0) * PI;
 
     const T d_tx = dist_tx[i];
     const T d_rx = dist_rx[i];
     const T dist_path = d_tx + d_rx;
     const T dist_path_safe = max(dist_path, T(ROBUST_EPSILON));
+    const T inv_dist_path_safe = T(1.0) / dist_path_safe;
 
-    const T alpha_amp = wavelength / (T(4.0) * PI * dist_path_safe);
-    const T alpha_phase = -T(2.0) * PI * dist_path / wavelength;
-    const T alpha_real = alpha_amp * cos(alpha_phase);
-    const T alpha_imag = alpha_amp * sin(alpha_phase);
+    const T alpha_amp = wavelength / FOUR_PI * inv_dist_path_safe;
+    const T alpha_phase = -TWO_PI * dist_path / wavelength;
+    T cos_phase, sin_phase;
+    sincos(alpha_phase, &sin_phase, &cos_phase);
+    const T alpha_real = alpha_amp * cos_phase;
+    const T alpha_imag = alpha_amp * sin_phase;
 
     const T g_real = gamma_real[i];
     const T g_imag = gamma_imag[i];
@@ -537,64 +557,60 @@ __global__ void compute_scattered_paths_backward_kernel(
     const T scatter_coef_real = g_real * alpha_real - g_imag * alpha_imag;
     const T scatter_coef_imag = g_real * alpha_imag + g_imag * alpha_real;
 
-    T grad_scatter_coef_real_sum = T(0.0);
-    T grad_scatter_coef_imag_sum = T(0.0);
+    const int chan_idx = i * Nt * Nr + tx_ant * Nr + rx_ant;
+    const T grad_H_real = grad_scat_chan_real[chan_idx];
+    const T grad_H_imag = grad_scat_chan_imag[chan_idx];
 
-    for (int tx_ant = 0; tx_ant < Nt; ++tx_ant) {
-        for (int rx_ant = 0; rx_ant < Nr; ++rx_ant) {
-            const int chan_idx = i * Nt * Nr + tx_ant * Nr + rx_ant;
-            const T grad_H_real = grad_scat_chan_real[chan_idx];
-            const T grad_H_imag = grad_scat_chan_imag[chan_idx];
+    const int sv_tx_idx = i * Nt + tx_ant;
+    const int sv_rx_idx = i * Nr + rx_ant;
+    const T sv_tx_r = sv_tx_real[sv_tx_idx];
+    const T sv_tx_i = sv_tx_imag[sv_tx_idx];
+    const T sv_rx_r = sv_rx_real[sv_rx_idx];
+    const T sv_rx_i = sv_rx_imag[sv_rx_idx];
 
-            const T sv_tx_r = sv_tx_real[i * Nt + tx_ant];
-            const T sv_tx_i = sv_tx_imag[i * Nt + tx_ant];
-            const T sv_rx_r = sv_rx_real[i * Nr + rx_ant];
-            const T sv_rx_i = sv_rx_imag[i * Nr + rx_ant];
+    const T P_real = sv_rx_r * sv_tx_r + sv_rx_i * sv_tx_i;
+    const T P_imag = sv_rx_i * sv_tx_r - sv_rx_r * sv_tx_i;
 
-            const T P_real = sv_rx_r * sv_tx_r + sv_rx_i * sv_tx_i;
-            const T P_imag = sv_rx_i * sv_tx_r - sv_rx_r * sv_tx_i;
+    const T grad_scatter_coef_real =
+        grad_H_real * P_real + grad_H_imag * P_imag;
+    const T grad_scatter_coef_imag =
+        -grad_H_real * P_imag + grad_H_imag * P_real;
 
-            grad_scatter_coef_real_sum +=
-                grad_H_real * P_real + grad_H_imag * P_imag;
-            grad_scatter_coef_imag_sum +=
-                -grad_H_real * P_imag + grad_H_imag * P_real;
+    atomicAdd(&grad_gamma_real[i], grad_scatter_coef_real * alpha_real +
+                                       grad_scatter_coef_imag * alpha_imag);
+    atomicAdd(&grad_gamma_imag[i], -grad_scatter_coef_real * alpha_imag +
+                                       grad_scatter_coef_imag * alpha_real);
 
-            const T grad_P_real = scatter_coef_real * grad_H_real +
-                                  scatter_coef_imag * grad_H_imag;
-            const T grad_P_imag = -scatter_coef_imag * grad_H_real +
-                                  scatter_coef_real * grad_H_imag;
-
-            atomicAdd(&grad_sv_tx_real[i * Nt + tx_ant],
-                      grad_P_real * sv_rx_r + grad_P_imag * sv_rx_i);
-            atomicAdd(&grad_sv_tx_imag[i * Nt + tx_ant],
-                      grad_P_real * sv_rx_i - grad_P_imag * sv_rx_r);
-            atomicAdd(&grad_sv_rx_real[i * Nr + rx_ant],
-                      grad_P_real * sv_tx_r - grad_P_imag * sv_tx_i);
-            atomicAdd(&grad_sv_rx_imag[i * Nr + rx_ant],
-                      grad_P_real * sv_tx_i + grad_P_imag * sv_tx_r);
-        }
-    }
-
-    grad_gamma_real[i] = grad_scatter_coef_real_sum * alpha_real +
-                         grad_scatter_coef_imag_sum * alpha_imag;
-    grad_gamma_imag[i] = -grad_scatter_coef_real_sum * alpha_imag +
-                         grad_scatter_coef_imag_sum * alpha_real;
-
-    const T grad_alpha_real = grad_scatter_coef_real_sum * g_real +
-                              grad_scatter_coef_imag_sum * g_imag;
-    const T grad_alpha_imag = -grad_scatter_coef_real_sum * g_imag +
-                              grad_scatter_coef_imag_sum * g_real;
+    const T grad_alpha_real =
+        grad_scatter_coef_real * g_real + grad_scatter_coef_imag * g_imag;
+    const T grad_alpha_imag =
+        -grad_scatter_coef_real * g_imag + grad_scatter_coef_imag * g_real;
 
     const T grad_alpha_amp =
-        grad_alpha_real * cos(alpha_phase) + grad_alpha_imag * sin(alpha_phase);
-    const T grad_alpha_phase = -grad_alpha_real * alpha_amp * sin(alpha_phase) +
-                               grad_alpha_imag * alpha_amp * cos(alpha_phase);
+        grad_alpha_real * cos_phase + grad_alpha_imag * sin_phase;
+    const T grad_alpha_phase = -grad_alpha_real * alpha_amp * sin_phase +
+                               grad_alpha_imag * alpha_amp * cos_phase;
 
-    const T grad_dist_path = grad_alpha_amp * (-alpha_amp / dist_path_safe) +
-                             grad_alpha_phase * (-T(2.0) * PI / wavelength);
+    const T grad_dist_path =
+        grad_alpha_amp * (-alpha_amp * inv_dist_path_safe) +
+        grad_alpha_phase * (-TWO_PI / wavelength);
 
-    grad_dist_tx[i] = grad_dist_path;
-    grad_dist_rx[i] = grad_dist_path;
+    atomicAdd(&grad_dist_tx[i], grad_dist_path);
+    atomicAdd(&grad_dist_rx[i], grad_dist_path);
+
+    const T grad_P_real =
+        scatter_coef_real * grad_H_real + scatter_coef_imag * grad_H_imag;
+    const T grad_P_imag =
+        -scatter_coef_imag * grad_H_real + scatter_coef_real * grad_H_imag;
+
+    atomicAdd(&grad_sv_tx_real[sv_tx_idx],
+              grad_P_real * sv_rx_r + grad_P_imag * sv_rx_i);
+    atomicAdd(&grad_sv_tx_imag[sv_tx_idx],
+              grad_P_real * sv_rx_i - grad_P_imag * sv_rx_r);
+    atomicAdd(&grad_sv_rx_real[sv_rx_idx],
+              grad_P_real * sv_tx_r - grad_P_imag * sv_tx_i);
+    atomicAdd(&grad_sv_rx_imag[sv_rx_idx],
+              grad_P_real * sv_tx_i + grad_P_imag * sv_tx_r);
 }
 
 void compute_scattered_paths_backward_cuda(
@@ -659,12 +675,6 @@ void compute_scattered_paths_backward_cuda(
     TORCH_CHECK(grad_sv_rx_imag.size(0) == N && grad_sv_rx_imag.size(1) == Nr,
                 "grad_sv_rx_imag shape mismatch");
 
-    const int max_threads_per_block = 256;
-    const int num_blocks =
-        (N + max_threads_per_block - 1) / max_threads_per_block;
-    dim3 gridsize(num_blocks, 1, 1);
-    dim3 blocksize(max_threads_per_block, 1, 1);
-
     grad_gamma_real.zero_();
     grad_gamma_imag.zero_();
     grad_dist_tx.zero_();
@@ -673,6 +683,12 @@ void compute_scattered_paths_backward_cuda(
     grad_sv_tx_imag.zero_();
     grad_sv_rx_real.zero_();
     grad_sv_rx_imag.zero_();
+
+    dim3 blocksize(SCAT_BW_BLOCK_DIM_X, SCAT_BW_BLOCK_DIM_Y,
+                   SCAT_BW_BLOCK_DIM_Z);
+    dim3 gridsize((N + blocksize.x - 1) / blocksize.x,
+                  (Nt + blocksize.y - 1) / blocksize.y,
+                  (Nr + blocksize.z - 1) / blocksize.z);
 
     if (gamma_real.dtype() == torch::kFloat32) {
         CHECK_FLOAT_TENSOR(gamma_imag);
@@ -742,7 +758,10 @@ void compute_scattered_paths_backward_cuda(
     } else {
         AT_ERROR("Unsupported data type: ", gamma_real.dtype());
     }
-    cudaDeviceSynchronize();
+    cudaError_t err = cudaGetLastError();
+    TORCH_CHECK(err == cudaSuccess,
+                "CUDA error after compute_scattered_paths_backward: ",
+                cudaGetErrorString(err));
 }
 
 template <typename T>
@@ -830,7 +849,7 @@ void weighted_superposition_backward_cuda(
                     grad_influence.size(2) == Nr,
                 "grad_influence shape mismatch");
 
-    dim3 blocksize(4, 4, 4);
+    dim3 blocksize(WS_BW_BLOCK_DIM_X, WS_BW_BLOCK_DIM_Y, WS_BW_BLOCK_DIM_Z);
     dim3 gridsize((N + blocksize.x - 1) / blocksize.x,
                   (Nt + blocksize.y - 1) / blocksize.y,
                   (Nr + blocksize.z - 1) / blocksize.z);
@@ -880,5 +899,8 @@ void weighted_superposition_backward_cuda(
     } else {
         AT_ERROR("Unsupported data type: ", scat_path_real.dtype());
     }
-    cudaDeviceSynchronize();
+    cudaError_t err = cudaGetLastError();
+    TORCH_CHECK(err == cudaSuccess,
+                "CUDA error after weighted_superposition_backward: ",
+                cudaGetErrorString(err));
 }

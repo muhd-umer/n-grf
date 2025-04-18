@@ -34,13 +34,7 @@ void compute_scattered_paths_cuda(
     torch::Tensor dist_rx, torch::Tensor sv_tx_real, torch::Tensor sv_tx_imag,
     torch::Tensor sv_rx_real, torch::Tensor sv_rx_imag, float wavelength,
     torch::Tensor scat_chan_real, torch::Tensor scat_chan_imag);
-void compute_direct_path_cuda(torch::Tensor tx_pos, torch::Tensor rx_pos,
-                              torch::Tensor tx_size, torch::Tensor rx_size,
-                              torch::Tensor tx_element_spacing,
-                              torch::Tensor rx_element_spacing,
-                              int tx_array_type, int rx_array_type,
-                              float wavelength, torch::Tensor direct_chan_real,
-                              torch::Tensor direct_chan_imag);
+
 void weighted_superposition_cuda(torch::Tensor direct_path_real,
                                  torch::Tensor direct_path_imag,
                                  torch::Tensor scat_path_real,
@@ -128,7 +122,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
           "Compute steering vector CUDA");
     m.def("compute_scattered_paths_cuda", &compute_scattered_paths_cuda,
           "Compute scattered paths CUDA");
-
     m.def("weighted_superposition_cuda", &weighted_superposition_cuda,
           "Weighted superposition CUDA");
 

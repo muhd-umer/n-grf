@@ -10,6 +10,15 @@
 #include "checks.cuh"
 #include "matrix.cuh"
 
+constexpr int RAST_BLOCK_DIM_X = 4;
+constexpr int RAST_BLOCK_DIM_Y = 8;
+constexpr int RAST_BLOCK_DIM_Z = 8;
+
+constexpr int SV_BLOCK_DIM_X = 16;
+constexpr int SV_BLOCK_DIM_Y = 16;
+
+constexpr int WS_REDUCE_BLOCK_SIZE = 256;
+
 template <typename T>
 __global__ void compute_spatial_influence_kernel(const T* __restrict__ uv,
                                                  const T* __restrict__ cov2d,
@@ -17,14 +26,18 @@ __global__ void compute_spatial_influence_kernel(const T* __restrict__ uv,
                                                  const int num_rx, const int N,
                                                  T* __restrict__ influences) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= N) {
+    const int tx = blockIdx.y * blockDim.y + threadIdx.y;
+    const int rx = blockIdx.z * blockDim.z + threadIdx.z;
+
+    if (i >= N || tx >= num_tx || rx >= num_rx) {
         return;
     }
 
-    const T a = cov2d[i * 4 + 0];
-    const T b = cov2d[i * 4 + 1];
-    const T c = cov2d[i * 4 + 2];
-    const T d_cov = cov2d[i * 4 + 3];
+    const T* cov2d_ptr = cov2d + i * 4;
+    const T a = cov2d_ptr[0];
+    const T b = cov2d_ptr[1];
+    const T c = cov2d_ptr[2];
+    const T d_cov = cov2d_ptr[3];
 
     const T det = a * d_cov - b * c;
     const T inv_det = T(1.0) / max(det, T(ROBUST_EPSILON));
@@ -37,22 +50,18 @@ __global__ void compute_spatial_influence_kernel(const T* __restrict__ uv,
     const T u_i = uv[i * 2 + 0];
     const T v_i = uv[i * 2 + 1];
 
-    for (int tx = 0; tx < num_tx; tx++) {
-        for (int rx = 0; rx < num_rx; rx++) {
-            const T antenna_u = tx + T(0.5);
-            const T antenna_v = rx + T(0.5);
+    const T antenna_u = T(tx) + T(0.5);
+    const T antenna_v = T(rx) + T(0.5);
 
-            const T du = u_i - antenna_u;
-            const T dv = v_i - antenna_v;
+    const T du = u_i - antenna_u;
+    const T dv = v_i - antenna_v;
 
-            const T md =
-                du * (inv_a * du + inv_b * dv) + dv * (inv_c * du + inv_d * dv);
+    const T md =
+        du * (inv_a * du + inv_b * dv) + dv * (inv_c * du + inv_d * dv);
+    const T md_clamped = min(md, T(30.0));
 
-            const T md_clamped = min(md, T(30.0));
-            influences[i * num_tx * num_rx + tx * num_rx + rx] =
-                exp(-T(0.5) * md_clamped);
-        }
-    }
+    influences[i * num_tx * num_rx + tx * num_rx + rx] =
+        exp(-T(0.5) * md_clamped);
 }
 
 void compute_spatial_influence_cuda(torch::Tensor uv, torch::Tensor cov2d,
@@ -68,14 +77,12 @@ void compute_spatial_influence_cuda(torch::Tensor uv, torch::Tensor cov2d,
                 "cov2d must have shape Nx2x2");
     TORCH_CHECK(influences.size(0) == N && influences.size(1) == num_tx &&
                     influences.size(2) == num_rx,
-                "influences must have shape Nx" + std::to_string(num_tx) + "x" +
-                    std::to_string(num_rx));
+                "influences must have shape NxTxR");
 
-    const int max_threads_per_block = 1024;
-    const int num_blocks =
-        (N + max_threads_per_block - 1) / max_threads_per_block;
-    dim3 gridsize(num_blocks, 1, 1);
-    dim3 blocksize(max_threads_per_block, 1, 1);
+    dim3 blocksize(RAST_BLOCK_DIM_X, RAST_BLOCK_DIM_Y, RAST_BLOCK_DIM_Z);
+    dim3 gridsize((N + blocksize.x - 1) / blocksize.x,
+                  (num_tx + blocksize.y - 1) / blocksize.y,
+                  (num_rx + blocksize.z - 1) / blocksize.z);
 
     if (uv.dtype() == torch::kFloat32) {
         CHECK_FLOAT_TENSOR(cov2d);
@@ -92,7 +99,10 @@ void compute_spatial_influence_cuda(torch::Tensor uv, torch::Tensor cov2d,
     } else {
         AT_ERROR("Unsupported data type: ", uv.dtype());
     }
-    cudaDeviceSynchronize();
+    cudaError_t err = cudaGetLastError();
+    TORCH_CHECK(err == cudaSuccess,
+                "CUDA error after compute_spatial_influence: ",
+                cudaGetErrorString(err));
 }
 
 template <typename T>
@@ -105,35 +115,46 @@ __global__ void compute_path_geometry_kernel(
         return;
     }
 
-    T vec_tx_gauss[3];
-    vec_tx_gauss[0] = points[i * 3 + 0] - tx_pos[0];
-    vec_tx_gauss[1] = points[i * 3 + 1] - tx_pos[1];
-    vec_tx_gauss[2] = points[i * 3 + 2] - tx_pos[2];
+    const T tx_x = tx_pos[0];
+    const T tx_y = tx_pos[1];
+    const T tx_z = tx_pos[2];
+    const T rx_x = rx_pos[0];
+    const T rx_y = rx_pos[1];
+    const T rx_z = rx_pos[2];
 
-    T vec_gauss_rx[3];
-    vec_gauss_rx[0] = rx_pos[0] - points[i * 3 + 0];
-    vec_gauss_rx[1] = rx_pos[1] - points[i * 3 + 1];
-    vec_gauss_rx[2] = rx_pos[2] - points[i * 3 + 2];
+    const T px = points[i * 3 + 0];
+    const T py = points[i * 3 + 1];
+    const T pz = points[i * 3 + 2];
 
-    T d_tx_sq = vec_tx_gauss[0] * vec_tx_gauss[0] +
-                vec_tx_gauss[1] * vec_tx_gauss[1] +
-                vec_tx_gauss[2] * vec_tx_gauss[2];
-    T d_tx = sqrt(d_tx_sq);
-    dist_tx[i] = max(d_tx, T(ROBUST_EPSILON));
+    const T vec_tx_gauss_x = px - tx_x;
+    const T vec_tx_gauss_y = py - tx_y;
+    const T vec_tx_gauss_z = pz - tx_z;
 
-    T d_rx_sq = vec_gauss_rx[0] * vec_gauss_rx[0] +
-                vec_gauss_rx[1] * vec_gauss_rx[1] +
-                vec_gauss_rx[2] * vec_gauss_rx[2];
-    T d_rx = sqrt(d_rx_sq);
-    dist_rx[i] = max(d_rx, T(ROBUST_EPSILON));
+    const T vec_gauss_rx_x = rx_x - px;
+    const T vec_gauss_rx_y = rx_y - py;
+    const T vec_gauss_rx_z = rx_z - pz;
 
-    aod[i * 2 + 0] = atan2(vec_tx_gauss[1], vec_tx_gauss[0]);
-    T aod_el_arg = vec_tx_gauss[2] / dist_tx[i];
+    const T d_tx_sq = vec_tx_gauss_x * vec_tx_gauss_x +
+                      vec_tx_gauss_y * vec_tx_gauss_y +
+                      vec_tx_gauss_z * vec_tx_gauss_z;
+    const T d_tx = sqrt(d_tx_sq);
+    const T d_tx_safe = max(d_tx, T(ROBUST_EPSILON));
+    dist_tx[i] = d_tx_safe;
+
+    const T d_rx_sq = vec_gauss_rx_x * vec_gauss_rx_x +
+                      vec_gauss_rx_y * vec_gauss_rx_y +
+                      vec_gauss_rx_z * vec_gauss_rx_z;
+    const T d_rx = sqrt(d_rx_sq);
+    const T d_rx_safe = max(d_rx, T(ROBUST_EPSILON));
+    dist_rx[i] = d_rx_safe;
+
+    aod[i * 2 + 0] = atan2(vec_tx_gauss_y, vec_tx_gauss_x);
+    T aod_el_arg = vec_tx_gauss_z / d_tx_safe;
     aod_el_arg = min(max(aod_el_arg, T(-1.0)), T(1.0));
     aod[i * 2 + 1] = asin(aod_el_arg);
 
-    aoa[i * 2 + 0] = atan2(vec_gauss_rx[1], vec_gauss_rx[0]);
-    T aoa_el_arg = vec_gauss_rx[2] / dist_rx[i];
+    aoa[i * 2 + 0] = atan2(vec_gauss_rx_y, vec_gauss_rx_x);
+    T aoa_el_arg = vec_gauss_rx_z / d_rx_safe;
     aoa_el_arg = min(max(aoa_el_arg, T(-1.0)), T(1.0));
     aoa[i * 2 + 1] = asin(aoa_el_arg);
 }
@@ -161,11 +182,10 @@ void compute_path_geometry_cuda(torch::Tensor points, torch::Tensor tx_pos,
     TORCH_CHECK(aoa.size(0) == N && aoa.size(1) == 2,
                 "aoa must have shape Nx2");
 
-    const int max_threads_per_block = 1024;
-    const int num_blocks =
-        (N + max_threads_per_block - 1) / max_threads_per_block;
-    dim3 gridsize(num_blocks, 1, 1);
-    dim3 blocksize(max_threads_per_block, 1, 1);
+    const int threads = 256;
+    const int num_blocks = (N + threads - 1) / threads;
+    dim3 gridsize(num_blocks);
+    dim3 blocksize(threads);
 
     if (points.dtype() == torch::kFloat32) {
         CHECK_FLOAT_TENSOR(tx_pos);
@@ -194,7 +214,9 @@ void compute_path_geometry_cuda(torch::Tensor points, torch::Tensor tx_pos,
     } else {
         AT_ERROR("Unsupported data type: ", points.dtype());
     }
-    cudaDeviceSynchronize();
+    cudaError_t err = cudaGetLastError();
+    TORCH_CHECK(err == cudaSuccess, "CUDA error after compute_path_geometry: ",
+                cudaGetErrorString(err));
 }
 
 template <typename T>
@@ -210,7 +232,7 @@ __global__ void compute_steering_vector_kernel(
         return;
     }
 
-    const T PI = T(3.14159265358979323846);
+    constexpr T PI = T(M_PI);
     const T k = T(2.0) * PI / wavelength;
 
     const T az = angles[i * 2 + 0];
@@ -230,14 +252,14 @@ __global__ void compute_steering_vector_kernel(
         const int row_idx = m / cols;
         const int col_idx = m % cols;
 
-        const T x_pos = (row_idx - (rows - T(1.0)) / T(2.0)) * spacing_x;
-        const T y_pos = (col_idx - (cols - T(1.0)) / T(2.0)) * spacing_y;
+        const T x_pos = (row_idx - (rows - T(1.0)) * T(0.5)) * spacing_x;
+        const T y_pos = (col_idx - (cols - T(1.0)) * T(0.5)) * spacing_y;
 
         phase = -k * cos_el * (x_pos * cos_az + y_pos * sin_az);
     } else if (array_type == 1) {
         const int num_ant = static_cast<int>(array_size[0]);
         const T spacing_d = element_spacing[0];
-        const T x_pos = (m - (num_ant - T(1.0)) / T(2.0)) * spacing_d;
+        const T x_pos = (m - (num_ant - T(1.0)) * T(0.5)) * spacing_d;
         phase = -k * x_pos * cos_el * cos_az;
     }
 
@@ -263,7 +285,7 @@ void compute_steering_vector_cuda(torch::Tensor angles,
                 "sv_real/imag must have shape NxM");
     TORCH_CHECK(sv_imag.size(1) == M, "sv_imag must have shape NxM");
 
-    dim3 blocksize(16, 16, 1);
+    dim3 blocksize(SV_BLOCK_DIM_X, SV_BLOCK_DIM_Y, 1);
     dim3 gridsize((N + blocksize.x - 1) / blocksize.x,
                   (M + blocksize.y - 1) / blocksize.y, 1);
 
@@ -288,7 +310,10 @@ void compute_steering_vector_cuda(torch::Tensor angles,
     } else {
         AT_ERROR("Unsupported data type: ", angles.dtype());
     }
-    cudaDeviceSynchronize();
+    cudaError_t err = cudaGetLastError();
+    TORCH_CHECK(
+        err == cudaSuccess,
+        "CUDA error after compute_steering_vector: ", cudaGetErrorString(err));
 }
 
 template <typename T>
@@ -307,17 +332,22 @@ __global__ void compute_scattered_paths_kernel(
         return;
     }
 
-    const T PI = T(3.14159265358979323846);
+    constexpr T PI = T(M_PI);
+    constexpr T FOUR_PI = T(4.0) * PI;
+    constexpr T TWO_PI = T(2.0) * PI;
 
     const T d_tx = dist_tx[i];
     const T d_rx = dist_rx[i];
     const T dist_path = d_tx + d_rx;
     const T dist_path_safe = max(dist_path, T(ROBUST_EPSILON));
+    const T inv_dist_path_safe = T(1.0) / dist_path_safe;
 
-    const T alpha_amp = wavelength / (T(4.0) * PI * dist_path_safe);
-    const T alpha_phase = -T(2.0) * PI * dist_path / wavelength;
-    const T alpha_real = alpha_amp * cos(alpha_phase);
-    const T alpha_imag = alpha_amp * sin(alpha_phase);
+    const T alpha_amp = wavelength / FOUR_PI * inv_dist_path_safe;
+    const T alpha_phase = -TWO_PI * dist_path / wavelength;
+    T cos_phase, sin_phase;
+    sincos(alpha_phase, &sin_phase, &cos_phase);
+    const T alpha_real = alpha_amp * cos_phase;
+    const T alpha_imag = alpha_amp * sin_phase;
 
     const T g_real = gamma_real[i];
     const T g_imag = gamma_imag[i];
@@ -333,12 +363,12 @@ __global__ void compute_scattered_paths_kernel(
     const T P_real = sv_rx_r * sv_tx_r + sv_rx_i * sv_tx_i;
     const T P_imag = sv_rx_i * sv_tx_r - sv_rx_r * sv_tx_i;
 
-    const T H_T_real = scatter_coef_real * P_real - scatter_coef_imag * P_imag;
-    const T H_T_imag = scatter_coef_real * P_imag + scatter_coef_imag * P_real;
+    const T H_real = scatter_coef_real * P_real - scatter_coef_imag * P_imag;
+    const T H_imag = scatter_coef_real * P_imag + scatter_coef_imag * P_real;
 
     const int out_idx = i * Nt * Nr + tx_ant * Nr + rx_ant;
-    scat_chan_real[out_idx] = H_T_real;
-    scat_chan_imag[out_idx] = H_T_imag;
+    scat_chan_real[out_idx] = H_real;
+    scat_chan_imag[out_idx] = H_imag;
 }
 
 void compute_scattered_paths_cuda(
@@ -377,7 +407,7 @@ void compute_scattered_paths_cuda(
                     scat_chan_imag.size(2) == Nr,
                 "scat_chan_imag shape mismatch");
 
-    dim3 blocksize(4, 4, 4);
+    dim3 blocksize(RAST_BLOCK_DIM_X, RAST_BLOCK_DIM_Y, RAST_BLOCK_DIM_Z);
     dim3 gridsize((N + blocksize.x - 1) / blocksize.x,
                   (Nt + blocksize.y - 1) / blocksize.y,
                   (Nr + blocksize.z - 1) / blocksize.z);
@@ -419,8 +449,12 @@ void compute_scattered_paths_cuda(
     } else {
         AT_ERROR("Unsupported data type: ", gamma_real.dtype());
     }
-    cudaDeviceSynchronize();
+    cudaError_t err = cudaGetLastError();
+    TORCH_CHECK(
+        err == cudaSuccess,
+        "CUDA error after compute_scattered_paths: ", cudaGetErrorString(err));
 }
+
 template <typename T>
 __global__ void weighted_superposition_kernel(
     const T* __restrict__ direct_path_real,
@@ -429,31 +463,46 @@ __global__ void weighted_superposition_kernel(
     const T* __restrict__ opacity, const T* __restrict__ influence, const int N,
     const int Nt, const int Nr, T* __restrict__ chan_real,
     T* __restrict__ chan_imag) {
-    const int tx_ant = blockIdx.x * blockDim.x + threadIdx.x;
-    const int rx_ant = blockIdx.y * blockDim.y + threadIdx.y;
+    __shared__ T sdata[WS_REDUCE_BLOCK_SIZE * 2];
+    T* s_sum_real = sdata;
+    T* s_sum_imag = s_sum_real + WS_REDUCE_BLOCK_SIZE;
 
-    if (tx_ant >= Nt || rx_ant >= Nr) {
-        return;
-    }
+    const int tx_ant = blockIdx.x;
+    const int rx_ant = blockIdx.y;
+    const int tid = threadIdx.x;
 
-    T sum_scatter_real = T(0.0);
-    T sum_scatter_imag = T(0.0);
+    s_sum_real[tid] = T(0.0);
+    s_sum_imag[tid] = T(0.0);
 
-    for (int i = 0; i < N; ++i) {
+    const int chan_offset = tx_ant * Nr + rx_ant;
+    const int infl_offset = tx_ant * Nr + rx_ant;
+    const int scat_offset = tx_ant * Nr + rx_ant;
+
+    for (int i = tid; i < N; i += WS_REDUCE_BLOCK_SIZE) {
         const T opac = opacity[i];
-        const T infl = influence[i * Nt * Nr + tx_ant * Nr + rx_ant];
+        const T infl = influence[i * Nt * Nr + infl_offset];
         const T weight = opac * infl;
 
-        const T scat_real = scat_path_real[i * Nt * Nr + tx_ant * Nr + rx_ant];
-        const T scat_imag = scat_path_imag[i * Nt * Nr + tx_ant * Nr + rx_ant];
+        const T scat_real = scat_path_real[i * Nt * Nr + scat_offset];
+        const T scat_imag = scat_path_imag[i * Nt * Nr + scat_offset];
 
-        sum_scatter_real += weight * scat_real;
-        sum_scatter_imag += weight * scat_imag;
+        s_sum_real[tid] += weight * scat_real;
+        s_sum_imag[tid] += weight * scat_imag;
+    }
+    __syncthreads();
+
+    for (int s = WS_REDUCE_BLOCK_SIZE / 2; s > 0; s >>= 1) {
+        if (tid < s) {
+            s_sum_real[tid] += s_sum_real[tid + s];
+            s_sum_imag[tid] += s_sum_imag[tid + s];
+        }
+        __syncthreads();
     }
 
-    const int chan_idx = tx_ant * Nr + rx_ant;
-    chan_real[chan_idx] = direct_path_real[chan_idx] + sum_scatter_real;
-    chan_imag[chan_idx] = direct_path_imag[chan_idx] + sum_scatter_imag;
+    if (tid == 0) {
+        chan_real[chan_offset] = direct_path_real[chan_offset] + s_sum_real[0];
+        chan_imag[chan_offset] = direct_path_imag[chan_offset] + s_sum_imag[0];
+    }
 }
 
 void weighted_superposition_cuda(torch::Tensor direct_path_real,
@@ -493,9 +542,12 @@ void weighted_superposition_cuda(torch::Tensor direct_path_real,
     TORCH_CHECK(chan_imag.size(0) == Nt && chan_imag.size(1) == Nr,
                 "chan_imag shape mismatch");
 
-    dim3 blocksize(16, 16, 1);
-    dim3 gridsize((Nt + blocksize.x - 1) / blocksize.x,
-                  (Nr + blocksize.y - 1) / blocksize.y, 1);
+    dim3 gridsize(Nt, Nr, 1);
+    dim3 blocksize(WS_REDUCE_BLOCK_SIZE, 1, 1);
+    size_t smem_size =
+        WS_REDUCE_BLOCK_SIZE * 2 *
+        ((direct_path_real.dtype() == torch::kFloat64) ? sizeof(double)
+                                                       : sizeof(float));
 
     auto opacity_cont = opacity.contiguous().view({N});
 
@@ -507,12 +559,15 @@ void weighted_superposition_cuda(torch::Tensor direct_path_real,
         CHECK_FLOAT_TENSOR(influence);
         CHECK_FLOAT_TENSOR(chan_real);
         CHECK_FLOAT_TENSOR(chan_imag);
-        weighted_superposition_kernel<float><<<gridsize, blocksize>>>(
-            direct_path_real.data_ptr<float>(),
-            direct_path_imag.data_ptr<float>(),
-            scat_path_real.data_ptr<float>(), scat_path_imag.data_ptr<float>(),
-            opacity_cont.data_ptr<float>(), influence.data_ptr<float>(), N, Nt,
-            Nr, chan_real.data_ptr<float>(), chan_imag.data_ptr<float>());
+        weighted_superposition_kernel<float>
+            <<<gridsize, blocksize, smem_size>>>(
+                direct_path_real.data_ptr<float>(),
+                direct_path_imag.data_ptr<float>(),
+                scat_path_real.data_ptr<float>(),
+                scat_path_imag.data_ptr<float>(),
+                opacity_cont.data_ptr<float>(), influence.data_ptr<float>(), N,
+                Nt, Nr, chan_real.data_ptr<float>(),
+                chan_imag.data_ptr<float>());
     } else if (direct_path_real.dtype() == torch::kFloat64) {
         CHECK_DOUBLE_TENSOR(direct_path_imag);
         CHECK_DOUBLE_TENSOR(scat_path_real);
@@ -521,15 +576,19 @@ void weighted_superposition_cuda(torch::Tensor direct_path_real,
         CHECK_DOUBLE_TENSOR(influence);
         CHECK_DOUBLE_TENSOR(chan_real);
         CHECK_DOUBLE_TENSOR(chan_imag);
-        weighted_superposition_kernel<double><<<gridsize, blocksize>>>(
-            direct_path_real.data_ptr<double>(),
-            direct_path_imag.data_ptr<double>(),
-            scat_path_real.data_ptr<double>(),
-            scat_path_imag.data_ptr<double>(), opacity_cont.data_ptr<double>(),
-            influence.data_ptr<double>(), N, Nt, Nr,
-            chan_real.data_ptr<double>(), chan_imag.data_ptr<double>());
+        weighted_superposition_kernel<double>
+            <<<gridsize, blocksize, smem_size>>>(
+                direct_path_real.data_ptr<double>(),
+                direct_path_imag.data_ptr<double>(),
+                scat_path_real.data_ptr<double>(),
+                scat_path_imag.data_ptr<double>(),
+                opacity_cont.data_ptr<double>(), influence.data_ptr<double>(),
+                N, Nt, Nr, chan_real.data_ptr<double>(),
+                chan_imag.data_ptr<double>());
     } else {
         AT_ERROR("Unsupported data type: ", direct_path_real.dtype());
     }
-    cudaDeviceSynchronize();
+    cudaError_t err = cudaGetLastError();
+    TORCH_CHECK(err == cudaSuccess, "CUDA error after weighted_superposition: ",
+                cudaGetErrorString(err));
 }
