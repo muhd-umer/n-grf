@@ -1,5 +1,8 @@
 # engine/_wrapper.py
 
+import warnings
+from typing import Any, Dict, Tuple
+
 import torch
 from torch.autograd import Function
 
@@ -8,8 +11,6 @@ try:
 
     CUDA_AVAILABLE = True
 except ImportError:
-    import warnings
-
     warnings.warn(
         "CUDA implementation not found. Using PyTorch implementation instead. "
         "Make sure to build the CUDA extension with `pip install -e .` in the engine directory."
@@ -17,17 +18,16 @@ except ImportError:
     CUDA_AVAILABLE = False
 
 
+from _torch_impl.rasterize import compute_direct_path as torch_compute_direct_path
+
+
 class QuaternionToRotation(Function):
     @staticmethod
     def forward(ctx, quaternion):
-        """Convert quaternion to a rotation matrix.
-
-        Args:
-            quaternion (Tensor): Input quaternions [N, 4]
-
-        Returns:
-            Tensor: Rotation matrices [N, 3, 3]
-        """
+        if not CUDA_AVAILABLE:
+            raise RuntimeError(
+                "CUDA implementation not available for QuaternionToRotation."
+            )
         q_norm = torch.nn.functional.normalize(quaternion, dim=1)
         rotation = torch.empty(
             quaternion.shape[0], 3, 3, dtype=quaternion.dtype, device=quaternion.device
@@ -38,18 +38,14 @@ class QuaternionToRotation(Function):
 
     @staticmethod
     def backward(ctx, grad_rotation):
-        """Backward pass for QuaternionToRotation.
-
-        Args:
-            grad_rotation (Tensor): Gradient of the rotation matrix
-
-        Returns:
-            Tensor: Gradient with respect to the input quaternion
-        """
+        if not CUDA_AVAILABLE:
+            raise RuntimeError(
+                "CUDA implementation not available for QuaternionToRotation backward."
+            )
         quaternion = ctx.saved_tensors[0]
         grad_quaternion = torch.empty_like(quaternion)
         _C.quaternion_to_rotation_backward_cuda(
-            quaternion, grad_rotation.contiguous(), grad_quaternion
+            quaternion.contiguous(), grad_rotation.contiguous(), grad_quaternion
         )
         return grad_quaternion
 
@@ -57,37 +53,33 @@ class QuaternionToRotation(Function):
 class ComputeScalingMatrix(Function):
     @staticmethod
     def forward(ctx, scaling, scale_modifier=1.0):
-        """Compute a scaling matrix from scaling factors.
-
-        Args:
-            scaling (Tensor): Scaling factors [N, 3]
-            scale_modifier (float): Global scaling modifier
-
-        Returns:
-            Tensor: Scaling matrices [N, 3, 3]
-        """
+        if not CUDA_AVAILABLE:
+            raise RuntimeError(
+                "CUDA implementation not available for ComputeScalingMatrix."
+            )
         scaling_matrix = torch.empty(
             scaling.shape[0], 3, 3, dtype=scaling.dtype, device=scaling.device
         )
-        _C.compute_scaling_matrix_cuda(scaling, scale_modifier, scaling_matrix)
+        _C.compute_scaling_matrix_cuda(
+            scaling.contiguous(), scale_modifier, scaling_matrix
+        )
         ctx.save_for_backward(scaling)
         ctx.scale_modifier = scale_modifier
         return scaling_matrix
 
     @staticmethod
     def backward(ctx, grad_scaling_matrix):
-        """Backward pass for ComputeScalingMatrix.
-
-        Args:
-            grad_scaling_matrix (Tensor): Gradient of the scaling matrix
-
-        Returns:
-            Tensor: Gradient with respect to scaling
-        """
+        if not CUDA_AVAILABLE:
+            raise RuntimeError(
+                "CUDA implementation not available for ComputeScalingMatrix backward."
+            )
         scaling = ctx.saved_tensors[0]
         grad_scaling = torch.empty_like(scaling)
         _C.compute_scaling_matrix_backward_cuda(
-            scaling, grad_scaling_matrix.contiguous(), ctx.scale_modifier, grad_scaling
+            scaling.contiguous(),
+            grad_scaling_matrix.contiguous(),
+            ctx.scale_modifier,
+            grad_scaling,
         )
         return grad_scaling, None
 
@@ -95,86 +87,63 @@ class ComputeScalingMatrix(Function):
 class MatrixMultiply(Function):
     @staticmethod
     def forward(ctx, A, B):
-        """Multiply two matrices.
-
-        Args:
-            A (Tensor): First matrix
-            B (Tensor): Second matrix
-
-        Returns:
-            Tensor: Matrix product
-        """
+        if not CUDA_AVAILABLE:
+            raise RuntimeError("CUDA implementation not available for MatrixMultiply.")
         C = torch.empty(
             A.shape[0], A.shape[1], B.shape[2], dtype=A.dtype, device=A.device
         )
-        _C.matrix_multiply_cuda(A, B, C)
+        _C.matrix_multiply_cuda(A.contiguous(), B.contiguous(), C)
         ctx.save_for_backward(A, B)
         return C
 
     @staticmethod
     def backward(ctx, grad_C):
-        """Backward pass for MatrixMultiply.
-
-        Args:
-            grad_C (Tensor): Gradient of the output matrix
-
-        Returns:
-            Tuple[Tensor, Tensor]: Gradients with respect to matrices A and B
-        """
+        if not CUDA_AVAILABLE:
+            raise RuntimeError(
+                "CUDA implementation not available for MatrixMultiply backward."
+            )
         A, B = ctx.saved_tensors
         grad_A = torch.empty_like(A)
         grad_B = torch.empty_like(B)
-        _C.matrix_multiply_backward_cuda(A, B, grad_C.contiguous(), grad_A, grad_B)
+        _C.matrix_multiply_backward_cuda(
+            A.contiguous(), B.contiguous(), grad_C.contiguous(), grad_A, grad_B
+        )
         return grad_A, grad_B
 
 
 class CovarianceMatrix(Function):
     @staticmethod
     def forward(ctx, RS):
-        """Compute the 3D covariance matrix.
-
-        Args:
-            RS (Tensor): Product of rotation and scaling matrices [N, 3, 3]
-
-        Returns:
-            Tensor: Covariance matrices [N, 3, 3]
-        """
+        if not CUDA_AVAILABLE:
+            raise RuntimeError(
+                "CUDA implementation not available for CovarianceMatrix."
+            )
         cov3d = torch.empty_like(RS)
-        _C.covariance_matrix_cuda(RS, cov3d)
+        _C.covariance_matrix_cuda(RS.contiguous(), cov3d)
         ctx.save_for_backward(RS)
         return cov3d
 
     @staticmethod
     def backward(ctx, grad_cov3d):
-        """Backward pass for CovarianceMatrix.
-
-        Args:
-            grad_cov3d (Tensor): Gradient of the covariance matrix
-
-        Returns:
-            Tensor: Gradient with respect to RS
-        """
+        if not CUDA_AVAILABLE:
+            raise RuntimeError(
+                "CUDA implementation not available for CovarianceMatrix backward."
+            )
         RS = ctx.saved_tensors[0]
         grad_RS = torch.empty_like(RS)
-        _C.covariance_matrix_backward_cuda(RS, grad_cov3d.contiguous(), grad_RS)
+        _C.covariance_matrix_backward_cuda(
+            RS.contiguous(), grad_cov3d.contiguous(), grad_RS
+        )
         return grad_RS
 
 
-class ProjectToChannelCoords(Function):
+class ProjectToChannelCoordinates(Function):
     @staticmethod
     def forward(ctx, points, receiver, num_tx, num_rx):
-        """Project points to channel coordinates.
-
-        Args:
-            points (Tensor): Gaussian centers [N, 3]
-            receiver (Tensor): Receiver position [3]
-            num_tx (int): Number of transmit antennas
-            num_rx (int): Number of receive antennas
-
-        Returns:
-            Tuple[Tensor, Tensor, Tensor]: Distances [N], displacement vectors
-            [N, 3], and uv coordinates [N, 2]
-        """
+        if not CUDA_AVAILABLE:
+            raise RuntimeError(
+                "CUDA implementation not available for ProjectToChannelCoordinates."
+            )
         distances = torch.empty(
             points.shape[0], dtype=points.dtype, device=points.device
         )
@@ -183,7 +152,13 @@ class ProjectToChannelCoords(Function):
             points.shape[0], 2, dtype=points.dtype, device=points.device
         )
         _C.project_to_channel_coords_cuda(
-            points, receiver, num_tx, num_rx, distances, displacement, uv_coords
+            points.contiguous(),
+            receiver.contiguous(),
+            num_tx,
+            num_rx,
+            distances,
+            displacement,
+            uv_coords,
         )
         ctx.save_for_backward(points, receiver, distances, displacement)
         ctx.num_tx = num_tx
@@ -191,26 +166,20 @@ class ProjectToChannelCoords(Function):
         return distances, displacement, uv_coords
 
     @staticmethod
-    def backward(ctx, grad_distances, grad_displacement, grad_uv):
-        """Backward pass for ProjectToChannelCoords.
-
-        Args:
-            grad_distances (Tensor): Gradient of distances
-            grad_displacement (Tensor): Gradient of displacement
-            grad_uv (Tensor): Gradient of uv coordinates
-
-        Returns:
-            Tensor: Gradient with respect to the input points
-        """
+    def backward(ctx, grad_r, grad_d, grad_uv):
+        if not CUDA_AVAILABLE:
+            raise RuntimeError(
+                "CUDA implementation not available for ProjectToChannelCoordinates backward."
+            )
         points, receiver, distances, displacement = ctx.saved_tensors
         grad_points = torch.zeros_like(points)
         _C.project_to_channel_coords_backward_cuda(
-            points,
-            receiver,
-            distances,
-            displacement,
-            grad_distances.contiguous(),
-            grad_displacement.contiguous(),
+            points.contiguous(),
+            receiver.contiguous(),
+            distances.contiguous(),
+            displacement.contiguous(),
+            grad_r.contiguous(),
+            grad_d.contiguous(),
             grad_uv.contiguous(),
             ctx.num_tx,
             ctx.num_rx,
@@ -222,18 +191,10 @@ class ProjectToChannelCoords(Function):
 class ComputeJacobian(Function):
     @staticmethod
     def forward(ctx, d, num_tx, num_rx):
-        """Compute the Jacobian matrix for the channel projection.
-
-        Args:
-            d (Tensor): Displacement vectors [N, 3]
-            num_tx (int): Number of transmit antennas
-            num_rx (int): Number of receive antennas
-
-        Returns:
-            Tensor: Jacobian matrices [N, 2, 3]
-        """
+        if not CUDA_AVAILABLE:
+            raise RuntimeError("CUDA implementation not available for ComputeJacobian.")
         J = torch.empty(d.shape[0], 2, 3, dtype=d.dtype, device=d.device)
-        _C.compute_jacobian_cuda(d, num_tx, num_rx, J)
+        _C.compute_jacobian_cuda(d.contiguous(), num_tx, num_rx, J)
         ctx.save_for_backward(d)
         ctx.num_tx = num_tx
         ctx.num_rx = num_rx
@@ -241,18 +202,14 @@ class ComputeJacobian(Function):
 
     @staticmethod
     def backward(ctx, grad_J):
-        """Backward pass for ComputeJacobian.
-
-        Args:
-            grad_J (Tensor): Gradient of the Jacobian
-
-        Returns:
-            Tensor: Gradient with respect to the displacement vectors
-        """
+        if not CUDA_AVAILABLE:
+            raise RuntimeError(
+                "CUDA implementation not available for ComputeJacobian backward."
+            )
         d = ctx.saved_tensors[0]
         grad_d = torch.empty_like(d)
         _C.compute_jacobian_backward_cuda(
-            d, grad_J.contiguous(), ctx.num_tx, ctx.num_rx, grad_d
+            d.contiguous(), grad_J.contiguous(), ctx.num_tx, ctx.num_rx, grad_d
         )
         return grad_d, None, None
 
@@ -260,59 +217,49 @@ class ComputeJacobian(Function):
 class ProjectCov3dToCov2d(Function):
     @staticmethod
     def forward(ctx, cov3d, jacobian):
-        """Project 3D covariance matrices to 2D.
-
-        Args:
-            cov3d (Tensor): 3D covariance matrices [N, 3, 3]
-            jacobian (Tensor): Jacobian matrices [N, 2, 3]
-
-        Returns:
-            Tensor: 2D covariance matrices [N, 2, 2]
-        """
+        if not CUDA_AVAILABLE:
+            raise RuntimeError(
+                "CUDA implementation not available for ProjectCov3dToCov2d."
+            )
         cov2d = torch.empty(
             cov3d.shape[0], 2, 2, dtype=cov3d.dtype, device=cov3d.device
         )
-        _C.project_cov3d_to_cov2d_cuda(cov3d, jacobian, cov2d)
+        _C.project_cov3d_to_cov2d_cuda(cov3d.contiguous(), jacobian.contiguous(), cov2d)
         ctx.save_for_backward(cov3d, jacobian)
         return cov2d
 
     @staticmethod
     def backward(ctx, grad_cov2d):
-        """Backward pass for ProjectCov3dToCov2d.
-
-        Args:
-            grad_cov2d (Tensor): Gradient of 2D covariance matrices.
-
-        Returns:
-            Tuple[Tensor, Tensor]: Gradients with respect to cov3d and jacobian
-        """
+        if not CUDA_AVAILABLE:
+            raise RuntimeError(
+                "CUDA implementation not available for ProjectCov3dToCov2d backward."
+            )
         cov3d, jacobian = ctx.saved_tensors
         grad_cov3d = torch.zeros_like(cov3d)
         grad_jacobian = torch.zeros_like(jacobian)
         _C.project_cov3d_to_cov2d_backward_cuda(
-            cov3d, jacobian, grad_cov2d.contiguous(), grad_cov3d, grad_jacobian
+            cov3d.contiguous(),
+            jacobian.contiguous(),
+            grad_cov2d.contiguous(),
+            grad_cov3d,
+            grad_jacobian,
         )
         return grad_cov3d, grad_jacobian
 
 
-class ComputeGaussianInfluence(Function):
+class ComputeSpatialInfluence(Function):
     @staticmethod
     def forward(ctx, uv, cov2d, num_tx, num_rx):
-        """Compute Gaussian influence using Mahalanobis distance.
-
-        Args:
-            uv (Tensor): Channel matrix coordinates [N, 2]
-            cov2d (Tensor): 2D covariance matrices [N, 2, 2]
-            num_tx (int): Number of transmit antennas
-            num_rx (int): Number of receive antennas
-
-        Returns:
-            Tensor: Gaussian influences [N, num_tx, num_rx]
-        """
+        if not CUDA_AVAILABLE:
+            raise RuntimeError(
+                "CUDA implementation not available for ComputeSpatialInfluence."
+            )
         influences = torch.empty(
             uv.shape[0], num_tx, num_rx, dtype=uv.dtype, device=uv.device
         )
-        _C.compute_gaussian_influence_cuda(uv, cov2d, num_tx, num_rx, influences)
+        _C.compute_spatial_influence_cuda(
+            uv.contiguous(), cov2d.contiguous(), num_tx, num_rx, influences
+        )
         ctx.save_for_backward(uv, cov2d, influences)
         ctx.num_tx = num_tx
         ctx.num_rx = num_rx
@@ -320,21 +267,17 @@ class ComputeGaussianInfluence(Function):
 
     @staticmethod
     def backward(ctx, grad_influences):
-        """Backward pass for ComputeGaussianInfluence.
-
-        Args:
-            grad_influences (Tensor): Gradient of the Gaussian influences
-
-        Returns:
-            Tuple[Tensor, Tensor, None, None]: Gradients for uv and cov2d
-        """
+        if not CUDA_AVAILABLE:
+            raise RuntimeError(
+                "CUDA implementation not available for ComputeSpatialInfluence backward."
+            )
         uv, cov2d, influences = ctx.saved_tensors
         grad_uv = torch.empty_like(uv)
         grad_cov2d = torch.empty_like(cov2d)
-        _C.compute_gaussian_influence_backward_cuda(
-            uv,
-            cov2d,
-            influences,
+        _C.compute_spatial_influence_backward_cuda(
+            uv.contiguous(),
+            cov2d.contiguous(),
+            influences.contiguous(),
             grad_influences.contiguous(),
             ctx.num_tx,
             ctx.num_rx,
@@ -344,273 +287,409 @@ class ComputeGaussianInfluence(Function):
         return grad_uv, grad_cov2d, None, None
 
 
-class ComputeWirelessChannel(Function):
+class ComputePathGeometry(Function):
     @staticmethod
-    def forward(ctx, attenuation, phase_rotation, distances, wavelength):
-        """Compute wireless channel contributions based on physics.
+    def forward(ctx, points_xyz, tx_pos, rx_pos):
+        if not CUDA_AVAILABLE:
+            raise RuntimeError(
+                "CUDA implementation not available for ComputePathGeometry."
+            )
+        N = points_xyz.shape[0]
+        dist_tx = torch.empty(N, dtype=points_xyz.dtype, device=points_xyz.device)
+        dist_rx = torch.empty(N, dtype=points_xyz.dtype, device=points_xyz.device)
+        aod = torch.empty(N, 2, dtype=points_xyz.dtype, device=points_xyz.device)
+        aoa = torch.empty(N, 2, dtype=points_xyz.dtype, device=points_xyz.device)
+        _C.compute_path_geometry_cuda(
+            points_xyz.contiguous(),
+            tx_pos.contiguous(),
+            rx_pos.contiguous(),
+            dist_tx,
+            dist_rx,
+            aod,
+            aoa,
+        )
+        ctx.save_for_backward(points_xyz, tx_pos, rx_pos, dist_tx, dist_rx, aod, aoa)
+        return dist_tx, dist_rx, aod, aoa
 
-        Args:
-            attenuation (Tensor): Learned attenuation amplitudes [N, 1]
-            phase_rotation (Tensor): Learned phase rotations [N, 1]
-            distances (Tensor): Distances from Gaussian centers to receiver [N]
-            wavelength (float): Signal wavelength
+    @staticmethod
+    def backward(ctx, grad_dist_tx, grad_dist_rx, grad_aod, grad_aoa):
+        if not CUDA_AVAILABLE:
+            raise RuntimeError(
+                "CUDA implementation not available for ComputePathGeometry backward."
+            )
+        points_xyz, tx_pos, rx_pos, dist_tx, dist_rx, aod, aoa = ctx.saved_tensors
+        grad_points = torch.zeros_like(points_xyz)
 
-        Returns:
-            Tuple[Tensor, Tensor]: Real and imaginary channel contributions
-        """
-        attenuation_cont = attenuation.contiguous()
-        phase_rotation_cont = phase_rotation.contiguous()
-        distances_cont = distances.contiguous()
+        grad_tx_pos = torch.zeros_like(tx_pos)
+        grad_rx_pos = torch.zeros_like(rx_pos)
+        _C.compute_path_geometry_backward_cuda(
+            points_xyz.contiguous(),
+            tx_pos.contiguous(),
+            rx_pos.contiguous(),
+            dist_tx.contiguous(),
+            dist_rx.contiguous(),
+            aod.contiguous(),
+            aoa.contiguous(),
+            grad_dist_tx.contiguous(),
+            grad_dist_rx.contiguous(),
+            grad_aod.contiguous(),
+            grad_aoa.contiguous(),
+            grad_points,
+            grad_tx_pos,
+            grad_rx_pos,
+        )
+        return grad_points, None, None
 
-        real_contributions = torch.empty_like(attenuation_cont)
-        imag_contributions = torch.empty_like(attenuation_cont)
-        _C.compute_wireless_channel_cuda(
-            attenuation_cont,
-            phase_rotation_cont,
-            distances_cont,
+
+class ComputeSteeringVector(Function):
+    @staticmethod
+    def forward(ctx, angles_rad, array_params: Dict[str, Any], wavelength: float):
+        if not CUDA_AVAILABLE:
+            raise RuntimeError(
+                "CUDA implementation not available for ComputeSteeringVector."
+            )
+        N = angles_rad.shape[0]
+        array_type_str = array_params["type"]
+        if array_type_str == "ura":
+            array_type_int = 0
+            rows, cols = array_params["size"]
+            num_ant = rows * cols
+            size_tensor = torch.tensor(
+                [rows, cols], dtype=angles_rad.dtype, device=angles_rad.device
+            )
+            spacing_tensor = torch.tensor(
+                array_params["element_spacing"],
+                dtype=angles_rad.dtype,
+                device=angles_rad.device,
+            )
+        elif array_type_str == "ula":
+            array_type_int = 1
+            num_ant = array_params["size"]
+            size_tensor = torch.tensor(
+                [num_ant, 0], dtype=angles_rad.dtype, device=angles_rad.device
+            )
+            spacing_tensor = torch.tensor(
+                [array_params["element_spacing"], 0],
+                dtype=angles_rad.dtype,
+                device=angles_rad.device,
+            )
+        else:
+            raise ValueError(f"Unsupported array type: {array_type_str}")
+
+        sv_real = torch.empty(
+            N, num_ant, dtype=angles_rad.dtype, device=angles_rad.device
+        )
+        sv_imag = torch.empty(
+            N, num_ant, dtype=angles_rad.dtype, device=angles_rad.device
+        )
+
+        _C.compute_steering_vector_cuda(
+            angles_rad.contiguous(),
+            size_tensor,
+            spacing_tensor,
+            array_type_int,
             wavelength,
-            real_contributions,
-            imag_contributions,
+            sv_real,
+            sv_imag,
         )
-        ctx.save_for_backward(attenuation_cont, phase_rotation_cont, distances_cont)
+        ctx.save_for_backward(angles_rad, sv_real, sv_imag)
+        ctx.array_params = array_params
         ctx.wavelength = wavelength
-
-        return real_contributions, imag_contributions
+        ctx.array_type_int = array_type_int
+        ctx.size_tensor = size_tensor
+        ctx.spacing_tensor = spacing_tensor
+        return sv_real, sv_imag
 
     @staticmethod
-    def backward(ctx, grad_real, grad_imag):
-        """Backward pass for ComputeWirelessChannel.
-
-        Args:
-            grad_real (Tensor): Gradient of the real contributions
-            grad_imag (Tensor): Gradient of the imaginary contributions
-
-        Returns:
-            Tuple[Tensor, Tensor, Tensor, None]: Gradients for attenuation,
-            phase_rotation, and distances
-        """
-        attenuation, phase_rotation, distances = ctx.saved_tensors
-        grad_attenuation = torch.zeros_like(attenuation)
-        grad_phase_rotation = torch.zeros_like(phase_rotation)
-        grad_distances = torch.zeros_like(distances)
-
-        grad_real_cont = grad_real.contiguous()
-        grad_imag_cont = grad_imag.contiguous()
-
-        _C.compute_wireless_channel_backward_cuda(
-            attenuation,
-            phase_rotation,
-            distances,
+    def backward(ctx, grad_sv_real, grad_sv_imag):
+        if not CUDA_AVAILABLE:
+            raise RuntimeError(
+                "CUDA implementation not available for ComputeSteeringVector backward."
+            )
+        angles_rad, sv_real, sv_imag = ctx.saved_tensors
+        grad_angles = torch.zeros_like(angles_rad)
+        _C.compute_steering_vector_backward_cuda(
+            angles_rad.contiguous(),
+            ctx.size_tensor,
+            ctx.spacing_tensor,
+            ctx.array_type_int,
             ctx.wavelength,
-            grad_real_cont,
-            grad_imag_cont,
-            grad_attenuation,
-            grad_phase_rotation,
-            grad_distances,
+            sv_real.contiguous(),
+            sv_imag.contiguous(),
+            grad_sv_real.contiguous(),
+            grad_sv_imag.contiguous(),
+            grad_angles,
         )
+        return grad_angles, None, None
 
-        return grad_attenuation, grad_phase_rotation, grad_distances, None
 
-
-class AlphaBlending(Function):
+class ComputeScatteredPaths(Function):
     @staticmethod
     def forward(
         ctx,
-        influences,
-        contributions_real,
-        contributions_imag,
-        opacity,
-        sort_indices,
-        num_tx,
-        num_rx,
+        gamma_real,
+        gamma_imag,
+        dist_tx,
+        dist_rx,
+        sv_tx_real,
+        sv_tx_imag,
+        sv_rx_real,
+        sv_rx_imag,
+        wavelength,
     ):
-        """Perform alpha blending to composite channel contributions.
-
-        Args:
-            influences (Tensor): Gaussian influences [N, num_tx, num_rx]
-            contributions_real (Tensor): Real parts of channel contributions [N, 1]
-            contributions_imag (Tensor): Imaginary parts of channel contributions [N, 1]
-            opacity (Tensor): Opacity values [N, 1]
-            sort_indices (Tensor): Sorting indices for channel compositing.
-            num_tx (int): Number of transmit antennas
-            num_rx (int): Number of receive antennas
-
-        Returns:
-            Tensor: Composited channel matrix [num_tx, 2*num_rx]
-        """
-        N = influences.shape[0]
-        device = influences.device
-        dtype = influences.dtype
-
-        influences_cont = influences.contiguous()
-        contrib_real_cont = contributions_real.contiguous().view(N)
-        contrib_imag_cont = contributions_imag.contiguous().view(N)
-        opacity_cont = opacity.contiguous().view(N)
-        sort_indices_cont = sort_indices.contiguous().to(torch.int32)
-
-        channel_matrix = torch.empty((num_tx, 2 * num_rx), device=device, dtype=dtype)
-        eff_opacity = torch.empty((N, num_tx, num_rx), device=device, dtype=dtype)
-        transmittance = torch.empty((N + 1, num_tx, num_rx), device=device, dtype=dtype)
-
-        _C.alpha_blending_forward_cuda(
-            influences_cont,
-            contrib_real_cont,
-            contrib_imag_cont,
-            opacity_cont,
-            sort_indices_cont,
-            num_tx,
-            num_rx,
-            channel_matrix,
-            eff_opacity,
-            transmittance,
+        if not CUDA_AVAILABLE:
+            raise RuntimeError(
+                "CUDA implementation not available for ComputeScatteredPaths."
+            )
+        N = gamma_real.shape[0]
+        Nt = sv_tx_real.shape[1]
+        Nr = sv_rx_real.shape[1]
+        scat_chan_real = torch.empty(
+            N, Nt, Nr, dtype=gamma_real.dtype, device=gamma_real.device
+        )
+        scat_chan_imag = torch.empty(
+            N, Nt, Nr, dtype=gamma_real.dtype, device=gamma_real.device
         )
 
+        _C.compute_scattered_paths_cuda(
+            gamma_real.contiguous(),
+            gamma_imag.contiguous(),
+            dist_tx.contiguous(),
+            dist_rx.contiguous(),
+            sv_tx_real.contiguous(),
+            sv_tx_imag.contiguous(),
+            sv_rx_real.contiguous(),
+            sv_rx_imag.contiguous(),
+            wavelength,
+            scat_chan_real,
+            scat_chan_imag,
+        )
         ctx.save_for_backward(
-            influences_cont,
-            contrib_real_cont,
-            contrib_imag_cont,
-            opacity_cont,
-            eff_opacity,
-            transmittance,
-            sort_indices_cont,
+            gamma_real,
+            gamma_imag,
+            dist_tx,
+            dist_rx,
+            sv_tx_real,
+            sv_tx_imag,
+            sv_rx_real,
+            sv_rx_imag,
         )
-        ctx.num_tx = num_tx
-        ctx.num_rx = num_rx
-        ctx.N = N
-        ctx.contrib_original_shape = contributions_real.shape
-        ctx.opacity_original_shape = opacity.shape
-
-        return channel_matrix
+        ctx.wavelength = wavelength
+        return scat_chan_real, scat_chan_imag
 
     @staticmethod
-    def backward(ctx, grad_cat_channel):
-        """Backward pass for AlphaBlending.
-
-        Args:
-            grad_cat_channel (Tensor): Gradient of the concatenated channel matrix
-
-        Returns:
-            Tuple: Gradients for influences, contributions_real,
-            contributions_imag, and opacity
-        """
+    def backward(ctx, grad_scat_chan_real, grad_scat_chan_imag):
+        if not CUDA_AVAILABLE:
+            raise RuntimeError(
+                "CUDA implementation not available for ComputeScatteredPaths backward."
+            )
         (
-            influences,
-            contributions_real,
-            contributions_imag,
-            opacity,
-            eff_opacity,
-            transmittance,
-            sort_indices,
+            gamma_real,
+            gamma_imag,
+            dist_tx,
+            dist_rx,
+            sv_tx_real,
+            sv_tx_imag,
+            sv_rx_real,
+            sv_rx_imag,
         ) = ctx.saved_tensors
-        num_tx = ctx.num_tx
-        num_rx = ctx.num_rx
-        N = ctx.N
+        wavelength = ctx.wavelength
 
-        grad_cat_channel_cont = grad_cat_channel.contiguous()
+        grad_gamma_real = torch.zeros_like(gamma_real)
+        grad_gamma_imag = torch.zeros_like(gamma_imag)
+        grad_dist_tx = torch.zeros_like(dist_tx)
+        grad_dist_rx = torch.zeros_like(dist_rx)
+        grad_sv_tx_real = torch.zeros_like(sv_tx_real)
+        grad_sv_tx_imag = torch.zeros_like(sv_tx_imag)
+        grad_sv_rx_real = torch.zeros_like(sv_rx_real)
+        grad_sv_rx_imag = torch.zeros_like(sv_rx_imag)
 
-        grad_influences = torch.zeros_like(influences)
-        grad_contrib_real = torch.zeros_like(contributions_real)
-        grad_contrib_imag = torch.zeros_like(contributions_imag)
-        grad_opacity = torch.zeros_like(opacity)
-
-        _C.alpha_blending_backward_cuda(
-            influences,
-            contributions_real,
-            contributions_imag,
-            opacity,
-            eff_opacity,
-            transmittance,
-            sort_indices,
-            grad_cat_channel_cont,
-            num_tx,
-            num_rx,
-            grad_influences,
-            grad_contrib_real,
-            grad_contrib_imag,
-            grad_opacity,
+        _C.compute_scattered_paths_backward_cuda(
+            gamma_real.contiguous(),
+            gamma_imag.contiguous(),
+            dist_tx.contiguous(),
+            dist_rx.contiguous(),
+            sv_tx_real.contiguous(),
+            sv_tx_imag.contiguous(),
+            sv_rx_real.contiguous(),
+            sv_rx_imag.contiguous(),
+            wavelength,
+            grad_scat_chan_real.contiguous(),
+            grad_scat_chan_imag.contiguous(),
+            grad_gamma_real,
+            grad_gamma_imag,
+            grad_dist_tx,
+            grad_dist_rx,
+            grad_sv_tx_real,
+            grad_sv_tx_imag,
+            grad_sv_rx_real,
+            grad_sv_rx_imag,
+        )
+        return (
+            grad_gamma_real,
+            grad_gamma_imag,
+            grad_dist_tx,
+            grad_dist_rx,
+            grad_sv_tx_real,
+            grad_sv_tx_imag,
+            grad_sv_rx_real,
+            grad_sv_rx_imag,
+            None,
         )
 
-        grad_contrib_real = grad_contrib_real.view(ctx.contrib_original_shape)
-        grad_contrib_imag = grad_contrib_imag.view(ctx.contrib_original_shape)
-        grad_opacity = grad_opacity.view(ctx.opacity_original_shape)
+
+class WeightedSuperposition(Function):
+    @staticmethod
+    def forward(
+        ctx,
+        direct_path_real,
+        direct_path_imag,
+        scat_path_real,
+        scat_path_imag,
+        opacity,
+        influence,
+    ):
+        if not CUDA_AVAILABLE:
+            raise RuntimeError(
+                "CUDA implementation not available for WeightedSuperposition."
+            )
+        Nt = direct_path_real.shape[0]
+        Nr = direct_path_real.shape[1]
+        chan_real = torch.empty(
+            Nt, Nr, dtype=direct_path_real.dtype, device=direct_path_real.device
+        )
+        chan_imag = torch.empty(
+            Nt, Nr, dtype=direct_path_real.dtype, device=direct_path_real.device
+        )
+
+        _C.weighted_superposition_cuda(
+            direct_path_real.contiguous(),
+            direct_path_imag.contiguous(),
+            scat_path_real.contiguous(),
+            scat_path_imag.contiguous(),
+            opacity.contiguous(),
+            influence.contiguous(),
+            chan_real,
+            chan_imag,
+        )
+        ctx.save_for_backward(scat_path_real, scat_path_imag, opacity, influence)
+        return chan_real, chan_imag
+
+    @staticmethod
+    def backward(ctx, grad_chan_pred_real, grad_chan_pred_imag):
+        if not CUDA_AVAILABLE:
+            raise RuntimeError(
+                "CUDA implementation not available for WeightedSuperposition backward."
+            )
+        scat_path_real, scat_path_imag, opacity, influence = ctx.saved_tensors
+        grad_scat_path_real = torch.zeros_like(scat_path_real)
+        grad_scat_path_imag = torch.zeros_like(scat_path_imag)
+        grad_opacity = torch.zeros_like(opacity)
+        grad_influence = torch.zeros_like(influence)
+
+        _C.weighted_superposition_backward_cuda(
+            scat_path_real.contiguous(),
+            scat_path_imag.contiguous(),
+            opacity.contiguous(),
+            influence.contiguous(),
+            grad_chan_pred_real.contiguous(),
+            grad_chan_pred_imag.contiguous(),
+            grad_scat_path_real,
+            grad_scat_path_imag,
+            grad_opacity,
+            grad_influence,
+        )
+
+        if opacity.dim() > 1 and opacity.size(1) == 1:
+            grad_opacity = grad_opacity.view(opacity.shape)
 
         return (
-            grad_influences,
-            grad_contrib_real,
-            grad_contrib_imag,
+            None,
+            None,
+            grad_scat_path_real,
+            grad_scat_path_imag,
             grad_opacity,
-            None,
-            None,
-            None,
+            grad_influence,
         )
+
+
+def compute_direct_path(
+    tx_params: Dict[str, Any], rx_params: Dict[str, Any], wavelength: float
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Compute direct path channel component (non-differentiable)."""
+    return torch_compute_direct_path(tx_params, rx_params, wavelength)
 
 
 def rasterize(
-    points,
-    scaling,
-    rotation,
-    attenuation,
-    phase_rotation,
-    opacity,
-    receiver,
-    transmitter,
-    num_tx,
-    num_rx,
-    frequency,
-    scale_modifier=1.0,
-):
-    """Rasterize the channel matrix for a specific receiver position.
+    points: torch.Tensor,
+    scaling: torch.Tensor,
+    rotation: torch.Tensor,
+    gamma: torch.Tensor,
+    opacity: torch.Tensor,
+    tx_params: Dict[str, Any],
+    rx_params: Dict[str, Any],
+    scale_modifier: float = 1.0,
+) -> torch.Tensor:
+    """Rasterize the channel matrix using the new pipeline.
 
     Args:
-        points (Tensor): Gaussian centers [N, 3]
-        scaling (Tensor): Scaling factors [N, 3]
-        rotation (Tensor): Quaternion rotations [N, 4]
-        attenuation (Tensor): Learned attenuation amplitudes [N, 1]
-        phase_rotation (Tensor): Learned phase rotations [N, 1]
-        opacity (Tensor): Opacity values [N, 1]
-        receiver (Tensor): Receiver position [3]
-        transmitter (Tensor): Transmitter position [3]
-        num_tx (int): Number of transmit antennas
-        num_rx (int): Number of receive antennas
-        frequency (float): Signal frequency in Hz
-        scale_modifier (float, optional): Global scaling modifier
+        points: Gaussian centers [N, 3]
+        scaling: Activated scaling factors [N, 3]
+        rotation: Quaternion rotations [N, 4] (unnormalized is fine)
+        gamma: Learned scattering coefficients [N, 2] (real, imag)
+        opacity: Activated opacity values [N, 1]
+        tx_params: Transmitter parameters
+        rx_params: Receiver parameters
+        scale_modifier: Global scaling modifier
 
     Returns:
-        Tensor: Channel matrix [num_tx, 2*num_rx] with real and imaginary parts
-        concatenated
+        Predicted channel matrix [Nt, 2*Nr] (real/imag stacked)
     """
-    c = 299792458.0
-    wavelength = c / frequency
+    tx_pos = tx_params["position"]
+    rx_pos = rx_params["position"]
+    num_tx = tx_params["num_antennas"]
+    num_rx = rx_params["num_antennas"]
+    frequency = tx_params["frequency"]
+    wavelength = 299792458.0 / frequency
+    gamma_real = gamma[:, 0]
+    gamma_imag = gamma[:, 1]
 
     R = QuaternionToRotation.apply(rotation)
     S = ComputeScalingMatrix.apply(scaling, scale_modifier)
     RS = MatrixMultiply.apply(R, S)
     cov3d = CovarianceMatrix.apply(RS)
+    dist_tx, dist_rx, aod, aoa = ComputePathGeometry.apply(points, tx_pos, rx_pos)
+    sv_tx_real, sv_tx_imag = ComputeSteeringVector.apply(aod, tx_params, wavelength)
+    sv_rx_real, sv_rx_imag = ComputeSteeringVector.apply(aoa, rx_params, wavelength)
 
-    distances, d, uv = ProjectToChannelCoords.apply(points, receiver, num_tx, num_rx)
-    jacobian = ComputeJacobian.apply(d, num_tx, num_rx)
+    scat_path_real, scat_path_imag = ComputeScatteredPaths.apply(
+        gamma_real,
+        gamma_imag,
+        dist_tx,
+        dist_rx,
+        sv_tx_real,
+        sv_tx_imag,
+        sv_rx_real,
+        sv_rx_imag,
+        wavelength,
+    )
+    direct_path_real, direct_path_imag = compute_direct_path(
+        tx_params, rx_params, wavelength
+    )
+
+    _, d_proj, uv = ProjectToChannelCoordinates.apply(points, rx_pos, num_tx, num_rx)
+    jacobian = ComputeJacobian.apply(d_proj, num_tx, num_rx)
     cov2d = ProjectCov3dToCov2d.apply(cov3d, jacobian)
+    influence = ComputeSpatialInfluence.apply(uv, cov2d, num_tx, num_rx)
 
-    influences = ComputeGaussianInfluence.apply(uv, cov2d, num_tx, num_rx)
-
-    attenuation_cont = attenuation.contiguous()
-    phase_rotation_cont = phase_rotation.contiguous()
-    distances_cont = distances.contiguous()
-
-    real_contributions, imag_contributions = ComputeWirelessChannel.apply(
-        attenuation_cont, phase_rotation_cont, distances_cont, wavelength
+    chan_pred_real, chan_pred_imag = WeightedSuperposition.apply(
+        direct_path_real,
+        direct_path_imag,
+        scat_path_real,
+        scat_path_imag,
+        opacity,
+        influence,
     )
+    chan_pred = torch.cat([chan_pred_real, chan_pred_imag], dim=1)
 
-    sort_indices = torch.argsort(distances).to(dtype=torch.int32)
-
-    cat_channel = AlphaBlending.apply(
-        influences.contiguous(),
-        real_contributions,
-        imag_contributions,
-        opacity.contiguous(),
-        sort_indices,
-        num_tx,
-        num_rx,
-    )
-
-    return cat_channel
+    return chan_pred

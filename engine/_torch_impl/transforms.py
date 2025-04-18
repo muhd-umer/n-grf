@@ -24,10 +24,8 @@ def project_to_channel_coords(
     """
     d = points - receiver
     r = torch.sqrt(torch.sum(d**2, dim=1))
-    r = torch.clamp(r, min=1e-6)
-
     longitude = torch.atan2(d[:, 1], d[:, 0])
-    latitude = torch.asin(torch.clamp(d[:, 2], -1.0 + 1e-6, 1.0 - 1e-6))
+    latitude = torch.asin(torch.clamp(d[:, 2] / r, -1.0, 1.0))
 
     # transform to uniform coordinates
     s_x = longitude / math.pi

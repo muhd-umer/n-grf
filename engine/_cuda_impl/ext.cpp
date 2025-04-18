@@ -97,12 +97,11 @@ void compute_scattered_paths_backward_cuda(
     torch::Tensor grad_dist_tx, torch::Tensor grad_dist_rx,
     torch::Tensor grad_sv_tx_real, torch::Tensor grad_sv_tx_imag,
     torch::Tensor grad_sv_rx_real, torch::Tensor grad_sv_rx_imag);
+
 void weighted_superposition_backward_cuda(
-    torch::Tensor direct_path_real, torch::Tensor direct_path_imag,
     torch::Tensor scat_path_real, torch::Tensor scat_path_imag,
     torch::Tensor opacity, torch::Tensor influence,
     torch::Tensor grad_chan_real, torch::Tensor grad_chan_imag,
-    torch::Tensor grad_direct_path_real, torch::Tensor grad_direct_path_imag,
     torch::Tensor grad_scat_path_real, torch::Tensor grad_scat_path_imag,
     torch::Tensor grad_opacity, torch::Tensor grad_influence);
 
@@ -129,8 +128,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
           "Compute steering vector CUDA");
     m.def("compute_scattered_paths_cuda", &compute_scattered_paths_cuda,
           "Compute scattered paths CUDA");
-    m.def("compute_direct_path_cuda", &compute_direct_path_cuda,
-          "Compute direct path CUDA");
+
     m.def("weighted_superposition_cuda", &weighted_superposition_cuda,
           "Weighted superposition CUDA");
 

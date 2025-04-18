@@ -234,14 +234,16 @@ __global__ void project_to_channel_coords_kernel(
     displacement[i * 3 + 1] = d[1];
     displacement[i * 3 + 2] = d[2];
 
-    T r = sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+    T r_sq = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+    T r = sqrt(r_sq);
     T r_safe = max(r, T(ROBUST_EPSILON));
     distances[i] = r;
 
     T longitude = atan2(d[1], d[0]);
-    T dz_r = d[2] / r_safe;
-    dz_r = min(max(dz_r, T(-1.0)), T(1.0));
-    T latitude = asin(dz_r);
+
+    T dz_r_arg = d[2] / r_safe;
+    dz_r_arg = min(max(dz_r_arg, T(-1.0)), T(1.0));
+    T latitude = asin(dz_r_arg);
 
     T PI = T(3.14159265358979323846);
     T s_x = longitude / PI;
@@ -324,9 +326,11 @@ __global__ void compute_jacobian_kernel(const T* __restrict__ d,
     T xy_sq = x * x + y * y;
     xy_sq = max(xy_sq, T(ROBUST_EPSILON));
 
-    T cos_lat = sqrt(max(T(1.0) - (z / r_safe) * (z / r_safe), T(ROBUST_EPSILON)));
+    T dz_r = d[i * 3 + 2] / r_safe;
+    T dz_r_clamped = min(max(dz_r, T(-1.0)), T(1.0));
+    T cos_lat_sq = T(1.0) - dz_r_clamped * dz_r_clamped;
+    T cos_lat = sqrt(max(cos_lat_sq, T(ROBUST_EPSILON)));
     T cos_lat_safe = max(cos_lat, T(ROBUST_EPSILON));
-
 
     T PI = T(3.14159265358979323846);
     T tx_factor = (num_tx - T(1.0)) / (T(2.0) * PI);

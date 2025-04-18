@@ -235,7 +235,7 @@ def parse_args():
         try:
             from engine import rasterize as cuda_rasterize_fn
 
-            args.rasterize_fn = _torch_impl.rasterize
+            args.rasterize_fn = cuda_rasterize_fn
             print("Using CUDA rasterization implementation.")
         except ImportError:
             from engine import _torch_impl
@@ -279,21 +279,21 @@ def sequential_fwd(
     batch_size = batch["rx_position"].shape[0]
     pred_channels = []
 
-    if update_features:
-        enc_data = {
-            "tx_pos": tx_params["position"],
-        }
-        if any(p.requires_grad for p in model.encoder.parameters()):
-            with torch.enable_grad():
-                model.embed_features(enc_data)
-        else:
-            with torch.no_grad():
-                model.embed_features(enc_data)
-
     for i in range(batch_size):
         rx_position = batch["rx_position"][i].to(device)
         rx_params_i = rx_params.copy()
         rx_params_i["position"] = rx_position
+
+        if update_features:
+            enc_data = {
+                "tx_pos": tx_params["position"],
+            }
+            if any(p.requires_grad for p in model.encoder.parameters()):
+                with torch.enable_grad():
+                    model.embed_features(enc_data)
+            else:
+                with torch.no_grad():
+                    model.embed_features(enc_data)
 
         pred_channel = rasterize_channel(model, rx_params_i, tx_params, args)
         pred_channels.append(pred_channel)
