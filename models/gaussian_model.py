@@ -296,7 +296,6 @@ class GaussianModel(nn.Module):
         model.to(device)
         return model
 
-    @torch.no_grad()
     def embed_features(self, enc_data: Dict[str, Union[torch.Tensor, float]]):
         """Embed features into Gaussian scattering coefficients using the encoder.
 
@@ -310,12 +309,11 @@ class GaussianModel(nn.Module):
             raise ValueError("tx_pos must be provided in enc_data for embed_features")
         tx_pos = enc_data["tx_pos"]
 
-        device = next(self.encoder.parameters()).device
-        xyz_input = self._xyz.detach().to(device)
-        tx_pos_input = tx_pos.to(device)
+        xyz_input = self._xyz
+        tx_pos_input = tx_pos.expand_as(xyz_input[:, :3])
 
-        gamma_real, gamma_imag = self.encoder(xyz_input, tx_pos_input)
-        self.features = torch.cat([gamma_real, gamma_imag], dim=-1).detach()
+        gamma_r, gamma_i = self.encoder(xyz_input, tx_pos_input)
+        self.features = torch.cat([gamma_r, gamma_i], dim=-1)
 
     def to(self, device):
         """Override to() to ensure encoder also moves to the same device."""

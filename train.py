@@ -174,6 +174,12 @@ def parse_args():
         help="Scale modifier for Gaussian scaling",
     )
     parser.add_argument(
+        "--dropout_prob",
+        type=float,
+        default=0.2,
+        help="Dropout probability for encoder layers",
+    )
+    parser.add_argument(
         "--disable_cuda",
         action="store_true",
         help="Disable CUDA implementation and use PyTorch fallback for rasterization",
@@ -527,6 +533,7 @@ def train(args, logger, writer, log_dir):
         input_pos_multires=10,
         use_positional_encoding=args.use_positional_encoding,
         use_layer_norm=args.use_encoder_layernorm,
+        dropout_prob=args.dropout_prob,
     )
     model = GaussianModel(encoder_cfg=encoder_cfg)
 

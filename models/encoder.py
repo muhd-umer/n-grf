@@ -29,6 +29,7 @@ class EncoderConfig:
     input_pos_multires: int = 10
     use_positional_encoding: bool = True
     use_layer_norm: bool = True
+    dropout_prob: float = 0.2
 
 
 class FeatureEncoder(nn.Module):
@@ -60,6 +61,8 @@ class FeatureEncoder(nn.Module):
         if config.use_layer_norm:
             self.layers.append(nn.LayerNorm(config.hidden_size))
         self.layers.append(nn.ReLU())
+        if config.dropout_prob > 0:
+            self.layers.append(nn.Dropout(config.dropout_prob))
 
         for i in range(config.num_layers - 1):
             layer_input_dim = config.hidden_size
@@ -70,10 +73,12 @@ class FeatureEncoder(nn.Module):
             if config.use_layer_norm:
                 self.layers.append(nn.LayerNorm(config.hidden_size))
             self.layers.append(nn.ReLU())
+            if config.dropout_prob > 0:
+                self.layers.append(nn.Dropout(config.dropout_prob))
 
         # updated output heads for gamma_real and gamma_imag
-        self.gamma_real_head = nn.Linear(config.hidden_size, 1)
-        self.gamma_imag_head = nn.Linear(config.hidden_size, 1)
+        self.gamma_amp = nn.Linear(config.hidden_size, 1)
+        self.gamma_phase = nn.Linear(config.hidden_size, 1)
 
     def forward(
         self,
@@ -131,11 +136,12 @@ class FeatureEncoder(nn.Module):
             layer_idx += 1
 
         final_hidden_state = hidden_state
-        gamma_real = self.gamma_real_head(final_hidden_state)
-        gamma_imag = self.gamma_imag_head(final_hidden_state)
+        raw_gamma_A = self.gamma_amp(final_hidden_state)
+        raw_gamma_psi = self.gamma_phase(final_hidden_state)
 
-        # apply activation; small values to avoid initial saturation
-        gamma_real = torch.tanh(gamma_real)
-        gamma_imag = torch.tanh(gamma_imag)
+        gamma_A = F.softplus(raw_gamma_A)
+        gamma_psi = torch.sigmoid(raw_gamma_psi) * 2 * torch.pi
+        gamma_real = gamma_A * torch.cos(gamma_psi)
+        gamma_imag = gamma_A * torch.sin(gamma_psi)
 
         return gamma_real, gamma_imag
