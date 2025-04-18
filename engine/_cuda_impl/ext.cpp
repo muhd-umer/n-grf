@@ -17,22 +17,37 @@ void compute_jacobian_cuda(torch::Tensor d, int num_tx, int num_rx,
                            torch::Tensor J);
 void project_cov3d_to_cov2d_cuda(torch::Tensor cov3d, torch::Tensor J,
                                  torch::Tensor cov2d);
-void compute_gaussian_influence_cuda(torch::Tensor uv, torch::Tensor cov2d,
-                                     int num_tx, int num_rx,
-                                     torch::Tensor influences);
-void compute_wireless_channel_cuda(torch::Tensor attenuation,
-                                   torch::Tensor phase_rotation,
-                                   torch::Tensor distances, float wavelength,
-                                   torch::Tensor real_contributions,
-                                   torch::Tensor imag_contributions);
-void alpha_blending_forward_cuda(torch::Tensor influences,
-                                 torch::Tensor real_contributions,
-                                 torch::Tensor imag_contributions,
-                                 torch::Tensor opacity,
-                                 torch::Tensor sort_indices, int num_tx,
-                                 int num_rx, torch::Tensor channel_matrix,
-                                 torch::Tensor eff_opacity_out,
-                                 torch::Tensor transmittance_out);
+void compute_spatial_influence_cuda(torch::Tensor uv, torch::Tensor cov2d,
+                                    int num_tx, int num_rx,
+                                    torch::Tensor influences);
+void compute_path_geometry_cuda(torch::Tensor points, torch::Tensor tx_pos,
+                                torch::Tensor rx_pos, torch::Tensor dist_tx,
+                                torch::Tensor dist_rx, torch::Tensor aod,
+                                torch::Tensor aoa);
+void compute_steering_vector_cuda(torch::Tensor angles,
+                                  torch::Tensor array_size,
+                                  torch::Tensor element_spacing, int array_type,
+                                  float wavelength, torch::Tensor sv_real,
+                                  torch::Tensor sv_imag);
+void compute_scattered_paths_cuda(
+    torch::Tensor gamma_real, torch::Tensor gamma_imag, torch::Tensor dist_tx,
+    torch::Tensor dist_rx, torch::Tensor sv_tx_real, torch::Tensor sv_tx_imag,
+    torch::Tensor sv_rx_real, torch::Tensor sv_rx_imag, float wavelength,
+    torch::Tensor scat_chan_real, torch::Tensor scat_chan_imag);
+void compute_direct_path_cuda(torch::Tensor tx_pos, torch::Tensor rx_pos,
+                              torch::Tensor tx_size, torch::Tensor rx_size,
+                              torch::Tensor tx_element_spacing,
+                              torch::Tensor rx_element_spacing,
+                              int tx_array_type, int rx_array_type,
+                              float wavelength, torch::Tensor direct_chan_real,
+                              torch::Tensor direct_chan_imag);
+void weighted_superposition_cuda(torch::Tensor direct_path_real,
+                                 torch::Tensor direct_path_imag,
+                                 torch::Tensor scat_path_real,
+                                 torch::Tensor scat_path_imag,
+                                 torch::Tensor opacity, torch::Tensor influence,
+                                 torch::Tensor chan_real,
+                                 torch::Tensor chan_imag);
 
 void quaternion_to_rotation_backward_cuda(torch::Tensor quaternion,
                                           torch::Tensor grad_rotation,
@@ -58,23 +73,38 @@ void project_cov3d_to_cov2d_backward_cuda(torch::Tensor cov3d, torch::Tensor J,
                                           torch::Tensor grad_cov2d,
                                           torch::Tensor grad_cov3d,
                                           torch::Tensor grad_J);
-void compute_gaussian_influence_backward_cuda(
+void compute_spatial_influence_backward_cuda(
     torch::Tensor uv, torch::Tensor cov2d, torch::Tensor influences,
     torch::Tensor grad_influences, int num_tx, int num_rx,
     torch::Tensor grad_uv, torch::Tensor grad_cov2d);
-void compute_wireless_channel_backward_cuda(
-    torch::Tensor attenuation, torch::Tensor phase_rotation,
-    torch::Tensor distances, float wavelength,
-    torch::Tensor grad_real_contributions,
-    torch::Tensor grad_imag_contributions, torch::Tensor grad_attenuation,
-    torch::Tensor grad_phase_rotation, torch::Tensor grad_distances);
-void alpha_blending_backward_cuda(
-    torch::Tensor influences, torch::Tensor real_contributions,
-    torch::Tensor imag_contributions, torch::Tensor opacity,
-    torch::Tensor eff_opacity, torch::Tensor transmittance,
-    torch::Tensor sort_indices, torch::Tensor grad_cat_channel, int num_tx,
-    int num_rx, torch::Tensor grad_influences, torch::Tensor grad_contrib_real,
-    torch::Tensor grad_contrib_imag, torch::Tensor grad_opacity);
+void compute_path_geometry_backward_cuda(
+    torch::Tensor points, torch::Tensor tx_pos, torch::Tensor rx_pos,
+    torch::Tensor dist_tx, torch::Tensor dist_rx, torch::Tensor aod,
+    torch::Tensor aoa, torch::Tensor grad_dist_tx, torch::Tensor grad_dist_rx,
+    torch::Tensor grad_aod, torch::Tensor grad_aoa, torch::Tensor grad_points,
+    torch::Tensor grad_tx_pos, torch::Tensor grad_rx_pos);
+void compute_steering_vector_backward_cuda(
+    torch::Tensor angles, torch::Tensor array_size,
+    torch::Tensor element_spacing, int array_type, float wavelength,
+    torch::Tensor sv_real, torch::Tensor sv_imag, torch::Tensor grad_sv_real,
+    torch::Tensor grad_sv_imag, torch::Tensor grad_angles);
+void compute_scattered_paths_backward_cuda(
+    torch::Tensor gamma_real, torch::Tensor gamma_imag, torch::Tensor dist_tx,
+    torch::Tensor dist_rx, torch::Tensor sv_tx_real, torch::Tensor sv_tx_imag,
+    torch::Tensor sv_rx_real, torch::Tensor sv_rx_imag, float wavelength,
+    torch::Tensor grad_scat_chan_real, torch::Tensor grad_scat_chan_imag,
+    torch::Tensor grad_gamma_real, torch::Tensor grad_gamma_imag,
+    torch::Tensor grad_dist_tx, torch::Tensor grad_dist_rx,
+    torch::Tensor grad_sv_tx_real, torch::Tensor grad_sv_tx_imag,
+    torch::Tensor grad_sv_rx_real, torch::Tensor grad_sv_rx_imag);
+void weighted_superposition_backward_cuda(
+    torch::Tensor direct_path_real, torch::Tensor direct_path_imag,
+    torch::Tensor scat_path_real, torch::Tensor scat_path_imag,
+    torch::Tensor opacity, torch::Tensor influence,
+    torch::Tensor grad_chan_real, torch::Tensor grad_chan_imag,
+    torch::Tensor grad_direct_path_real, torch::Tensor grad_direct_path_imag,
+    torch::Tensor grad_scat_path_real, torch::Tensor grad_scat_path_imag,
+    torch::Tensor grad_opacity, torch::Tensor grad_influence);
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("quaternion_to_rotation_cuda", &quaternion_to_rotation_cuda,
@@ -91,12 +121,18 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
           "Compute Jacobian CUDA");
     m.def("project_cov3d_to_cov2d_cuda", &project_cov3d_to_cov2d_cuda,
           "Project 3D covariance to 2D CUDA");
-    m.def("compute_gaussian_influence_cuda", &compute_gaussian_influence_cuda,
-          "Compute Gaussian influence CUDA");
-    m.def("compute_wireless_channel_cuda", &compute_wireless_channel_cuda,
-          "Compute wireless channel CUDA");
-    m.def("alpha_blending_forward_cuda", &alpha_blending_forward_cuda,
-          "Alpha blending forward CUDA");
+    m.def("compute_spatial_influence_cuda", &compute_spatial_influence_cuda,
+          "Compute spatial influence CUDA");
+    m.def("compute_path_geometry_cuda", &compute_path_geometry_cuda,
+          "Compute path geometry CUDA");
+    m.def("compute_steering_vector_cuda", &compute_steering_vector_cuda,
+          "Compute steering vector CUDA");
+    m.def("compute_scattered_paths_cuda", &compute_scattered_paths_cuda,
+          "Compute scattered paths CUDA");
+    m.def("compute_direct_path_cuda", &compute_direct_path_cuda,
+          "Compute direct path CUDA");
+    m.def("weighted_superposition_cuda", &weighted_superposition_cuda,
+          "Weighted superposition CUDA");
 
     m.def("quaternion_to_rotation_backward_cuda",
           &quaternion_to_rotation_backward_cuda,
@@ -116,12 +152,19 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("project_cov3d_to_cov2d_backward_cuda",
           &project_cov3d_to_cov2d_backward_cuda,
           "Project 3D covariance to 2D backward CUDA");
-    m.def("compute_gaussian_influence_backward_cuda",
-          &compute_gaussian_influence_backward_cuda,
-          "Compute Gaussian influence backward CUDA");
-    m.def("compute_wireless_channel_backward_cuda",
-          &compute_wireless_channel_backward_cuda,
-          "Compute wireless channel backward CUDA");
-    m.def("alpha_blending_backward_cuda", &alpha_blending_backward_cuda,
-          "Alpha blending backward CUDA");
+    m.def("compute_spatial_influence_backward_cuda",
+          &compute_spatial_influence_backward_cuda,
+          "Compute spatial influence backward CUDA");
+    m.def("compute_path_geometry_backward_cuda",
+          &compute_path_geometry_backward_cuda,
+          "Compute path geometry backward CUDA");
+    m.def("compute_steering_vector_backward_cuda",
+          &compute_steering_vector_backward_cuda,
+          "Compute steering vector backward CUDA");
+    m.def("compute_scattered_paths_backward_cuda",
+          &compute_scattered_paths_backward_cuda,
+          "Compute scattered paths backward CUDA");
+    m.def("weighted_superposition_backward_cuda",
+          &weighted_superposition_backward_cuda,
+          "Weighted superposition backward CUDA");
 }
