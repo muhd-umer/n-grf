@@ -619,7 +619,6 @@ class WeightedSuperposition(Function):
 def compute_direct_path(
     tx_params: Dict[str, Any], rx_params: Dict[str, Any], wavelength: float
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    """Compute direct path channel component (non-differentiable)."""
     return torch_compute_direct_path(tx_params, rx_params, wavelength)
 
 
@@ -665,13 +664,21 @@ def rasterize(
     cov3d = CovarianceMatrix.apply(RS)
     dist_tx, dist_rx, aod, aoa = ComputePathGeometry.apply(points, tx_pos, rx_pos)
 
+    incoming_direction = points - tx_pos
+    incoming_direction = torch.nn.functional.normalize(
+        incoming_direction, p=2, dim=1, eps=1e-6
+    )
+    dir_input_in = dir_embedder(incoming_direction)
+
     outgoing_direction = rx_pos - points
     outgoing_direction = torch.nn.functional.normalize(
         outgoing_direction, p=2, dim=1, eps=1e-6
     )
-    dir_input_to_net = dir_embedder(outgoing_direction)
+    dir_input_out = dir_embedder(outgoing_direction)
 
-    gamma_real, gamma_imag = directional_network(base_features, dir_input_to_net)
+    gamma_real, gamma_imag = directional_network(
+        base_features, dir_input_in, dir_input_out
+    )
     gamma_real = gamma_real.squeeze(-1)
     gamma_imag = gamma_imag.squeeze(-1)
 

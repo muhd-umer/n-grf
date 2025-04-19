@@ -217,6 +217,12 @@ def parse_args():
         default=1.0,
         help="Weight for phase term in polar_mse or log_mag_phase loss",
     )
+    parser.add_argument(
+        "--rx_noise_std",
+        type=float,
+        default=0.0,
+        help="Std dev of noise to add to receiver positions during training (0 to disable)",
+    )
 
     # visualization params
     parser.add_argument(
@@ -286,6 +292,7 @@ def sequential_fwd(
     """Process by iterating through each sample in the batch sequentially."""
     batch_size = batch["rx_position"].shape[0]
     pred_channels = []
+    is_training = model.training
 
     if update_features:
         enc_data = {"tx_pos": tx_params["position"]}
@@ -298,6 +305,11 @@ def sequential_fwd(
 
     for i in range(batch_size):
         rx_position = batch["rx_position"][i].to(device)
+
+        if is_training and args.rx_noise_std > 0:
+            noise = torch.randn_like(rx_position) * args.rx_noise_std
+            rx_position = rx_position + noise
+
         rx_params_i = rx_params.copy()
         rx_params_i["position"] = rx_position
 
@@ -320,7 +332,6 @@ def get_gt_batch(batch, device):
             else:
                 gt_channel = torch.complex(gt_channel, torch.zeros_like(gt_channel))
 
-        # Stack real and imaginary parts
         gt_channel_stacked = torch.hstack((gt_channel.real, gt_channel.imag))
         gt_channels.append(gt_channel_stacked)
 
@@ -527,8 +538,9 @@ def train(args, logger, writer, log_dir):
     logger.info(f"Operating frequency: {frequency/1e9:.2f} GHz")
     logger.info(f"Training with batch size: {args.batch_size}")
     logger.info(f"Number of Gaussians: {args.num_points}")
+    if args.rx_noise_std > 0:
+        logger.info(f"Using RX position noise with std dev: {args.rx_noise_std}")
 
-    # initialize model
     logger.info("Initializing model...")
     encoder_cfg = EncoderConfig(
         hidden_size=128,
@@ -577,7 +589,7 @@ def train(args, logger, writer, log_dir):
             logger.info(
                 f"Initialized model with {point_cloud.shape[0]} Gaussians from point cloud"
             )
-        else:  # random initialization
+        else:
             model.init_randomly(
                 args.num_points,
                 env_dims.to(device),

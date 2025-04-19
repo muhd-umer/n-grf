@@ -210,7 +210,6 @@ def weighted_superposition(
     """
     N = scat_path_real.shape[0]
 
-    # apply weights (opacity * influence)
     weights = opacity.view(N, 1, 1) * influence
 
     # sum weighted scattered paths
@@ -316,13 +315,21 @@ def rasterize(
     influence = compute_spatial_influence(uv, cov2d, num_tx, num_rx)
     dist_tx, dist_rx, aod, aoa = compute_path_geometry(points, tx_pos, rx_pos)
 
+    incoming_direction = points - tx_pos
+    incoming_direction = torch.nn.functional.normalize(
+        incoming_direction, p=2, dim=1, eps=1e-6
+    )
+    dir_input_in = dir_embedder(incoming_direction)
+
     outgoing_direction = rx_pos - points
     outgoing_direction = torch.nn.functional.normalize(
         outgoing_direction, p=2, dim=1, eps=1e-6
     )
-    dir_input_to_net = dir_embedder(outgoing_direction)
+    dir_input_out = dir_embedder(outgoing_direction)
 
-    gamma_real, gamma_imag = directional_network(base_features, dir_input_to_net)
+    gamma_real, gamma_imag = directional_network(
+        base_features, dir_input_in, dir_input_out
+    )
     gamma_real = gamma_real.squeeze(-1)
     gamma_imag = gamma_imag.squeeze(-1)
 

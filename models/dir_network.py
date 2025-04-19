@@ -54,7 +54,7 @@ class DirectionalNetwork(nn.Module):
         super().__init__()
         self.config = config
 
-        input_dim = base_feature_dim + dir_input_dim
+        input_dim = base_feature_dim + 2 * dir_input_dim
 
         self.layers = nn.ModuleList()
         self.layers.append(nn.Linear(input_dim, config.hidden_size))
@@ -76,18 +76,22 @@ class DirectionalNetwork(nn.Module):
         self.gamma_phase = nn.Linear(config.hidden_size, 1)
 
     def forward(
-        self, base_features: torch.Tensor, directions: torch.Tensor
+        self,
+        base_features: torch.Tensor,
+        directions_in: torch.Tensor,
+        directions_out: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Forward pass to compute direction-dependent scattering coefficients.
 
         Args:
             base_features: Base feature vectors from the FeatureEncoder [N, F]
-            directions: Direction vectors, potentially already embedded [N, D]
+            directions_in: Incoming direction vectors
+            directions_out: Outgoing direction vectors
 
         Returns:
             Tuple of tensors (gamma_real, gamma_imag) each of shape [N, 1]
         """
-        x = torch.cat([base_features, directions], dim=-1)
+        x = torch.cat([base_features, directions_in, directions_out], dim=-1)
 
         hidden_state = x
         for layer in self.layers:
