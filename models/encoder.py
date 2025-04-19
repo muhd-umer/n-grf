@@ -12,15 +12,17 @@ from .embedder import get_embedder
 
 @dataclass
 class EncoderConfig:
-    """Configuration for encoder
+    """Configuration for the base feature encoder.
 
     Args:
         hidden_size: Size of hidden layers
         num_layers: Number of hidden layers
         skip_layers: List of layer indices to add skip connections
         input_pos_multires: Positional encoding resolution for positions
-        use_positional_encoding: Whether to use positional encoding
+        use_positional_encoding: Whether to use positional encoding for inputs
         use_layer_norm: Whether to use Layer Normalization
+        dropout_prob: Dropout probability
+        base_feature_dim: Output dimension for base features
     """
 
     hidden_size: int = 128
@@ -30,13 +32,17 @@ class EncoderConfig:
     use_positional_encoding: bool = True
     use_layer_norm: bool = True
     dropout_prob: float = 0.2
+    base_feature_dim: int = 64
 
 
 class FeatureEncoder(nn.Module):
     """Encoder network for channel reconstruction.
 
     Maps environment geometry (Gaussian positions) and transmitter position to
-    scattering coefficients (gamma_real, gamma_imag) for Gaussian splatting.
+    base feature vectors for subsequent directional processing
+
+    Args:
+        config: Configuration object for the encoder architecture
     """
 
     def __init__(self, config: EncoderConfig):
@@ -51,6 +57,7 @@ class FeatureEncoder(nn.Module):
             point_feat_dim = pos_embed_dim
             tx_feat_dim = pos_embed_dim
         else:
+            self.pos_embedder = nn.Identity()
             point_feat_dim = 3
             tx_feat_dim = 3
 
@@ -76,25 +83,21 @@ class FeatureEncoder(nn.Module):
             if config.dropout_prob > 0:
                 self.layers.append(nn.Dropout(config.dropout_prob))
 
-        # updated output heads for gamma_real and gamma_imag
-        self.gamma_amp = nn.Linear(config.hidden_size, 1)
-        self.gamma_phase = nn.Linear(config.hidden_size, 1)
+        self.feature_head = nn.Linear(config.hidden_size, config.base_feature_dim)
 
     def forward(
         self,
         points: torch.Tensor,
         tx_pos: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Forward pass to generate scattering coefficients for Gaussians.
+    ) -> torch.Tensor:
+        """Forward pass to generate base feature vectors for Gaussians.
 
         Args:
-            points: Point positions (N, 3)
-            tx_pos: Transmitter position (3,) -> broadcasted to (N, 3)
+            points: Point positions [N, 3]
+            tx_pos: Transmitter position (3,] -> broadcasted to [N, 3]
 
         Returns:
-            Tuple of tensors (gamma_real, gamma_imag) each of shape (N, 1)
-            representing scattering coefficients.
+            Base feature vectors of shape [N, base_feature_dim]
         """
         num_points = points.shape[0]
         if tx_pos.dim() == 1:
@@ -135,13 +138,5 @@ class FeatureEncoder(nn.Module):
 
             layer_idx += 1
 
-        final_hidden_state = hidden_state
-        raw_gamma_A = self.gamma_amp(final_hidden_state)
-        raw_gamma_psi = self.gamma_phase(final_hidden_state)
-
-        gamma_A = F.softplus(raw_gamma_A)
-        gamma_psi = torch.sigmoid(raw_gamma_psi) * 2 * torch.pi
-        gamma_real = gamma_A * torch.cos(gamma_psi)
-        gamma_imag = gamma_A * torch.sin(gamma_psi)
-
-        return gamma_real, gamma_imag
+        base_features = self.feature_head(hidden_state)
+        return base_features

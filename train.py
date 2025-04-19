@@ -11,6 +11,7 @@ from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
 from datasets.dataloader import get_dataloaders
+from models.dir_network import DirNetworkConfig
 from models.encoder import EncoderConfig
 from models.gaussian_model import GaussianModel
 from models.loss import calculate_nmse, calculate_snr, get_loss_function
@@ -19,6 +20,7 @@ from utils.train_utils import setup_logging
 
 
 def parse_args():
+    """Parse command line arguments for training."""
     parser = argparse.ArgumentParser(
         description="Train Gaussian model for channel reconstruction"
     )
@@ -58,7 +60,7 @@ def parse_args():
         "--positional_encoding",
         action="store_true",
         dest="use_positional_encoding",
-        help="Enable positional encoding in the encoder",
+        help="Enable positional encoding in the encoder and directional network",
     )
 
     # optimization params
@@ -93,13 +95,13 @@ def parse_args():
         "--encoder_lr",
         type=float,
         default=0.001,
-        help="Encoder learning rate",
+        help="Learning rate for base encoder and directional network",
     )
     parser.add_argument(
         "--weight_decay",
         type=float,
         default=1e-6,
-        help="Weight decay for encoder",
+        help="Weight decay for base encoder and directional network",
     )
     parser.add_argument(
         "--gradient_clip_val",
@@ -111,7 +113,13 @@ def parse_args():
         "--disable_encoder_layernorm",
         action="store_false",
         dest="use_encoder_layernorm",
-        help="Disable Layer Normalization in the feature encoder",
+        help="Disable Layer Normalization in the base feature encoder",
+    )
+    parser.add_argument(
+        "--disable_dirnet_layernorm",
+        action="store_false",
+        dest="use_dirnet_layernorm",
+        help="Disable Layer Normalization in the directional network",
     )
 
     # training params
@@ -220,6 +228,8 @@ def parse_args():
     args = parser.parse_args()
     if "use_encoder_layernorm" not in args:
         args.use_encoder_layernorm = True
+    if "use_dirnet_layernorm" not in args:
+        args.use_dirnet_layernorm = True
 
     if not args.disable_opacity_reset:
         assert (
@@ -249,15 +259,17 @@ def parse_args():
 
 
 def rasterize_channel(model, rx_params, tx_params, args):
-    """Helper function to rasterize the channel using the selected function"""
+    """Helper function to rasterize the channel using the selected function."""
     return args.rasterize_fn(
         points=model.get_xyz,
         scaling=model.get_scaling,
         rotation=model.get_rotation,
-        gamma=model.get_features,
+        base_features=model.get_base_features,
         opacity=model.get_opacity,
         tx_params=tx_params,
         rx_params=rx_params,
+        directional_network=model.directional_network,
+        dir_embedder=model.dir_embedder,
         scale_modifier=args.scale_modifier,
     )
 
@@ -271,17 +283,13 @@ def sequential_fwd(
     device,
     update_features=False,
 ):
-    """
-    Process by iterating through each sample in the batch sequentially.
-
-    Features are computed once before the loop if update_features is True.
-    """
+    """Process by iterating through each sample in the batch sequentially."""
     batch_size = batch["rx_position"].shape[0]
     pred_channels = []
 
     if update_features:
         enc_data = {"tx_pos": tx_params["position"]}
-        if any(p.requires_grad for p in model.encoder.parameters()):
+        if any(p.requires_grad for p in model.base_encoder.parameters()):
             with torch.enable_grad():
                 model.embed_features(enc_data)
         else:
@@ -312,6 +320,7 @@ def get_gt_batch(batch, device):
             else:
                 gt_channel = torch.complex(gt_channel, torch.zeros_like(gt_channel))
 
+        # Stack real and imaginary parts
         gt_channel_stacked = torch.hstack((gt_channel.real, gt_channel.imag))
         gt_channels.append(gt_channel_stacked)
 
@@ -330,7 +339,6 @@ def setup_experiment(args):
     logger = setup_logging(log_dir)
     logger.info(f"Arguments: {args}")
 
-    # initialize TensorBoard writer if requested
     writer = None
     if args.tensorboard:
         logger.info("Initializing TensorBoard writer...")
@@ -355,7 +363,7 @@ def evaluate(
     model.eval()
     total_loss = 0.0
     total_nmse = 0.0
-    num_samples = 0
+    num_batches = 0
 
     logger.info(f"Evaluating at iteration {iteration}...")
 
@@ -364,7 +372,6 @@ def evaluate(
         model.embed_features(enc_data)
 
         for batch in tqdm(dataloader, desc="Evaluating"):
-            batch_size = batch["rx_position"].shape[0]
             gt_channels = get_gt_batch(batch, device)
 
             pred_channels = sequential_fwd(
@@ -380,12 +387,12 @@ def evaluate(
             loss = loss_fn(pred_channels, gt_channels)
             nmse = calculate_nmse(pred_channels, gt_channels)
 
-            total_loss += loss.item() * batch_size
-            total_nmse += nmse.item() * batch_size
-            num_samples += batch_size
+            total_loss += loss.item()
+            total_nmse += nmse.item()
+            num_batches += 1
 
-    avg_loss = total_loss / max(num_samples, 1)
-    avg_nmse = total_nmse / max(num_samples, 1)
+    avg_loss = total_loss / max(num_batches, 1)
+    avg_nmse = total_nmse / max(num_batches, 1)
     avg_snr = calculate_snr(torch.tensor(avg_nmse)).item()
 
     logger.info(
@@ -463,7 +470,6 @@ def train(args, logger, writer, log_dir):
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
     logger.info(f"Using device: {device}")
 
-    # set up dataloaders
     logger.info("Initializing dataloaders...")
     train_dataloader, val_dataloader = get_dataloaders(
         args.data_path,
@@ -489,7 +495,7 @@ def train(args, logger, writer, log_dir):
         num_rx_ant = train_dataloader.dataset.num_rx_ant
         scene_extent = (env_dims[:, 1] - env_dims[:, 0]).max().item()
 
-        wavelength = 299792458.0 / frequency  # speed of light / frequency
+        wavelength = 299792458.0 / frequency
 
         tx_params = {
             "position": tx_position,
@@ -532,8 +538,17 @@ def train(args, logger, writer, log_dir):
         use_positional_encoding=args.use_positional_encoding,
         use_layer_norm=args.use_encoder_layernorm,
         dropout_prob=args.dropout_prob,
+        base_feature_dim=64,
     )
-    model = GaussianModel(encoder_cfg=encoder_cfg)
+    dir_net_cfg = DirNetworkConfig(
+        hidden_size=64,
+        num_layers=4,
+        input_dir_multires=4,
+        use_positional_encoding=args.use_positional_encoding,
+        use_layer_norm=args.use_dirnet_layernorm,
+        dropout_prob=0.0,
+    )
+    model = GaussianModel(encoder_cfg=encoder_cfg, dir_net_cfg=dir_net_cfg)
 
     start_iteration = 0
     best_val_loss = float("inf")
@@ -608,7 +623,6 @@ def train(args, logger, writer, log_dir):
             device,
             update_features=True,
         )
-        # print("pred_channels", pred_channels)
 
         gt_channels = get_gt_batch(batch, device)
 
@@ -772,6 +786,7 @@ def train(args, logger, writer, log_dir):
 
 
 def main():
+    """Main entry point for the training script."""
     args = parse_args()
     set_random_seed(args.seed)
 

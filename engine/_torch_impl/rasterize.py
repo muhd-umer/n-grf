@@ -1,8 +1,12 @@
-# _torch_impl/rasterize.py
+# engine/_torch_impl/rasterize.py
 
 from typing import Any, Dict, Tuple
 
 import torch
+from torch import nn
+
+from models.dir_network import DirectionalNetwork
+from utils.transform_utils import strip_symmetric
 
 from .transforms import (
     compute_path_geometry,
@@ -52,7 +56,6 @@ def compute_spatial_influence(
                 inv_10 * d_x + inv_11 * d_y
             )
 
-            # Clamp md to avoid overflow in exp
             md = torch.clamp(md, max=30.0)
             influences[:, i, j] = torch.exp(-0.5 * md)
 
@@ -264,27 +267,30 @@ def rasterize(
     points: torch.Tensor,
     scaling: torch.Tensor,
     rotation: torch.Tensor,
-    gamma: torch.Tensor,
+    base_features: torch.Tensor,
     opacity: torch.Tensor,
     tx_params: Dict[str, Any],
     rx_params: Dict[str, Any],
+    directional_network: DirectionalNetwork,
+    dir_embedder: nn.Module,
     scale_modifier: float = 1.0,
 ) -> torch.Tensor:
-    """Rasterize the channel matrix for a specific receiver position
+    """Rasterize the channel matrix for a specific receiver position.
 
     Args:
         points: Gaussian centers [N, 3]
-        scaling: Scaling factors [N, 3]
+        scaling: Activated scaling factors [N, 3]
         rotation: Quaternion rotations [N, 4]
-        gamma: Scattering coefficients [N, 2] (real, imag concatenated)
-        opacity: Opacity values [N, 1]
+        base_features: Base feature vectors [N, F]
+        opacity: Activated opacity values [N, 1]
         tx_params: Transmitter parameters including position
         rx_params: Receiver parameters including position
+        directional_network: The network predicting gamma based on direction
+        dir_embedder: Positional embedder for directions
         scale_modifier: Global scaling modifier (default is 1.0)
 
     Returns:
-        Channel matrix of shape [num_tx, 2*num_rx] with real and imaginary parts
-        concatenated
+        Channel matrix of shape [num_tx, 2*num_rx] with real and imaginary parts concatenated
     """
     device = points.device
     num_tx = tx_params["num_antennas"]
@@ -293,17 +299,10 @@ def rasterize(
     rx_pos = rx_params["position"].to(device)
     frequency = tx_params["frequency"]
 
-    # split gamma into real and imaginary parts
-    gamma_real = gamma[:, 0]
-    gamma_imag = gamma[:, 1]
-
-    c = 299792458.0  # speed of light in m/s
+    c = 299792458.0
     wavelength = c / frequency
 
     cov3d_full = compute_cov3d(scaling, rotation, scale_modifier)
-
-    from utils.transform_utils import strip_symmetric
-
     cov3d_compact = strip_symmetric(cov3d_full)
 
     _, uv, cov2d = project_to_channel_space(
@@ -316,6 +315,16 @@ def rasterize(
 
     influence = compute_spatial_influence(uv, cov2d, num_tx, num_rx)
     dist_tx, dist_rx, aod, aoa = compute_path_geometry(points, tx_pos, rx_pos)
+
+    outgoing_direction = rx_pos - points
+    outgoing_direction = torch.nn.functional.normalize(
+        outgoing_direction, p=2, dim=1, eps=1e-6
+    )
+    dir_input_to_net = dir_embedder(outgoing_direction)
+
+    gamma_real, gamma_imag = directional_network(base_features, dir_input_to_net)
+    gamma_real = gamma_real.squeeze(-1)
+    gamma_imag = gamma_imag.squeeze(-1)
 
     sv_tx_real, sv_tx_imag = compute_steering_vector(aod, tx_params, wavelength)
     sv_rx_real, sv_rx_imag = compute_steering_vector(aoa, rx_params, wavelength)

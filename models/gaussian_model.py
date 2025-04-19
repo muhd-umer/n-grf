@@ -15,6 +15,8 @@ from utils.transform_utils import (
     strip_symmetric,
 )
 
+from .dir_network import DirectionalNetwork, DirNetworkConfig
+from .embedder import get_embedder
 from .encoder import EncoderConfig, FeatureEncoder
 
 
@@ -30,29 +32,45 @@ class GaussianModel(nn.Module):
     - rotation: 4D quaternions initialized as [1,0,0,0] (identity)
     - scaling: Log of point-wise distances to enforce minimum scale
     - opacity: Inverse sigmoid of constant value (0.1)
-    - features: Scattering coefficients (gamma_real, gamma_imag) learned by encoder
+    - base_features: Base features learned by FeatureEncoder
 
     Args:
-        encoder_cfg: Configuration for the encoder
+        encoder_cfg: Configuration for the base feature encoder
+        dir_net_cfg: Configuration for the directional network
     """
 
     def __init__(
         self,
         encoder_cfg: Optional[EncoderConfig] = None,
+        dir_net_cfg: Optional[DirNetworkConfig] = None,
     ):
         super().__init__()
 
         self.encoder_cfg = encoder_cfg or EncoderConfig()
-        self.encoder = FeatureEncoder(self.encoder_cfg)
+        self.dir_net_cfg = dir_net_cfg or DirNetworkConfig()
 
-        # initialize empty tensors; will be set in init_from_pc
+        self.base_encoder = FeatureEncoder(self.encoder_cfg)
+
+        if self.dir_net_cfg.use_positional_encoding:
+            self.dir_embedder, dir_embed_dim = get_embedder(
+                self.dir_net_cfg.input_dir_multires, input_dims=3
+            )
+        else:
+            self.dir_embedder = nn.Identity()
+            dir_embed_dim = 3
+
+        self.directional_network = DirectionalNetwork(
+            base_feature_dim=self.encoder_cfg.base_feature_dim,
+            dir_input_dim=dir_embed_dim,
+            config=self.dir_net_cfg,
+        )
+
         self._xyz = torch.empty(0)  # positions
         self._rotation = torch.empty(0)  # rotation quaternions
         self._scaling = torch.empty(0)  # scaling factors
         self._opacity = torch.empty(0)  # opacity values
-        self.features = torch.empty(0)  # scattering features (gamma_real, gamma_imag)
+        self.base_features = torch.empty(0)
 
-        # training state
         self.optimizer = None
         self.encoder_optimizer = None
 
@@ -85,19 +103,20 @@ class GaussianModel(nn.Module):
         self.rotation_activation = torch.nn.functional.normalize
         self.covariance_activation = build_covariance_from_scaling_rotation
 
-    def init_from_pc(self, points: torch.Tensor, tx_position: torch.Tensor = None):
+    def init_from_pc(
+        self, points: torch.Tensor, tx_position: Optional[torch.Tensor] = None
+    ):
         """Initialize Gaussian properties from point cloud.
 
         Args:
             points: Point cloud tensor of shape [N, 3]
-            tx_position: Transmitter position [3], required for physics init
+            tx_position: Transmitter position [3], required for initial feature embedding
         """
         num_points = points.shape[0]
         device = points.device
 
         self._xyz = nn.Parameter(points.to(device))
 
-        # compute scales based on point cloud density
         dist2 = torch.clamp_min(distCUDA2(points.float()), 1e-5)
         scales = torch.log(torch.sqrt(dist2))[..., None].repeat(1, 3)
         self._scaling = nn.Parameter(scales.to(device).to(points.dtype))
@@ -106,31 +125,39 @@ class GaussianModel(nn.Module):
         rots[:, 0] = 1
         self._rotation = nn.Parameter(rots)
 
-        # features initialization
-        self.features = torch.zeros(
-            (num_points, 2),  # [gamma_real, gamma_imag]
-            device=device,
-            dtype=points.dtype,
-        )
-
         # initialize opacity
         init_opacity = 0.1 * torch.ones(
             (num_points, 1), device=device, dtype=points.dtype
         )
         self._opacity = nn.Parameter(inverse_sigmoid(init_opacity))
 
+        # features initialization
+        self.base_features = torch.zeros(
+            (num_points, self.encoder_cfg.base_feature_dim),
+            device=device,
+            dtype=points.dtype,
+        )
+
         if tx_position is not None:
             self.embed_features({"tx_pos": tx_position})
+        else:
+            warnings.warn(
+                "tx_position not provided during init_from_pc. "
+                "Base features initialized to zero. Call embed_features later."
+            )
 
     def init_randomly(
-        self, num_points: int, env_dims: torch.Tensor, tx_position: torch.Tensor = None
+        self,
+        num_points: int,
+        env_dims: torch.Tensor,
+        tx_position: Optional[torch.Tensor] = None,
     ):
         """Initialize Gaussian properties randomly within environment dimensions.
 
         Args:
             num_points: Number of random points to initialize
             env_dims: Environment dimensions as [3, 2] tensor with min/max per dimension
-            tx_position: Transmitter position [3], required for physics init
+            tx_position: Transmitter position [3], required for initial feature embedding
         """
         device = env_dims.device
 
@@ -163,19 +190,12 @@ class GaussianModel(nn.Module):
         return self.opacity_activation(self._opacity)
 
     @property
-    def get_features(self):
-        """Get scattering coefficients (gamma)."""
-        return self.features
+    def get_base_features(self):
+        """Get base feature vectors."""
+        return self.base_features
 
     def get_covariance(self, scaling_modifier: float = 1.0):
-        """Compute covariance matrices for each Gaussian.
-
-        Args:
-            scaling_modifier: Global scaling factor modifier
-
-        Returns:
-            Covariance matrices in symmetric form
-        """
+        """Compute covariance matrices for each Gaussian."""
         return self.covariance_activation(
             self.get_scaling, scaling_modifier, self._rotation
         )
@@ -185,8 +205,8 @@ class GaussianModel(nn.Module):
 
         Args:
             filepath: Path where to save the model
-            save_optimizer: Whether to save optimizer states (for resuming training)
-            iteration: Current training iteration for resuming
+            save_optimizer: Whether to save optimizer states
+            iteration: Current training iteration
             best_val_loss: Best validation loss achieved so far
         """
         from pathlib import Path
@@ -196,12 +216,14 @@ class GaussianModel(nn.Module):
 
         model_state: Dict[str, Any] = {
             "encoder_config": self.encoder_cfg,
+            "dir_net_config": self.dir_net_cfg,
             "xyz": self._xyz.detach().cpu(),
             "rotation": self._rotation.detach().cpu(),
             "scaling": self._scaling.detach().cpu(),
             "opacity": self._opacity.detach().cpu(),
-            "features": self.features.detach().cpu(),
-            "encoder_state": self.encoder.state_dict(),
+            "base_features": self.base_features.detach().cpu(),
+            "base_encoder_state": self.base_encoder.state_dict(),
+            "directional_network_state": self.directional_network.state_dict(),
         }
 
         if save_optimizer:
@@ -229,7 +251,7 @@ class GaussianModel(nn.Module):
 
         Args:
             filepath: Path to the saved model file
-            device: Device to load the model to (default: current CUDA device)
+            device: Device to load the model to
             training_args: Optional training arguments for resuming training
 
         Returns:
@@ -242,23 +264,26 @@ class GaussianModel(nn.Module):
 
         encoder_cfg = state.get("encoder_config", None)
         if encoder_cfg is None:
-            warnings.warn(
-                "Warning: Encoder config not found in checkpoint, using default."
-            )
+            warnings.warn("Encoder config not found, using default.")
             encoder_cfg = EncoderConfig()
 
-        model = cls(
-            encoder_cfg=encoder_cfg,
-        )
+        dir_net_cfg = state.get("dir_net_config", None)
+        if dir_net_cfg is None:
+            warnings.warn("Directional network config not found, using default.")
+            dir_net_cfg = DirNetworkConfig()
+
+        model = cls(encoder_cfg=encoder_cfg, dir_net_cfg=dir_net_cfg)
 
         model._xyz = nn.Parameter(state["xyz"].to(device))
         model._rotation = nn.Parameter(state["rotation"].to(device))
         model._scaling = nn.Parameter(state["scaling"].to(device))
         model._opacity = nn.Parameter(state["opacity"].to(device))
-        model.features = state["features"].to(device)
+        model.base_features = state["base_features"].to(device)
 
-        model.encoder.load_state_dict(state["encoder_state"])
-        model.encoder.to(device)
+        model.base_encoder.load_state_dict(state["base_encoder_state"])
+        model.directional_network.load_state_dict(state["directional_network_state"])
+
+        model.to(device)
 
         if training_args is not None:
             model.training_setup(training_args)
@@ -293,17 +318,13 @@ class GaussianModel(nn.Module):
                 except Exception as e:
                     print(f"Could not load encoder optimizer state: {e}")
 
-        model.to(device)
         return model
 
     def embed_features(self, enc_data: Dict[str, Union[torch.Tensor, float]]):
-        """Embed features into Gaussian scattering coefficients using the encoder.
-
-        The enc_data should contain:
-        - tx_pos: Transmitter position (3,)
+        """Compute and store base features using the base encoder.
 
         Args:
-            enc_data: Dictionary containing data tensors.
+            enc_data: Dictionary containing `tx_pos`.
         """
         if "tx_pos" not in enc_data:
             raise ValueError("tx_pos must be provided in enc_data for embed_features")
@@ -312,15 +333,19 @@ class GaussianModel(nn.Module):
         xyz_input = self._xyz
         tx_pos_input = tx_pos.expand_as(xyz_input[:, :3])
 
-        gamma_r, gamma_i = self.encoder(xyz_input, tx_pos_input)
-        self.features = torch.cat([gamma_r, gamma_i], dim=-1)
+        self.base_features = self.base_encoder(xyz_input, tx_pos_input)
 
     def to(self, device):
-        """Override to() to ensure encoder also moves to the same device."""
-        self.encoder = self.encoder.to(device)
+        """Override to() to ensure all components move to the same device."""
+        self.base_encoder = self.base_encoder.to(device)
+        self.directional_network = self.directional_network.to(device)
         super().to(device)
-        if hasattr(self, "features") and isinstance(self.features, torch.Tensor):
-            self.features = self.features.to(device)
+        if hasattr(self, "base_features") and isinstance(
+            self.base_features, torch.Tensor
+        ):
+            self.base_features = self.base_features.to(device)
+        if hasattr(self, "dir_embedder"):
+            self.dir_embedder = self.dir_embedder.to(device)
         return self
 
     def training_setup(self, training_args):
@@ -351,7 +376,10 @@ class GaussianModel(nn.Module):
                 "name": "opacity",
             },
         ]
-        encoder_params = list(self.encoder.parameters())
+
+        encoder_params = list(self.base_encoder.parameters()) + list(
+            self.directional_network.parameters()
+        )
 
         self.optimizer = torch.optim.Adam(
             gaussian_params,
@@ -369,7 +397,7 @@ class GaussianModel(nn.Module):
         else:
             self.encoder_optimizer = None
             warnings.warn(
-                "Warning: Encoder has no parameters, encoder optimizer not created."
+                "Warning: Combined encoder has no parameters, optimizer not created."
             )
 
         from utils.train_utils import get_expon_lr_func

@@ -4,7 +4,10 @@ import warnings
 from typing import Any, Dict, Tuple
 
 import torch
+from torch import nn
 from torch.autograd import Function
+
+from models.dir_network import DirectionalNetwork
 
 try:
     import _C
@@ -624,22 +627,26 @@ def rasterize(
     points: torch.Tensor,
     scaling: torch.Tensor,
     rotation: torch.Tensor,
-    gamma: torch.Tensor,
+    base_features: torch.Tensor,
     opacity: torch.Tensor,
     tx_params: Dict[str, Any],
     rx_params: Dict[str, Any],
+    directional_network: DirectionalNetwork,
+    dir_embedder: nn.Module,
     scale_modifier: float = 1.0,
 ) -> torch.Tensor:
-    """Rasterize the channel matrix using the new pipeline.
+    """Rasterize the channel matrix.
 
     Args:
         points: Gaussian centers [N, 3]
         scaling: Activated scaling factors [N, 3]
         rotation: Quaternion rotations [N, 4] (unnormalized is fine)
-        gamma: Learned scattering coefficients [N, 2] (real, imag)
+        base_features: Base feature vectors [N, F]
         opacity: Activated opacity values [N, 1]
         tx_params: Transmitter parameters
         rx_params: Receiver parameters
+        directional_network: Network predicting gamma based on direction
+        dir_embedder: Positional embedder for directions
         scale_modifier: Global scaling modifier
 
     Returns:
@@ -651,14 +658,23 @@ def rasterize(
     num_rx = rx_params["num_antennas"]
     frequency = tx_params["frequency"]
     wavelength = 299792458.0 / frequency
-    gamma_real = gamma[:, 0]
-    gamma_imag = gamma[:, 1]
 
     R = QuaternionToRotation.apply(rotation)
     S = ComputeScalingMatrix.apply(scaling, scale_modifier)
     RS = MatrixMultiply.apply(R, S)
     cov3d = CovarianceMatrix.apply(RS)
     dist_tx, dist_rx, aod, aoa = ComputePathGeometry.apply(points, tx_pos, rx_pos)
+
+    outgoing_direction = rx_pos - points
+    outgoing_direction = torch.nn.functional.normalize(
+        outgoing_direction, p=2, dim=1, eps=1e-6
+    )
+    dir_input_to_net = dir_embedder(outgoing_direction)
+
+    gamma_real, gamma_imag = directional_network(base_features, dir_input_to_net)
+    gamma_real = gamma_real.squeeze(-1)
+    gamma_imag = gamma_imag.squeeze(-1)
+
     sv_tx_real, sv_tx_imag = ComputeSteeringVector.apply(aod, tx_params, wavelength)
     sv_rx_real, sv_rx_imag = ComputeSteeringVector.apply(aoa, rx_params, wavelength)
 
@@ -673,14 +689,15 @@ def rasterize(
         sv_rx_imag,
         wavelength,
     )
-    direct_path_real, direct_path_imag = compute_direct_path(
-        tx_params, rx_params, wavelength
-    )
 
     _, d_proj, uv = ProjectToChannelCoordinates.apply(points, rx_pos, num_tx, num_rx)
     jacobian = ComputeJacobian.apply(d_proj, num_tx, num_rx)
     cov2d = ProjectCov3dToCov2d.apply(cov3d, jacobian)
     influence = ComputeSpatialInfluence.apply(uv, cov2d, num_tx, num_rx)
+
+    direct_path_real, direct_path_imag = compute_direct_path(
+        tx_params, rx_params, wavelength
+    )
 
     chan_pred_real, chan_pred_imag = WeightedSuperposition.apply(
         direct_path_real,
