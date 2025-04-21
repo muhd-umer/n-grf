@@ -385,13 +385,14 @@ class GaussianModel(nn.Module):
             gaussian_params,
             lr=0.0,
             fused=torch.cuda.is_available(),
+            weight_decay=training_args.gaussian_weight_decay,
         )
 
         if encoder_params:
             self.encoder_optimizer = torch.optim.Adam(
                 encoder_params,
                 lr=training_args.encoder_lr,
-                weight_decay=training_args.weight_decay,
+                weight_decay=training_args.enc_weight_decay,
                 fused=torch.cuda.is_available(),
             )
         else:

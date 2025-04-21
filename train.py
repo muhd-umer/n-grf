@@ -32,13 +32,13 @@ def parse_args():
     parser.add_argument(
         "--num_points",
         type=int,
-        default=32_000,
+        default=64_000,
         help="Number of points to use for Gaussian initialization",
     )
     parser.add_argument(
         "--batch_size",
         type=int,
-        default=8,
+        default=4,
         help="Batch size for training and evaluation",
     )
     parser.add_argument(
@@ -98,10 +98,16 @@ def parse_args():
         help="Learning rate for base encoder and directional network",
     )
     parser.add_argument(
-        "--weight_decay",
+        "--enc_weight_decay",
         type=float,
         default=1e-6,
         help="Weight decay for base encoder and directional network",
+    )
+    parser.add_argument(
+        "--gaussian_weight_decay",
+        type=float,
+        default=1e-4,
+        help="Weight decay for Gaussian parameters",
     )
     parser.add_argument(
         "--gradient_clip_val",
@@ -143,31 +149,31 @@ def parse_args():
     parser.add_argument(
         "--iterations",
         type=int,
-        default=7_000,
+        default=150_000,
         help="Number of training iterations",
     )
     parser.add_argument(
         "--checkpoint_freq",
         type=int,
-        default=700,
+        default=15_000,
         help="Save checkpoint every N iterations",
     )
     parser.add_argument(
         "--eval_freq",
         type=int,
-        default=700,
+        default=30,
         help="Evaluate every N iterations",
     )
     parser.add_argument(
         "--log_freq",
         type=int,
-        default=7,
+        default=5,
         help="Log metrics every N iterations",
     )
     parser.add_argument(
         "--opacity_reset_interval",
         type=int,
-        default=700,
+        default=15_000,
         help="Reset opacity every N iterations",
     )
     parser.add_argument(
@@ -184,7 +190,7 @@ def parse_args():
     parser.add_argument(
         "--dropout_prob",
         type=float,
-        default=0.2,
+        default=0.25,
         help="Dropout probability for encoder layers",
     )
     parser.add_argument(
@@ -741,8 +747,6 @@ def train(args, logger, writer, log_dir):
                 writer.add_scalar("grad/mean_abs", grad_stats["mean_abs"], iteration)
                 writer.add_scalar("grad/min", grad_stats["min"], iteration)
                 writer.add_scalar("grad/max", grad_stats["max"], iteration)
-
-            progress_bar.set_description(f"Loss: {ema_loss:.4f}, SNR: {snr:.2f} dB")
 
         if (
             iteration > 0 and iteration % args.eval_freq == 0
