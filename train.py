@@ -88,46 +88,46 @@ def parse_args():
     parser.add_argument(
         "--position_lr_init",
         type=float,
-        default=0.00016,
+        default=0.000016,
         help="Initial position learning rate",
     )
     parser.add_argument(
         "--position_lr_final",
         type=float,
-        default=0.0000016,
+        default=0.00000016,
         help="Final position learning rate",
     )
     parser.add_argument(
         "--position_lr_delay_mult", type=float, default=0.01, help="LR delay multiplier"
     )
     parser.add_argument(
-        "--rotation_lr", type=float, default=0.001, help="Rotation learning rate"
+        "--rotation_lr", type=float, default=0.0001, help="Rotation learning rate"
     )
     parser.add_argument(
-        "--scaling_lr", type=float, default=0.005, help="Scaling learning rate"
+        "--scaling_lr", type=float, default=0.0005, help="Scaling learning rate"
     )
     parser.add_argument(
         "--opacity_lr",
         type=float,
-        default=0.05,
+        default=0.0005,
         help="Opacity learning rate",
     )
     parser.add_argument(
         "--encoder_lr",
         type=float,
-        default=0.001,
+        default=0.0001,
         help="Learning rate for base encoder and directional network",
     )
     parser.add_argument(
         "--enc_weight_decay",
         type=float,
-        default=1e-6,
+        default=1e-4,
         help="Weight decay for base encoder and directional network",
     )
     parser.add_argument(
         "--gaussian_weight_decay",
         type=float,
-        default=1e-4,
+        default=1e-2,
         help="Weight decay for Gaussian parameters",
     )
     parser.add_argument(
@@ -230,13 +230,7 @@ def parse_args():
 
     # loss-specific arguments
     parser.add_argument(
-        "--loss_scale",
-        type=float,
-        default=1e4,
-        help="Scale factor for loss (if applicable)",
-    )
-    parser.add_argument(
-        "--loss_eps", type=float, default=1e-10, help="Epsilon value for loss functions"
+        "--loss_eps", type=float, default=0, help="Epsilon value for loss functions"
     )
     parser.add_argument(
         "--phase_weight",
@@ -247,7 +241,7 @@ def parse_args():
     parser.add_argument(
         "--rx_noise_std",
         type=float,
-        default=0.0,
+        default=0.01,
         help="Std dev of noise to add to receiver positions during training (0 to disable)",
     )
 
@@ -634,7 +628,6 @@ def train(args, logger, writer, log_dir):
     model.train()
 
     loss_kwargs = {
-        "scale": args.loss_scale,
         "eps": args.loss_eps,
         "phase_weight": args.phase_weight,
     }
