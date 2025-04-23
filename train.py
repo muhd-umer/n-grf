@@ -170,7 +170,7 @@ def parse_args():
     parser.add_argument(
         "--iterations",
         type=int,
-        default=7_000,
+        default=30_000,
         help="Number of training iterations",
     )
     parser.add_argument(
@@ -194,7 +194,7 @@ def parse_args():
     parser.add_argument(
         "--opacity_reset_interval",
         type=int,
-        default=700,
+        default=3_000,
         help="Reset opacity every N iterations",
     )
     parser.add_argument(
@@ -239,9 +239,15 @@ def parse_args():
         help="Weight for phase term in polar_mse or log_mag_phase loss",
     )
     parser.add_argument(
+        "--gaussian_dropout_rate",
+        type=float,
+        default=0.25,
+        help="Dropout rate for Gaussian primitives during training (0 to disable)",
+    )
+    parser.add_argument(
         "--rx_noise_std",
         type=float,
-        default=0.01,
+        default=0.0,
         help="Std dev of noise to add to receiver positions during training (0 to disable)",
     )
 
@@ -285,14 +291,32 @@ def parse_args():
     return args
 
 
-def rasterize_channel(model, rx_params, tx_params, args):
+def rasterize_channel(model, rx_params, tx_params, args, is_training=False):
     """Helper function to rasterize the channel using the selected function."""
+    xyz = model.get_xyz
+    scaling = model.get_scaling
+    rotation = model.get_rotation
+    base_features = model.get_base_features
+    opacity = model.get_opacity
+    num_gaussians = xyz.shape[0]
+
+    if is_training and args.gaussian_dropout_rate > 0.0 and num_gaussians > 0:
+        dropout_rate = args.gaussian_dropout_rate
+        num_keep = max(1, int(num_gaussians * (1.0 - dropout_rate)))
+        keep_indices = torch.randperm(num_gaussians, device=xyz.device)[:num_keep]
+
+        xyz = xyz[keep_indices]
+        scaling = scaling[keep_indices]
+        rotation = rotation[keep_indices]
+        base_features = base_features[keep_indices]
+        opacity = opacity[keep_indices]
+
     return args.rasterize_fn(
-        points=model.get_xyz,
-        scaling=model.get_scaling,
-        rotation=model.get_rotation,
-        base_features=model.get_base_features,
-        opacity=model.get_opacity,
+        points=xyz,
+        scaling=scaling,
+        rotation=rotation,
+        base_features=base_features,
+        opacity=opacity,
         tx_params=tx_params,
         rx_params=rx_params,
         directional_network=model.directional_network,
@@ -309,6 +333,7 @@ def sequential_fwd(
     args,
     device,
     update_features=False,
+    is_training=False,
 ):
     """Process by iterating through each sample in the batch sequentially."""
     batch_size = batch["rx_position"].shape[0]
@@ -334,7 +359,9 @@ def sequential_fwd(
         rx_params_i = rx_params.copy()
         rx_params_i["position"] = rx_position
 
-        pred_channel = rasterize_channel(model, rx_params_i, tx_params, args)
+        pred_channel = rasterize_channel(
+            model, rx_params_i, tx_params, args, is_training=is_training
+        )
         pred_channels.append(pred_channel)
 
     return torch.stack(pred_channels)
@@ -400,6 +427,7 @@ def evaluate(
                 args,
                 device,
                 update_features=False,
+                is_training=False,  # Pass is_training=False explicitly for evaluation
             )
 
             loss = loss_fn(pred_channels, gt_channels)
@@ -566,6 +594,8 @@ def train(args, logger, writer, log_dir):
     logger.info(f"Number of Gaussians: {args.num_points}")
     if args.rx_noise_std > 0:
         logger.info(f"Using RX position noise with std dev: {args.rx_noise_std}")
+    if args.gaussian_dropout_rate > 0:
+        logger.info(f"Using Gaussian dropout with rate: {args.gaussian_dropout_rate}")
 
     logger.info("Initializing model...")
     encoder_cfg = EncoderConfig(
@@ -659,6 +689,7 @@ def train(args, logger, writer, log_dir):
             args,
             device,
             update_features=True,
+            is_training=True,  # Pass is_training=True for training forward pass
         )
 
         gt_channels = get_gt_batch(batch, device)
@@ -767,6 +798,11 @@ def train(args, logger, writer, log_dir):
                 writer.add_scalar("grad/mean_abs", grad_stats["mean_abs"], iteration)
                 writer.add_scalar("grad/min", grad_stats["min"], iteration)
                 writer.add_scalar("grad/max", grad_stats["max"], iteration)
+                writer.add_scalar(
+                    "hyperparams/gaussian_dropout_rate",
+                    args.gaussian_dropout_rate,
+                    iteration,
+                )
 
         if (
             iteration > 0 and iteration % args.eval_freq == 0
