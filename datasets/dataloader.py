@@ -1,5 +1,4 @@
 # datasets/dataloader.py
-import os
 from typing import Any, Dict, Optional
 
 import torch
@@ -38,9 +37,6 @@ def get_wireless_dataloader(
     seed: Optional[int] = None,
     drop_last: bool = False,
     subcarrier_idx: Optional[int] = None,
-    normalize: bool = True,
-    normalize_method: str = "stacked",
-    stats_file: Optional[str] = None,
 ) -> DataLoader:
     """Create a DataLoader for the wireless dataset.
 
@@ -55,9 +51,6 @@ def get_wireless_dataloader(
         drop_last (bool): Whether to drop the last incomplete batch
         subcarrier_idx (int, optional): Index of subcarrier to use for multi-carrier data.
             If None, uses middle subcarrier or extracts from filename for single-carrier.
-        normalize (bool): Whether to normalize channel matrices
-        normalize_method (str): Method for normalization ('separate' or 'stacked')
-        stats_file (str, optional): Path to save/load normalization statistics
 
     Returns:
         The configured data loader
@@ -68,9 +61,6 @@ def get_wireless_dataloader(
         train_ratio=train_ratio,
         seed=seed,
         subcarrier_idx=subcarrier_idx,
-        normalize=normalize,
-        normalize_method=normalize_method,
-        stats_file=stats_file,
     )
 
     return DataLoader(
@@ -93,9 +83,6 @@ def get_dataloaders(
     seed: Optional[int] = None,
     drop_last: bool = False,
     subcarrier_idx: Optional[int] = None,
-    normalize: bool = True,
-    normalize_method: str = "stacked",
-    stats_file: Optional[str] = None,
 ) -> tuple[DataLoader, DataLoader]:
     """Create training and validation DataLoaders for the wireless dataset.
 
@@ -109,19 +96,10 @@ def get_dataloaders(
         drop_last (bool): Whether to drop the last incomplete batch
         subcarrier_idx (int, optional): Index of subcarrier to use for multi-carrier data.
             If None, uses middle subcarrier or extracts from filename for single-carrier.
-        normalize (bool): Whether to normalize channel matrices
-        normalize_method (str): Method for normalization ('separate' or 'stacked')
-        stats_file (str, optional): Path to save/load normalization statistics
 
     Returns:
         A tuple of training and validation DataLoaders
     """
-    if normalize and stats_file is None:
-        data_dir = os.path.dirname(data_path)
-        data_name = os.path.basename(data_path).split(".")[0]
-        stats_file = os.path.join(data_dir, f"{data_name}_norm_stats.json")
-        os.remove(stats_file) if os.path.exists(stats_file) else None
-
     train_loader = get_wireless_dataloader(
         data_path,
         batch_size=batch_size,
@@ -132,9 +110,6 @@ def get_dataloaders(
         seed=seed,
         drop_last=drop_last,
         subcarrier_idx=subcarrier_idx,
-        normalize=normalize,
-        normalize_method=normalize_method,
-        stats_file=stats_file,
     )
 
     val_loader = get_wireless_dataloader(
@@ -147,9 +122,6 @@ def get_dataloaders(
         seed=seed,
         drop_last=drop_last,
         subcarrier_idx=subcarrier_idx,
-        normalize=normalize,
-        normalize_method=normalize_method,
-        stats_file=stats_file,
     )
 
     return train_loader, val_loader

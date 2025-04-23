@@ -48,27 +48,6 @@ def parse_args():
         help="Number of workers for data loading",
     )
 
-    # normalization params
-    parser.add_argument(
-        "--disable_normalization",
-        action="store_false",
-        dest="normalize",
-        help="Disable channel matrix normalization",
-    )
-    parser.add_argument(
-        "--normalize_method",
-        type=str,
-        default="stacked",
-        choices=["separate", "stacked"],
-        help="Method to normalize complex values (separate: normalize real/imag separately, stacked: normalize joint matrix)",
-    )
-    parser.add_argument(
-        "--stats_file",
-        type=str,
-        default=None,
-        help="Path to save/load normalization statistics",
-    )
-
     # initialization params
     parser.add_argument(
         "--init_method",
@@ -523,26 +502,7 @@ def train(args, logger, writer, log_dir):
         num_workers=args.num_workers,
         shuffle=True,
         drop_last=True,
-        normalize=args.normalize,
-        normalize_method=args.normalize_method,
-        stats_file=args.stats_file,
     )
-
-    if args.normalize:
-        norm_stats = train_dataloader.dataset.get_normalization_stats()
-        logger.info(
-            f"Channel normalization enabled with method: {args.normalize_method}"
-        )
-        logger.info(f"Normalization stats: {norm_stats}")
-
-        # store normalization stats in log directory
-        stats_file = Path(log_dir) / "norm_stats.json"
-        with open(stats_file, "w") as f:
-            import json
-
-            json.dump(norm_stats, f, indent=2)
-    else:
-        logger.info("Channel normalization disabled")
 
     # get static environment data
     try:
@@ -600,9 +560,9 @@ def train(args, logger, writer, log_dir):
     logger.info("Initializing model...")
     encoder_cfg = EncoderConfig(
         hidden_size=128,
-        num_layers=6,
-        skip_layers=(3,),
-        input_pos_multires=10,
+        num_layers=8,
+        skip_layers=(4,),
+        input_pos_multires=8,
         use_positional_encoding=args.use_positional_encoding,
         use_layer_norm=args.use_encoder_layernorm,
         dropout_prob=args.dropout_prob,
