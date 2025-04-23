@@ -32,13 +32,13 @@ def parse_args():
     parser.add_argument(
         "--num_points",
         type=int,
-        default=64_000,
+        default=32_000,
         help="Number of points to use for Gaussian initialization",
     )
     parser.add_argument(
         "--batch_size",
         type=int,
-        default=4,
+        default=8,
         help="Batch size for training and evaluation",
     )
     parser.add_argument(
@@ -67,52 +67,52 @@ def parse_args():
     parser.add_argument(
         "--position_lr_init",
         type=float,
-        default=0.000016,
+        default=0.00016,
         help="Initial position learning rate",
     )
     parser.add_argument(
         "--position_lr_final",
         type=float,
-        default=0.00000016,
+        default=0.0000016,
         help="Final position learning rate",
     )
     parser.add_argument(
         "--position_lr_delay_mult", type=float, default=0.01, help="LR delay multiplier"
     )
     parser.add_argument(
-        "--rotation_lr", type=float, default=0.0001, help="Rotation learning rate"
+        "--rotation_lr", type=float, default=0.001, help="Rotation learning rate"
     )
     parser.add_argument(
-        "--scaling_lr", type=float, default=0.0005, help="Scaling learning rate"
+        "--scaling_lr", type=float, default=0.005, help="Scaling learning rate"
     )
     parser.add_argument(
         "--opacity_lr",
         type=float,
-        default=0.0005,
+        default=0.025,
         help="Opacity learning rate",
     )
     parser.add_argument(
         "--encoder_lr",
         type=float,
-        default=0.0001,
+        default=0.0025,
         help="Learning rate for base encoder and directional network",
     )
     parser.add_argument(
         "--enc_weight_decay",
         type=float,
-        default=1e-4,
+        default=1e-7,
         help="Weight decay for base encoder and directional network",
     )
     parser.add_argument(
         "--gaussian_weight_decay",
         type=float,
-        default=1e-2,
+        default=0,
         help="Weight decay for Gaussian parameters",
     )
     parser.add_argument(
         "--gradient_clip_val",
         type=float,
-        default=5,
+        default=0,
         help="Value to clip gradient norm to (0 to disable)",
     )
     parser.add_argument(
@@ -406,7 +406,6 @@ def evaluate(
                 args,
                 device,
                 update_features=False,
-                is_training=False,  # Pass is_training=False explicitly for evaluation
             )
 
             loss = loss_fn(pred_channels, gt_channels)
