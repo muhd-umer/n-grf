@@ -3,6 +3,7 @@
 .vscode/
 logs/
 eval_results/
+datasets/outputs
 
 # matlab
 *.mat

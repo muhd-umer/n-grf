@@ -48,6 +48,27 @@ def parse_args():
         help="Number of workers for data loading",
     )
 
+    # normalization params
+    parser.add_argument(
+        "--disable_normalization",
+        action="store_false",
+        dest="normalize",
+        help="Disable channel matrix normalization",
+    )
+    parser.add_argument(
+        "--normalize_method",
+        type=str,
+        default="stacked",
+        choices=["separate", "stacked"],
+        help="Method to normalize complex values (separate: normalize real/imag separately, stacked: normalize joint matrix)",
+    )
+    parser.add_argument(
+        "--stats_file",
+        type=str,
+        default=None,
+        help="Path to save/load normalization statistics",
+    )
+
     # initialization params
     parser.add_argument(
         "--init_method",
@@ -112,7 +133,7 @@ def parse_args():
     parser.add_argument(
         "--gradient_clip_val",
         type=float,
-        default=0,
+        default=5,
         help="Value to clip gradient norm to (0 to disable)",
     )
     parser.add_argument(
@@ -149,13 +170,13 @@ def parse_args():
     parser.add_argument(
         "--iterations",
         type=int,
-        default=150_000,
+        default=7_000,
         help="Number of training iterations",
     )
     parser.add_argument(
         "--checkpoint_freq",
         type=int,
-        default=15_000,
+        default=700,
         help="Save checkpoint every N iterations",
     )
     parser.add_argument(
@@ -173,7 +194,7 @@ def parse_args():
     parser.add_argument(
         "--opacity_reset_interval",
         type=int,
-        default=15_000,
+        default=700,
         help="Reset opacity every N iterations",
     )
     parser.add_argument(
@@ -327,21 +348,7 @@ def sequential_fwd(
 
 def get_gt_batch(batch, device):
     """Process ground truth channel matrices from a batch"""
-    batch_size = batch["channel_matrix"].shape[0]
-    gt_channels = []
-
-    for b in range(batch_size):
-        gt_channel = batch["channel_matrix"][b].to(device)
-        if not torch.is_complex(gt_channel):
-            if gt_channel.shape[-1] == 2:
-                gt_channel = torch.complex(gt_channel[..., 0], gt_channel[..., 1])
-            else:
-                gt_channel = torch.complex(gt_channel, torch.zeros_like(gt_channel))
-
-        gt_channel_stacked = torch.hstack((gt_channel.real, gt_channel.imag))
-        gt_channels.append(gt_channel_stacked)
-
-    return torch.stack(gt_channels)
+    return batch["channel_matrix"].to(device)
 
 
 def setup_experiment(args):
@@ -494,7 +501,26 @@ def train(args, logger, writer, log_dir):
         num_workers=args.num_workers,
         shuffle=True,
         drop_last=True,
+        normalize=args.normalize,
+        normalize_method=args.normalize_method,
+        stats_file=args.stats_file,
     )
+
+    if args.normalize:
+        norm_stats = train_dataloader.dataset.get_normalization_stats()
+        logger.info(
+            f"Channel normalization enabled with method: {args.normalize_method}"
+        )
+        logger.info(f"Normalization stats: {norm_stats}")
+
+        # store normalization stats in log directory
+        stats_file = Path(log_dir) / "norm_stats.json"
+        with open(stats_file, "w") as f:
+            import json
+
+            json.dump(norm_stats, f, indent=2)
+    else:
+        logger.info("Channel normalization disabled")
 
     # get static environment data
     try:
@@ -732,10 +758,11 @@ def train(args, logger, writer, log_dir):
                         iteration,
                     )
 
-                for i, param_group in enumerate(model.optimizer.param_groups):
-                    writer.add_scalar(
-                        f"lr/{param_group['name']}", param_group["lr"], iteration
-                    )
+                if model.optimizer:
+                    for i, param_group in enumerate(model.optimizer.param_groups):
+                        writer.add_scalar(
+                            f"lr/{param_group['name']}", param_group["lr"], iteration
+                        )
                 if model.encoder_optimizer:
                     writer.add_scalar(
                         "lr/encoder",

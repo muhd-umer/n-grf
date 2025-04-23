@@ -1,12 +1,10 @@
 # models/gaussian_model.py
 
 import warnings
-from dataclasses import dataclass
 from typing import Any, Dict, Optional, Union
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from simple_knn._C import distCUDA2  # type: ignore
 
 from utils.transform_utils import (

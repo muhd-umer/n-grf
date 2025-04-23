@@ -1,8 +1,11 @@
 # datasets/wireless_dataset.py
 
+import json
+import os
 import re
+import warnings
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Dict, Optional
 
 import numpy as np
 import torch
@@ -24,6 +27,9 @@ class WirelessDataset(Dataset):
         train_ratio (float, optional): Ratio of data to use for training (default: 0.8)
         seed (int, optional): Random seed for train/test split and point cloud sampling
         subcarrier_idx (int, optional): Index of the subcarrier to use (default: None)
+        normalize (bool, optional): Whether to normalize channel matrices (default: True)
+        normalize_method (str, optional): How to normalize complex values ('separate' or 'stacked')
+        stats_file (str, optional): Path to save/load normalization statistics (default: None)
     """
 
     def __init__(
@@ -33,11 +39,24 @@ class WirelessDataset(Dataset):
         train_ratio: float = 0.8,
         seed: Optional[int] = None,
         subcarrier_idx: Optional[int] = None,
+        normalize: bool = True,
+        normalize_method: str = "stacked",
+        stats_file: Optional[str] = None,
     ):
         super().__init__()
 
         self.data_path = Path(data_path)
         self.seed = seed if seed is not None else 42
+        self.normalize = normalize
+        self.normalize_method = normalize_method
+        self.train = train
+        self.stats_file = stats_file
+
+        if self.normalize_method not in ["separate", "stacked"]:
+            raise ValueError(
+                f"Invalid normalize_method: {normalize_method}. "
+                f"Choose from 'separate' or 'stacked'."
+            )
 
         if subcarrier_idx is None:
             filename = self.data_path.stem
@@ -67,7 +86,17 @@ class WirelessDataset(Dataset):
             range(total_size), [train_size, test_size], generator=generator
         )
 
-        self.indices = train_dataset if train else test_dataset
+        self.train_indices = list(train_dataset)
+        self.test_indices = list(test_dataset)
+        self.indices = self.train_indices if train else self.test_indices
+
+        if self.normalize:
+            if self.stats_file and os.path.exists(self.stats_file):
+                self._load_normalization_stats()
+            else:
+                self._compute_normalization_stats()
+                if self.stats_file:
+                    self._save_normalization_stats()
 
     def _process_data(self, data):
         self.point_cloud = torch.from_numpy(data["environment"]["point_cloud"]).float()
@@ -130,6 +159,102 @@ class WirelessDataset(Dataset):
         self.ray_interactions = channel["ray_interactions"]
         self.ray_coefficients = channel["ray_coefficients"]
 
+    def _compute_normalization_stats(self):
+        """Compute normalization statistics from training set."""
+        train_channels = [self.channel_matrix[idx] for idx in self.train_indices]
+        stkd_channels = torch.stack(train_channels)  # stacked channels
+
+        if self.normalize_method == "separate":
+            self.real_mean = stkd_channels.real.mean().item()
+            self.imag_mean = stkd_channels.imag.mean().item()
+            self.real_std = stkd_channels.real.std().item()
+            self.imag_std = stkd_channels.imag.std().item()
+
+            self.real_std = self.real_std
+            self.imag_std = self.imag_std
+
+        else:
+            real_imag_stacked = torch.cat(
+                [stkd_channels.real, stkd_channels.imag], dim=-1
+            )
+            self.mean = real_imag_stacked.mean().item()
+            self.std = real_imag_stacked.std().item()
+
+            self.std = self.std
+
+    def _save_normalization_stats(self):
+        """Save normalization statistics to a file."""
+        stats_dir = os.path.dirname(self.stats_file)
+        if stats_dir and not os.path.exists(stats_dir):
+            os.makedirs(stats_dir)
+
+        if self.normalize_method == "separate":
+            stats = {
+                "normalization_method": "separate",
+                "real_mean": self.real_mean,
+                "real_std": self.real_std,
+                "imag_mean": self.imag_mean,
+                "imag_std": self.imag_std,
+            }
+        else:
+            stats = {
+                "normalization_method": "stacked",
+                "mean": self.mean,
+                "std": self.std,
+            }
+
+        with open(self.stats_file, "w") as f:
+            json.dump(stats, f)
+
+    def _load_normalization_stats(self):
+        """Load normalization statistics from a file."""
+        with open(self.stats_file, "r") as f:
+            stats = json.load(f)
+
+        if stats["normalization_method"] != self.normalize_method:
+            warnings.warn(
+                f"Adapting normalization method: Loaded stats use {stats['normalization_method']} normalization, "
+                f"but {self.normalize_method} was requested. Using {stats['normalization_method']} instead."
+            )
+            self.normalize_method = stats["normalization_method"]
+
+        if self.normalize_method == "separate":
+            self.real_mean = stats["real_mean"]
+            self.real_std = stats["real_std"]
+            self.imag_mean = stats["imag_mean"]
+            self.imag_std = stats["imag_std"]
+        else:
+            self.mean = stats["mean"]
+            self.std = stats["std"]
+
+    def normalize_channel(self, channel):
+        """Normalize a channel matrix using the precomputed statistics."""
+        if not self.normalize:
+            return channel
+
+        if self.normalize_method == "separate":
+            real_part = (channel.real - self.real_mean) / self.real_std
+            imag_part = (channel.imag - self.imag_mean) / self.imag_std
+            return torch.complex(real_part, imag_part)
+        else:
+            return channel
+
+    def get_normalization_stats(self) -> Dict[str, float]:
+        """Get the normalization statistics as a dictionary."""
+        if not self.normalize:
+            return {}
+
+        if self.normalize_method == "separate":
+            return {
+                "real_mean": self.real_mean,
+                "real_std": self.real_std,
+                "imag_mean": self.imag_mean,
+                "imag_std": self.imag_std,
+                "method": "separate",
+            }
+        else:
+            return {"mean": self.mean, "std": self.std, "method": "stacked"}
+
     def get_tx_position(self) -> torch.Tensor:
         """Get transmitter position."""
         if not hasattr(self, "tx_position"):
@@ -179,6 +304,24 @@ class WirelessDataset(Dataset):
     def __getitem__(self, idx):
         current_idx = self.indices[idx]
 
+        channel_matrix = self.channel_matrix[current_idx]
+
+        if self.normalize:
+            if self.normalize_method == "separate":
+                channel_matrix = self.normalize_channel(channel_matrix)
+                channel_matrix_stkd = torch.hstack(
+                    (channel_matrix.real, channel_matrix.imag)
+                )
+            else:
+                channel_matrix_stkd = torch.hstack(
+                    (channel_matrix.real, channel_matrix.imag)
+                )
+                channel_matrix_stkd = (channel_matrix_stkd - self.mean) / self.std
+        else:
+            channel_matrix_stkd = torch.hstack(
+                (channel_matrix.real, channel_matrix.imag)
+            )
+
         aoa = self.aoa[current_idx]
         aod = self.aod[current_idx]
 
@@ -205,7 +348,8 @@ class WirelessDataset(Dataset):
 
         return {
             "rx_position": self.rx_positions[current_idx],
-            "channel_matrix": self.channel_matrix[current_idx],
+            "channel_matrix": channel_matrix_stkd,
+            "channel_matrix_clx": channel_matrix,
             "aod": aod,
             "aoa": aoa,
             "path_loss_per_ray": path_loss_per_ray,
