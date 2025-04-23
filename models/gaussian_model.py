@@ -435,7 +435,8 @@ class GaussianModel(nn.Module):
         opacities_new = self.inverse_opacity_activation(
             torch.min(self.get_opacity, torch.ones_like(self.get_opacity) * 0.01)
         )
-        self._opacity.copy_(opacities_new)
+        with torch.no_grad():
+            self._opacity.copy_(opacities_new)
 
         if self.optimizer:
             for group in self.optimizer.param_groups:
