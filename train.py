@@ -177,7 +177,7 @@ def parse_args():
         help="Reset opacity every N iterations",
     )
     parser.add_argument(
-        "--disable_opacity_reset",
+        "--opacity_reset",
         action="store_true",
         help="Disable periodic opacity reset",
     )
@@ -243,7 +243,7 @@ def parse_args():
     if "use_dirnet_layernorm" not in args:
         args.use_dirnet_layernorm = True
 
-    if not args.disable_opacity_reset:
+    if args.opacity_reset:
         assert (
             args.opacity_reset_interval > 0
         ), "If opacity reset is enabled, opacity_reset_interval must be > 0"
@@ -701,7 +701,7 @@ def train(args, logger, writer, log_dir):
         model.update_learning_rate(iteration)
 
         if (
-            not args.disable_opacity_reset
+            args.opacity_reset
             and iteration > 0
             and iteration % args.opacity_reset_interval == 0
         ):
