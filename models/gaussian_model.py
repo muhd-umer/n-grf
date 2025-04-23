@@ -134,6 +134,7 @@ class GaussianModel(nn.Module):
             (num_points, self.encoder_cfg.base_feature_dim),
             device=device,
             dtype=points.dtype,
+            requires_grad=True,
         )
 
         if tx_position is not None:
@@ -431,11 +432,10 @@ class GaussianModel(nn.Module):
             )
             return
 
-        with torch.no_grad():
-            opacities_new = self.inverse_opacity_activation(
-                torch.min(self.get_opacity, torch.ones_like(self.get_opacity) * 0.01)
-            )
-            self._opacity.copy_(opacities_new)
+        opacities_new = self.inverse_opacity_activation(
+            torch.min(self.get_opacity, torch.ones_like(self.get_opacity) * 0.01)
+        )
+        self._opacity.copy_(opacities_new)
 
         if self.optimizer:
             for group in self.optimizer.param_groups:
