@@ -32,13 +32,13 @@ def parse_args():
     parser.add_argument(
         "--num_points",
         type=int,
-        default=32_000,
+        default=64_000,
         help="Number of points to use for Gaussian initialization",
     )
     parser.add_argument(
         "--batch_size",
         type=int,
-        default=8,
+        default=24,
         help="Batch size for training and evaluation",
     )
     parser.add_argument(
@@ -100,7 +100,7 @@ def parse_args():
     parser.add_argument(
         "--enc_weight_decay",
         type=float,
-        default=1e-7,
+        default=1e-8,
         help="Weight decay for base encoder and directional network",
     )
     parser.add_argument(
@@ -112,7 +112,7 @@ def parse_args():
     parser.add_argument(
         "--gradient_clip_val",
         type=float,
-        default=5,
+        default=8,
         help="Value to clip gradient norm to (0 to disable)",
     )
     parser.add_argument(
@@ -149,13 +149,13 @@ def parse_args():
     parser.add_argument(
         "--iterations",
         type=int,
-        default=30_000,
+        default=18_000,
         help="Number of training iterations",
     )
     parser.add_argument(
         "--checkpoint_freq",
         type=int,
-        default=700,
+        default=600,
         help="Save checkpoint every N iterations",
     )
     parser.add_argument(
@@ -173,7 +173,7 @@ def parse_args():
     parser.add_argument(
         "--opacity_reset_interval",
         type=int,
-        default=3_000,
+        default=1_800,
         help="Reset opacity every N iterations",
     )
     parser.add_argument(
@@ -194,6 +194,12 @@ def parse_args():
         help="Dropout probability for encoder layers",
     )
     parser.add_argument(
+        "--gaussian_dropout_rate",
+        type=float,
+        default=0.0,
+        help="Dropout rate for Gaussian primitives during training (0 to disable)",
+    )
+    parser.add_argument(
         "--disable_cuda",
         action="store_true",
         help="Disable CUDA implementation and use PyTorch fallback for rasterization",
@@ -209,19 +215,13 @@ def parse_args():
 
     # loss-specific arguments
     parser.add_argument(
-        "--loss_eps", type=float, default=0, help="Epsilon value for loss functions"
+        "--loss_eps", type=float, default=1e-10, help="Epsilon value for loss functions"
     )
     parser.add_argument(
         "--phase_weight",
         type=float,
         default=1.0,
         help="Weight for phase term in polar_mse or log_mag_phase loss",
-    )
-    parser.add_argument(
-        "--gaussian_dropout_rate",
-        type=float,
-        default=0.25,
-        help="Dropout rate for Gaussian primitives during training (0 to disable)",
     )
     parser.add_argument(
         "--rx_noise_std",
