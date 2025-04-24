@@ -94,7 +94,7 @@ def parse_args():
     parser.add_argument(
         "--encoder_lr",
         type=float,
-        default=0.0025,
+        default=0.001,
         help="Learning rate for base encoder and directional network",
     )
     parser.add_argument(
@@ -112,7 +112,7 @@ def parse_args():
     parser.add_argument(
         "--gradient_clip_val",
         type=float,
-        default=0,
+        default=5,
         help="Value to clip gradient norm to (0 to disable)",
     )
     parser.add_argument(
