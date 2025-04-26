@@ -386,8 +386,10 @@ def evaluate(
     """Evaluate model on validation set"""
     model.eval()
     total_loss = 0.0
-    total_nmse = 0.0
-    num_batches = 0
+
+    total_error_sq_sum = 0.0
+    total_gt_sq_sum = 0.0
+    total_samples = 0
 
     logger.info(f"Evaluating at iteration {iteration}...")
 
@@ -397,6 +399,7 @@ def evaluate(
 
         for batch in tqdm(dataloader, desc="Evaluating"):
             gt_channels = get_gt_batch(batch, device)
+            batch_size = gt_channels.shape[0]
 
             pred_channels = sequential_fwd(
                 model,
@@ -406,29 +409,44 @@ def evaluate(
                 args,
                 device,
                 update_features=False,
+                is_training=False,
             )
 
             loss = loss_fn(pred_channels, gt_channels)
-            nmse = calculate_nmse(pred_channels, gt_channels)
 
-            total_loss += loss.item()
-            total_nmse += nmse.item()
-            num_batches += 1
+            total_loss += loss.item() * batch_size
 
-    avg_loss = total_loss / max(num_batches, 1)
-    avg_nmse = total_nmse / max(num_batches, 1)
-    avg_snr = calculate_snr(torch.tensor(avg_nmse)).item()
+            pred_real, pred_imag = pred_channels[..., 0], pred_channels[..., 1]
+            target_real, target_imag = gt_channels[..., 0], gt_channels[..., 1]
+            pred_complex = torch.complex(pred_real, pred_imag)
+            target_complex = torch.complex(target_real, target_imag)
+
+            batch_error_sq_sum = torch.sum(
+                torch.abs(pred_complex - target_complex) ** 2
+            )
+            batch_gt_sq_sum = torch.sum(torch.abs(target_complex) ** 2)
+
+            total_error_sq_sum += batch_error_sq_sum.item()
+            total_gt_sq_sum += batch_gt_sq_sum.item()
+            total_samples += batch_size
+
+    avg_loss = total_loss / max(total_samples, 1)
+
+    eps = 1e-9
+    overall_nmse = total_error_sq_sum / max(total_gt_sq_sum, eps)
+    overall_snr = calculate_snr(torch.tensor(overall_nmse)).item()
 
     logger.info(
-        f"Evaluation Loss ({args.loss_type}): {avg_loss:.6f}, SNR: {avg_snr:.2f} dB"
+        f"Evaluation Loss ({args.loss_type}): {avg_loss:.6f}, Overall SNR: {overall_snr:.2f} dB (NMSE: {overall_nmse:.6f})"
     )
 
     if writer is not None:
         writer.add_scalar("eval/loss", avg_loss, iteration)
-        writer.add_scalar("eval/nmse", avg_nmse, iteration)
-        writer.add_scalar("eval/snr", avg_snr, iteration)
+        writer.add_scalar("eval/overall_nmse", overall_nmse, iteration)
+        writer.add_scalar("eval/overall_snr", overall_snr, iteration)
 
     model.train()
+
     return avg_loss
 
 

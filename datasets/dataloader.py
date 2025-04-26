@@ -114,7 +114,7 @@ def get_dataloaders(
 
     val_loader = get_wireless_dataloader(
         data_path,
-        batch_size=42,
+        batch_size=1,
         num_workers=num_workers,
         shuffle=False,
         train=False,
