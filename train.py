@@ -437,7 +437,7 @@ def evaluate(
     overall_snr = calculate_snr(torch.tensor(overall_nmse)).item()
 
     logger.info(
-        f"Evaluation Loss ({args.loss_type}): {avg_loss:.6f}, Overall SNR: {overall_snr:.2f} dB (NMSE: {overall_nmse:.6f})"
+        f"Evaluation Loss ({args.loss_type}): {avg_loss:.6f}, SNR: {overall_snr:.2f} dB (NMSE: {overall_nmse:.6f})"
     )
 
     if writer is not None:
