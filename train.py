@@ -436,9 +436,7 @@ def evaluate(
     overall_nmse = total_error_sq_sum / max(total_gt_sq_sum, eps)
     overall_snr = calculate_snr(torch.tensor(overall_nmse)).item()
 
-    logger.info(
-        f"Evaluation Loss ({args.loss_type}): {avg_loss:.6f}, SNR: {overall_snr:.2f} dB (NMSE: {overall_nmse:.6f})"
-    )
+    logger.info(f"[Evaluation] SNR: {overall_snr:.2f} dB [NMSE: {overall_nmse:.4f}]")
 
     if writer is not None:
         writer.add_scalar("eval/loss", avg_loss, iteration)
@@ -605,9 +603,7 @@ def train(args, logger, writer, log_dir):
             checkpoint = torch.load(args.resume, map_location=device)
             start_iteration = checkpoint.get("iteration", 0) + 1
             best_val_loss = checkpoint.get("best_val_loss", float("inf"))
-            logger.info(
-                f"Resuming from iteration {start_iteration}, best val loss: {best_val_loss:.6f}"
-            )
+            logger.info(f"Resuming from iteration {start_iteration}")
         except Exception as e:
             logger.error(f"Failed to load checkpoint: {e}. Starting from scratch.")
             args.resume = None
@@ -731,7 +727,7 @@ def train(args, logger, writer, log_dir):
         if iteration % args.log_freq == 0:
             log_msg = (
                 f"[{iteration}/{args.iterations}] "
-                f"Loss: {loss.item():.6f} [EMA: {ema_loss:.6f}], "
+                f"Loss: {loss.item():.4f}, "
                 f"SNR: {snr:.2f} dB, "
                 f"Time: {iter_time:.2f}s, "
                 f"Gaussians: {model.get_xyz.shape[0]}"
@@ -800,9 +796,6 @@ def train(args, logger, writer, log_dir):
             # save best model
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
-                logger.info(
-                    f"New best validation loss ({args.loss_type}): {best_val_loss:.6f}"
-                )
                 model.save(
                     log_dir / "checkpoints" / "best_model.pt",
                     save_optimizer=True,
