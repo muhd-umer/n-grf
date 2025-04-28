@@ -1,112 +1,113 @@
 function [H, AoD, AoA] = generate_csi(rays, fc, cfg, txArray, rxArray, method, scenario, use_single_sc, sc_idx)
-    % GENERATE_CSI Generate MIMO channel matrix using array steering vectors.
+    % GENERATE_CSI Generate a spatially-consistent, frequency-selective MIMO channel
     %
-    % This function computes a MIMO channel matrix H such that each TX-RX
-    % pair receives a weighted contribution based on the ray's complex gain
-    % and the spatial response of the arrays at the transmitter and receiver.
+    % Description:
+    %   Generates a MIMO channel tensor H from ray tracing data.
+    %   Computes the channel response for each subcarrier in the OFDM/NR signal.
+    %   The channel tensor is computed using the steering vectors of the transmit
+    %   and receive arrays, and the path loss and phase shift of each ray.
     %
     % Inputs:
-    %   rays        - structure array containing ray information
-    %   fc          - carrier frequency (Hz)
-    %   cfg         - WLAN configuration (used for OFDM parameters) or NR Carrier Config
-    %   txArray     - phased.URA object for transmit array
-    %   rxArray     - phased.ULA object for receive array
-    %   method      - channel computation method ("sbr" or alternative)
-    %   scenario    - "indoor" or "outdoor"
-    %   use_single_sc - boolean flag for single subcarrier processing
-    %   sc_idx      - (optional) subcarrier index to use when use_single_sc is true
+    %   rays          - Ray objects array from ray tracing
+    %   fc            - Center frequency (Hz)
+    %   cfg           - OFDM/NR carrier configuration struct
+    %   txArray       - Transmit array (phased.URA)
+    %   rxArray       - Receive array (phased.ULA)
+    %   method        - 'sbr' to use ray.PathLoss/PhaseShift, 'fspl' for pure FSPL
+    %   scenario      - "indoor" or "outdoor"
+    %   use_single_sc - true to pick one subcarrier via sc_idx, false for all
+    %   sc_idx        - Subcarrier index if use_single_sc==true
     %
     % Outputs:
-    %   H   - Channel matrix of size (num_tx_ant, num_rx_ant, numSubcarriers)
-    %   AoD - Matrix containing angles of departure (2 x numRays)
-    %   AoA - Matrix containing angles of arrival (2 x numRays)
+    %   H   - Nt x Nr x Nsc channel tensor (complex)
+    %   AoD - 2 x Nrays matrix of departure [az;el] in degrees
+    %   AoA - 2 x Nrays matrix of arrival   [az;el] in degrees
+    %
+    % Example:
+    %   [H, AoD, AoA] = generate_csi(rays, fc, cfg, txArray, rxArray, 'sbr', "outdoor", true, 1);
 
-    if nargin < 8
-        use_single_sc = false;
-    end
-
-    if nargin < 9 % Default sc_idx to empty if not provided
-        sc_idx = [];
-    end
-
-    num_tx_ant = prod(txArray.Size);
-    num_rx_ant = rxArray.NumElements;
+    if nargin < 8, use_single_sc = false; end
+    if nargin < 9, sc_idx = []; end
 
     if scenario == "indoor"
-        ofdmInfo = wlanNonHTOFDMInfo('L-LTF', cfg.ChannelBandwidth);
-        activeIndices = ofdmInfo.ActiveFrequencyIndices;
-        sc_spacing = wlanSampleRate(cfg.ChannelBandwidth) / ofdmInfo.FFTLength;
-
+        ofdmInfo   = wlanNonHTOFDMInfo('L-LTF', cfg.ChannelBandwidth);
+        actIdx     = ofdmInfo.ActiveFrequencyIndices;
+        sc_sp      = wlanSampleRate(cfg.ChannelBandwidth) / ofdmInfo.FFTLength;
         if use_single_sc
-
-            if isempty(sc_idx)
-                sc_idx = ceil(length(activeIndices) / 2);
-            end
-
-            freqs = fc + activeIndices(sc_idx) * sc_spacing;
-            numSubcarriers = 1;
+            if isempty(sc_idx), sc_idx = ceil(numel(actIdx)/2); end
+            freqs = fc + actIdx(sc_idx)*sc_sp;
         else
-            freqs = fc + activeIndices * sc_spacing;
-            numSubcarriers = length(activeIndices);
+            freqs = fc + actIdx*sc_sp;
         end
-
-    elseif scenario == "outdoor"
-        sc_spacing = cfg.SubcarrierSpacing * 1e3;
-        numSubcarriersTotal = cfg.NSizeGrid * 12;
-        activeIndices = (-numSubcarriersTotal / 2:numSubcarriersTotal / 2 - 1);
-
-        if use_single_sc
-
-            if isempty(sc_idx)
-                zero_center_idx = find(activeIndices == 0);
-
-                if isempty(zero_center_idx)
-                    sc_idx = ceil(length(activeIndices) / 2);
-                else
-                    sc_idx = zero_center_idx;
-                end
-
-            end
-
-            freqs = fc + activeIndices(sc_idx) * sc_spacing;
-            numSubcarriers = 1;
-        else
-            freqs = fc + activeIndices * sc_spacing;
-            numSubcarriers = length(freqs);
-        end
-
     else
-        error('Invalid scenario: use "indoor" or "outdoor"');
+        sc_sp      = cfg.SubcarrierSpacing * 1e3;
+        totalSC    = cfg.NSizeGrid * 12;
+        actIdx     = -totalSC/2 : totalSC/2-1;
+        if use_single_sc
+            if isempty(sc_idx), sc_idx = ceil(numel(actIdx)/2); end
+            freqs = fc + actIdx(sc_idx)*sc_sp;
+        else
+            freqs = fc + actIdx*sc_sp;
+        end
     end
+    Nsc = numel(freqs);
 
-    H = zeros(num_tx_ant, num_rx_ant, numSubcarriers);
-    numRays = length(rays);
-    AoD = zeros(2, numRays);
-    AoA = zeros(2, numRays);
+    Nt = prod(txArray.Size);
+    Nr = rxArray.NumElements;
+    H  = zeros(Nt, Nr, Nsc);
 
-    lambda = physconst("lightspeed") / fc;
+    svTx = phased.SteeringVector( ...
+        'SensorArray',            txArray, ...
+        'PropagationSpeed',       physconst('LightSpeed'), ...
+        'IncludeElementResponse', false );
+    svRx = phased.SteeringVector( ...
+        'SensorArray',            rxArray, ...
+        'PropagationSpeed',       physconst('LightSpeed'), ...
+        'IncludeElementResponse', false );
 
-    for rayIdx = 1:numRays
-        ray = rays(rayIdx);
-        AoD(:, rayIdx) = ray.AngleOfDeparture;
-        AoA(:, rayIdx) = ray.AngleOfArrival;
-        
-        % compute steering vectors
-        [a_tx, a_rx] = steering_vec(ray.AngleOfDeparture, ray.AngleOfArrival, txArray, rxArray, lambda);
+    numRays = numel(rays);
+    AoD     = zeros(2, numRays);
+    AoA     = zeros(2, numRays);
 
-        for scIdx = 1:length(freqs)
-            f = freqs(scIdx);
+    for r = 1:numRays
+        ray  = rays(r);
+        dist = ray.PropagationDistance;
+        tau  = dist / physconst('LightSpeed');
 
-            if strcmp(method, "sbr")
-                pl = ray.PathLoss;
-                phase = ray.PhaseShift;
+        if ray.LineOfSight
+            pts = [ray.TransmitterLocation, ray.ReceiverLocation];
+        else
+            pts = [ray.TransmitterLocation, ray.Interactions.Location, ray.ReceiverLocation];
+        end
+
+        % departure
+        vecTx      = pts(:,2) - pts(:,1);
+        [azT, elT] = cart2sph(vecTx(1), vecTx(2), vecTx(3));
+        azT = rad2deg(azT);  elT = rad2deg(elT);
+        AoD(:,r) = [azT; elT];
+
+        % arrival
+        vecRx      = pts(:,end) - pts(:,end-1);
+        [azR, elR] = cart2sph(vecRx(1), vecRx(2), vecRx(3));
+        azR = rad2deg(azR);  elR = rad2deg(elR);
+        AoA(:,r) = [azR; elR];
+
+        aTx = svTx(fc, [azT; elT]);
+        aRx = svRx(fc, [azR; elR]);
+
+        for k = 1:Nsc
+            f = freqs(k);
+            if strcmp(method, 'sbr')
+                pl0   = ray.PathLoss;
+                phi0  = ray.PhaseShift;
+                pl    = pl0;
+                phase = phi0 + 2*pi*(f - fc)*tau;
             else
-                pl = fspl(ray.PropagationDistance, f);
-                phase = 2 * pi * f * ray.PropagationDistance / physconst("lightspeed");
+                pl    = fspl(dist, f);
+                phase = 2*pi*f*tau;
             end
-
-            h = 10 ^ (-pl / 20) * exp(-1j * phase);
-            H(:, :, scIdx) = H(:, :, scIdx) + h * (a_tx * a_rx.');
+            h = 10^(-pl/20) * exp(-1j*phase);
+            H(:,:,k) = H(:,:,k) + (aTx * aRx.') * h;
         end
     end
 end

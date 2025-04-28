@@ -7,27 +7,25 @@ function all_points = generate_pc(vertices, faces, params, env_dims, visualize)
     %   Supports optional DBSCAN clustering and visualization.
     %
     % Inputs:
-    %   vertices  - [N×3] Matrix of vertex coordinates from STL
-    %   faces    - [M×3] Matrix of face indices from STL
-    %   params   - Structure with the following optional fields:
-    %     .edge_density      - Points per edge unit length (default: 0)
-    %     .surface_density   - Points per triangle unit area (default: 0)
-    %     .volume_density    - Points per unit volume (default: 0)
-    %     .boundary_density  - Points per boundary surface area (default: 0)
-    %     .random_points     - Additional random points in volume (default: 0)
-    %     .noise_std        - Standard deviation for perturbation (default: 0)
-    %     .edge_reduction    - Factor to reduce edge points (default: 1)
-    %     .surface_reduction - Factor to reduce surface points (default: 1)
-    %     .use_dbscan       - Enable DBSCAN clustering (default: false)
-    %     .dbscan_epsilon   - DBSCAN epsilon parameter (default: 0.2)
-    %     .dbscan_minpts    - DBSCAN minimum points (default: 5)
-    %   env_dims - [3×2] Matrix of environment bounds [min_x max_x;
-    %                                                 min_y max_y;
-    %                                                 min_z max_z]
-    %   visualize - (Optional) Boolean to enable visualization (default: false)
+    %   vertices   - [Nx3] Matrix of vertex coordinates from STL
+    %   faces      - [Mx3] Matrix of face indices from STL
+    %   params     - Structure with the following optional fields:
+    %                  .edge_density      - Points per edge unit length (default: 0)
+    %                  .surface_density   - Points per triangle unit area (default: 0)
+    %                  .volume_density    - Points per unit volume (default: 0)
+    %                  .boundary_density  - Points per boundary surface area (default: 0)
+    %                  .random_points     - Additional random points in volume (default: 0)
+    %                  .noise_std         - Standard deviation for perturbation (default: 0)
+    %                  .edge_reduction    - Factor to reduce edge points (default: 1)
+    %                  .surface_reduction - Factor to reduce surface points (default: 1)
+    %                  .use_dbscan        - Enable DBSCAN clustering (default: false)
+    %                  .dbscan_epsilon    - DBSCAN epsilon parameter (default: 0.2)
+    %                  .dbscan_minpts     - DBSCAN minimum points (default: 5)
+    %   env_dims   - [3x2] Matrix of environment bounds [min_x max_x; min_y max_y; min_z max_z]
+    %   visualize  - (Optional) Boolean to enable visualization (default: false)
     %
     % Output:
-    %   all_points - [P×3] Matrix of generated point cloud coordinates
+    %   all_points - [Px3] Matrix of generated point cloud coordinates
     %
     % Example:
     %   [v, f] = stlread('building.stl');

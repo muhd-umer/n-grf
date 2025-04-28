@@ -12,15 +12,13 @@ function [interaction_points, ray_coeffs] = get_ray_chan(rays, freqs, method)
     %   method - String specifying computation method: "sbr" or "fspl"
     %
     % Outputs:
-    %   interaction_points - [3×N] matrix of final interaction point coordinates
-    %                       for N paths
-    %   ray_coeffs        - [F×N] complex matrix of channel coefficients for
-    %                       F frequencies and N paths
+    %   interaction_points - [3xN] matrix of final interaction point coordinates for N paths
+    %   ray_coeffs         - [FxN] complex matrix of channel coefficients for F frequencies and N paths
     %
     % Example:
     %   rays = rayTrace(tx, rx, environment);
     %   freqs = linspace(2.4e9, 2.5e9, 10);
-    %   [points, coeffs] = get_ray_chan(rays, freqs, "sbr");
+    %   [interaction_points, ray_coeffs] = get_ray_chan(rays, freqs, "sbr");
 
     n_paths = length(rays);
     n_freqs = length(freqs);

@@ -5,7 +5,7 @@ function [step_lengths, ray_points] = ray_marching(rays)
     %   Extracts step lengths and interaction points along ray paths from
     %   ray tracing results, handling both line-of-sight and multi-bounce paths.
     %
-    % Input:
+    % Inputs:
     %   rays - Array of ray objects from ray tracer containing path information
     %
     % Outputs:
@@ -14,7 +14,7 @@ function [step_lengths, ray_points] = ray_marching(rays)
     %
     % Example:
     %   rays = rayTrace(tx, rx, environment);
-    %   [lengths, points] = ray_marching(rays);
+    %   [step_lengths, ray_points] = ray_marching(rays);
 
     num_rays = length(rays);
     step_lengths = cell(num_rays, 1);

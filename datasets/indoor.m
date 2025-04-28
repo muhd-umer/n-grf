@@ -46,11 +46,11 @@ cfg = wlanNonHTConfig;
 cfg.ChannelBandwidth = 'CBW80';
 
 % extra config
-use_single_sc = true;
+use_single_sc = false;
 sc_idx = [];
 
-txArray = phased.URA("Size", [4 4], "ElementSpacing", lambda / 2);
-rxArray = phased.ULA("NumElements", 2, "ElementSpacing", lambda / 2);
+txArray = phased.URA("Size", [8 8], "ElementSpacing", lambda / 2);
+rxArray = phased.ULA("NumElements", 16, "ElementSpacing", lambda / 2);
 
 num_tx_ant = prod(txArray.Size);
 num_rx_ant = rxArray.NumElements;

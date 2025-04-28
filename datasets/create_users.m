@@ -6,14 +6,13 @@ function [Users, num_created] = create_users(env_dims, num_users, rx_array, user
     %   with optional collision detection for buildings and other users.
     %
     % Inputs:
-    %   env_dims    - [2×2] Matrix defining environment bounds [xmin xmax;
-    %                                                          ymin ymax]
+    %   env_dims    - [3x2] Matrix defining environment bounds [xmin xmax; ymin ymax; zmin zmax]
     %   num_users   - Number of users to generate
     %   rx_array    - Antenna array configuration for receivers
     %   user_params - Structure with the following optional fields:
-    %     .check_building_collision - Enable building collision (default: false)
-    %     .check_user_collision    - Enable user separation (default: true)
-    %     .separation_distance     - Minimum distance between users (auto)
+    %                   .check_building_collision - Enable building collision (default: false)
+    %                   .check_user_collision    - Enable user separation (default: true)
+    %                   .separation_distance     - Minimum distance between users (auto)
     %   stl_data    - STL mesh data for building collision detection (optional)
     %
     % Outputs:
@@ -21,7 +20,7 @@ function [Users, num_created] = create_users(env_dims, num_users, rx_array, user
     %   num_created - Actual number of users created (may be less than requested)
     %
     % Example:
-    %   env_dims = [-10 10; -10 10];
+    %   env_dims = [-10 10; -10 10; 0 20];
     %   num_users = 10;
     %   rx_array = phased.ULA('NumElements', 4);
     %   params.check_building_collision = true;
