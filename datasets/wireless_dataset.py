@@ -70,29 +70,42 @@ class WirelessDataset(Dataset):
         self.indices = train_dataset if train else test_dataset
 
     def _process_data(self, data):
+        self._store_config(data["config"])
+
         self.point_cloud = torch.from_numpy(data["environment"]["point_cloud"]).float()
 
         # handle complex channel matrix
-        H = torch.from_numpy(
-            data["channel"]["H"]
-        )  # shape: [num_users, tx_ant, rx_ant, num_sc] if multiple subcarriers
-        # [num_users, tx_ant, rx_ant] if single subcarrier
+        H_raw = data["channel"]["H"]
+        H = torch.from_numpy(H_raw)
 
-        if len(H.shape) == 3:  # single subcarrier
-            self.channel_matrix = H
-        elif len(H.shape) == 4:  # multiple subcarriers case
+        num_users_from_pos = data["nodes"]["users_positions"].shape[1]
+        if num_users_from_pos != self.num_users:
+            print(
+                f"Warning: num_users mismatch. Config: {self.num_users}, Positions: {num_users_from_pos}. Using {num_users_from_pos}."
+            )
+            self.num_users = num_users_from_pos
+
+        target_shape = (self.num_users, self.num_tx_ant, self.num_rx_ant)
+
+        if len(H.shape) > 3:
             if self.subcarrier_idx is None:
                 self.subcarrier_idx = H.shape[-1] // 2
             elif self.subcarrier_idx >= H.shape[-1]:
                 raise ValueError(
                     f"Subcarrier index {self.subcarrier_idx} out of range [0, {H.shape[-1]-1}]"
                 )
-
             H_selected = H[..., self.subcarrier_idx]
-            self.channel_matrix = H_selected
+            self.channel_matrix = H_selected.reshape(target_shape)
+        elif len(H.shape) <= 3:
+            try:
+                self.channel_matrix = H.reshape(target_shape)
+            except RuntimeError as e:
+                raise RuntimeError(
+                    f"Error reshaping H with shape {H.shape} to target {target_shape}. Original MATLAB shape: {H_raw.shape}. Error: {e}"
+                )
         else:
             raise ValueError(
-                f"Invalid channel matrix shape. Expected 3 or 4, got {len(H.shape)}"
+                f"Unexpected channel matrix shape: {H.shape}. Original MATLAB shape: {H_raw.shape}"
             )
 
         self.tx_position = torch.from_numpy(data["nodes"]["ap_position"]).float()
@@ -113,7 +126,6 @@ class WirelessDataset(Dataset):
         self.aoa = process_angle_data(data["channel"]["AoA"])
         self.env_dims = torch.from_numpy(data["environment"]["dimensions"]).float()
 
-        self._store_config(data["config"])
         self._store_channel_info(data["channel"])
 
     def _store_config(self, config):
@@ -122,6 +134,7 @@ class WirelessDataset(Dataset):
         self.frequency = float(config["frequency"])
         self.wavelength = float(config["wavelength"])
         self.num_users = int(config["num_users"])
+        self.use_siso = config.get("use_siso", None)
 
     def _store_channel_info(self, channel):
         self.frequencies = channel["frequencies"]

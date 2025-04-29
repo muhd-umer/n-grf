@@ -11,8 +11,8 @@ function [H, AoD, AoA] = generate_csi(rays, fc, cfg, txArray, rxArray, method, s
     %   rays          - Ray objects array from ray tracing
     %   fc            - Center frequency (Hz)
     %   cfg           - OFDM/NR carrier configuration struct
-    %   txArray       - Transmit array (phased.URA)
-    %   rxArray       - Receive array (phased.ULA)
+    %   txArray       - Transmit array (phased.URA or phased.IsotropicAntennaElement)
+    %   rxArray       - Receive array (phased.ULA or phased.IsotropicAntennaElement)
     %   method        - 'sbr' to use ray.PathLoss/PhaseShift, 'fspl' for pure FSPL
     %   scenario      - "indoor" or "outdoor"
     %   use_single_sc - true to pick one subcarrier via sc_idx, false for all
@@ -28,6 +28,8 @@ function [H, AoD, AoA] = generate_csi(rays, fc, cfg, txArray, rxArray, method, s
 
     if nargin < 8, use_single_sc = false; end
     if nargin < 9, sc_idx = []; end
+
+    is_siso = isa(txArray, 'phased.IsotropicAntennaElement') && isa(rxArray, 'phased.IsotropicAntennaElement');
 
     if scenario == "indoor"
         ofdmInfo   = wlanNonHTOFDMInfo('L-LTF', cfg.ChannelBandwidth);
@@ -52,18 +54,25 @@ function [H, AoD, AoA] = generate_csi(rays, fc, cfg, txArray, rxArray, method, s
     end
     Nsc = numel(freqs);
 
-    Nt = prod(txArray.Size);
-    Nr = rxArray.NumElements;
+    if is_siso
+        Nt = 1;
+        Nr = 1;
+    else
+        Nt = prod(txArray.Size);
+        Nr = rxArray.NumElements;
+    end
     H  = zeros(Nt, Nr, Nsc);
 
-    svTx = phased.SteeringVector( ...
-        'SensorArray',            txArray, ...
-        'PropagationSpeed',       physconst('LightSpeed'), ...
-        'IncludeElementResponse', false );
-    svRx = phased.SteeringVector( ...
-        'SensorArray',            rxArray, ...
-        'PropagationSpeed',       physconst('LightSpeed'), ...
-        'IncludeElementResponse', false );
+    if ~is_siso
+        svTx = phased.SteeringVector( ...
+            'SensorArray',            txArray, ...
+            'PropagationSpeed',       physconst('LightSpeed'), ...
+            'IncludeElementResponse', false );
+        svRx = phased.SteeringVector( ...
+            'SensorArray',            rxArray, ...
+            'PropagationSpeed',       physconst('LightSpeed'), ...
+            'IncludeElementResponse', false );
+    end
 
     numRays = numel(rays);
     AoD     = zeros(2, numRays);
@@ -92,8 +101,13 @@ function [H, AoD, AoA] = generate_csi(rays, fc, cfg, txArray, rxArray, method, s
         azR = rad2deg(azR);  elR = rad2deg(elR);
         AoA(:,r) = [azR; elR];
 
-        aTx = svTx(fc, [azT; elT]);
-        aRx = svRx(fc, [azR; elR]);
+        if ~is_siso
+            aTx = svTx(fc, [azT; elT]);
+            aRx = svRx(fc, [azR; elR]);
+            array_gain = aTx * aRx.';
+        else
+            array_gain = 1; % isotropic antennas have gain of 1 (0 dBi)
+        end
 
         for k = 1:Nsc
             f = freqs(k);
@@ -107,7 +121,7 @@ function [H, AoD, AoA] = generate_csi(rays, fc, cfg, txArray, rxArray, method, s
                 phase = 2*pi*f*tau;
             end
             h = 10^(-pl/20) * exp(-1j*phase);
-            H(:,:,k) = H(:,:,k) + (aTx * aRx.') * h;
+            H(:,:,k) = H(:,:,k) + array_gain * h;
         end
     end
 end

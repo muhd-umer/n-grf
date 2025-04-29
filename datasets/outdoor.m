@@ -52,12 +52,23 @@ cfg = carrier;
 % extra config
 use_single_sc = true;
 sc_idx = [];
+use_siso = false;
 
-txArray = phased.URA("Size", [8 8], "ElementSpacing", lambda / 2);
-rxArray = phased.ULA("NumElements", 2, "ElementSpacing", lambda / 2);
+if use_siso
+    % single-input single-output
+    txArray = phased.IsotropicAntennaElement();
+    rxArray = phased.IsotropicAntennaElement();
 
-num_tx_ant = prod(txArray.Size);
-num_rx_ant = rxArray.NumElements;
+    num_tx_ant = 1;
+    num_rx_ant = 1;
+else
+    % multiple-input multiple-output
+    txArray = phased.URA("Size", [8 8], "ElementSpacing", lambda / 2);
+    rxArray = phased.ULA("NumElements", 2, "ElementSpacing", lambda / 2);
+
+    num_tx_ant = prod(txArray.Size);
+    num_rx_ant = rxArray.NumElements;
+end
 
 %% AP setup
 AP = txsite("cartesian", ...
@@ -195,6 +206,7 @@ dataset.config.rx_antennas = num_rx_ant;
 dataset.config.frequency = fc;
 dataset.config.wavelength = lambda;
 dataset.config.num_users = num_users;
+dataset.config.use_siso = use_siso;
 
 dataset.environment.dimensions = env_dims;
 dataset.environment.point_cloud = point_cloud;
