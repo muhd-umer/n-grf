@@ -49,8 +49,8 @@ cfg.ChannelBandwidth = 'CBW80';
 use_single_sc = false;
 sc_idx = [];
 
-txArray = phased.URA("Size", [8 8], "ElementSpacing", lambda / 2);
-rxArray = phased.ULA("NumElements", 16, "ElementSpacing", lambda / 2);
+txArray = phased.URA("Size", [4 4], "ElementSpacing", lambda / 2);
+rxArray = phased.ULA("NumElements", 2, "ElementSpacing", lambda / 2);
 
 num_tx_ant = prod(txArray.Size);
 num_rx_ant = rxArray.NumElements;
@@ -63,7 +63,7 @@ AP = txsite("cartesian", ...
     "TransmitterPower", 0.05);
 
 %% user setup
-approx_target_users = 418;
+approx_target_users = 12518;
 
 % seed
 S = RandStream("mt19937ar", "Seed", 17);
@@ -80,7 +80,7 @@ end
 
 %% RT simulation
 method = "sbr"; % "image" | "sbr"
-max_refs = 2;
+max_refs = 1;
 
 pm = propagationModel("raytracing", ...
     "Method", method, ...
