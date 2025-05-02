@@ -9,7 +9,8 @@ from utils.pos_encoder import PositionalEncoder
 
 
 class SimpleMLP(nn.Module):
-    """A simple Multi-Layer Perceptron with ReLU activations."""
+    """A simple Multi-Layer Perceptron with
+    LayerNorm, GELU activations, and Dropout."""
 
     def __init__(
         self, input_dim: int, output_dim: int, hidden_dim: int, num_layers: int
@@ -22,9 +23,11 @@ class SimpleMLP(nn.Module):
 
         layers = []
         current_dim = input_dim
+        dropout_p = 0.1
         for _ in range(num_layers - 1):
             layers.append(nn.Linear(current_dim, hidden_dim))
-            layers.append(nn.ReLU())
+            layers.append(nn.LeakyReLU())
+            layers.append(nn.Dropout(dropout_p))
             current_dim = hidden_dim
         layers.append(nn.Linear(current_dim, output_dim))
 

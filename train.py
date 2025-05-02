@@ -36,7 +36,7 @@ def parse_args():
     parser.add_argument(
         "--initial_gaussians",
         type=int,
-        default=3_000,
+        default=32_000,
         help="Number of Gaussians to initialize randomly",
     )
     parser.add_argument(
@@ -167,6 +167,15 @@ def parse_args():
         default=None,
         help="Path to checkpoint for resuming training",
     )
+    parser.add_argument(
+        "--weight_decay", type=float, default=1e-4, help="Weight decay for optimizer"
+    )
+    parser.add_argument(
+        "--stop_xyz_iter",
+        type=int,
+        default=int(0.5 * 30_000),
+        help="Stop updating Gaussian positions after this iteration",
+    )
 
     args = parser.parse_args()
     return args
@@ -263,9 +272,6 @@ def train(args):
         logger.info(
             f"Dataset Metadata: Nt={nt}, Nr={nr}, Freq={metadata['frequency']/1e9:.2f}GHz, Lambda={wavelength:.4f}m, IsSISO={metadata['is_siso']}"
         )
-        logger.info(f"Tx Position: {tx_position.tolist()}")
-        if env_dims is not None:
-            logger.info(f"Environment Dimensions: {env_dims.tolist()}")
     except Exception as e:
         logger.exception(f"Failed to load data: {e}")
         if writer:
@@ -320,7 +326,7 @@ def train(args):
     for iteration in progress_bar:
         iter_start_time = time.time()
         model.train()
-        model.update_learning_rate(iteration)
+        model.update_learning_rate(iteration, args)
 
         try:
             batch = next(train_iter)

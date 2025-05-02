@@ -223,7 +223,12 @@ class GaussianChannelFieldModel(nn.Module):
         }
         params = self.get_params(lr_map)
 
-        self.optimizer = torch.optim.Adam(params, lr=0.0, eps=training_args.adam_eps)
+        self.optimizer = torch.optim.AdamW(
+            params,
+            lr=0.0,
+            eps=training_args.adam_eps,
+            weight_decay=training_args.weight_decay,
+        )
 
         self.lr_schedulers["xyz"] = get_expon_lr_func(
             lr_init=training_args.position_lr_init,
@@ -235,7 +240,7 @@ class GaussianChannelFieldModel(nn.Module):
             if name != "xyz":
                 self.lr_schedulers[name] = lambda step, lr=lr_init: lr
 
-    def update_learning_rate(self, iteration: int):
+    def update_learning_rate(self, iteration: int, training_args: Any):
         """Update learning rates for all parameter groups."""
         if not self.optimizer:
             return
@@ -243,6 +248,8 @@ class GaussianChannelFieldModel(nn.Module):
             name = param_group["name"]
             if name in self.lr_schedulers:
                 new_lr = self.lr_schedulers[name](iteration)
+                if name == "xyz" and iteration > training_args.stop_xyz_iter:
+                    new_lr = 0.0
                 param_group["lr"] = new_lr
 
     def save(self, filepath: Path, iteration: Optional[int] = None):
