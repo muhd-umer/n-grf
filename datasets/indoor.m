@@ -74,7 +74,7 @@ AP = txsite("cartesian", ...
     "TransmitterPower", 0.05);
 
 %% user setup
-approx_target_users = 12518;
+approx_target_users = 626;
 
 % seed
 S = RandStream("mt19937ar", "Seed", 17);
