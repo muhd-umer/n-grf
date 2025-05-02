@@ -112,7 +112,12 @@ def parse_args():
         default=1e-12,
         help="Epsilon for NMSE loss denominator",
     )
-
+    parser.add_argument(
+        "--rx_noise_std",
+        type=float,
+        default=0.0,
+        help="Std dev of Gaussian noise added to Rx positions during training (0 to disable)",
+    )
     parser.add_argument(
         "--lambda_latent_l1",
         type=float,
@@ -336,6 +341,10 @@ def train(args):
 
         rx_pos_batch = batch["rx_position"].to(device)
         h_gt_batch = batch["channel_matrix"].to(device)
+
+        if args.rx_noise_std > 0:
+            noise = torch.randn_like(rx_pos_batch) * args.rx_noise_std
+            rx_pos_batch = rx_pos_batch + noise
 
         gauss_means = model.get_xyz
         gauss_latents = model.get_latent_features
