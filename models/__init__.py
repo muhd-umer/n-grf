@@ -1,5 +1,4 @@
 # models/__init__.py
 
-from .embedder import EmbedderConfig, get_embedder
-from .encoder import EncoderConfig, FeatureEncoder
-from .gaussian_model import GaussianModel
+from .gaussian_model import GaussianChannelFieldModel
+from .networks import AttributeNetwork, ContributionDecoderNetwork

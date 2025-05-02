@@ -1,5 +1,4 @@
 # datasets/wireless_dataset.py
-
 import re
 from pathlib import Path
 from typing import Optional, Tuple
@@ -11,19 +10,18 @@ from torch.utils.data import Dataset, random_split
 
 
 class WirelessDataset(Dataset):
-    """A dataset class for MIMO channel data.
+    """A dataset class for MIMO/SISO channel data.
 
-    This dataset handles loading and processing of wireless channel data from
-    .mat files, including point cloud, channel matrix, path loss, angles of
-    arrival, receiver positions, and other relevant information.
+    Handles loading and processing of wireless channel data from .mat files,
+    including channel matrix, positions, and config. Point cloud and env_dims
+    are loaded if present but not used initialization. Infers SISO/MIMO from
+    dataset config unless explicitly overridden during loading (not typical).
 
     Args:
         data_path (str): Path to the .mat dataset file
-        num_pc (int, optional): Number of point cloud points to randomly sample
         train (bool, optional): If True, returns training set, else test set
-        train_ratio (float, optional): Ratio of data to use for training (default: 0.8)
-        seed (int, optional): Random seed for train/test split and point cloud sampling
-        subcarrier_idx (int, optional): Index of the subcarrier to use (default: None)
+        train_ratio (float, optional): Ratio of data for training (default: 0.8)
+        seed (int, optional): Random seed for train/test split
     """
 
     def __init__(
@@ -32,198 +30,261 @@ class WirelessDataset(Dataset):
         train: bool = True,
         train_ratio: float = 0.8,
         seed: Optional[int] = None,
-        subcarrier_idx: Optional[int] = None,
     ):
         super().__init__()
 
         self.data_path = Path(data_path)
         self.seed = seed if seed is not None else 42
-
-        if subcarrier_idx is None:
-            filename = self.data_path.stem
-            sc_match = re.search(r"_sc(\d+)", filename)
-            if sc_match:
-                self.subcarrier_idx = int(sc_match.group(1))
-            else:
-                self.subcarrier_idx = None
-        else:
-            self.subcarrier_idx = subcarrier_idx
-
-        # set seeds for reproducibility
-        torch.manual_seed(self.seed)
+        generator = torch.Generator().manual_seed(self.seed)
         np.random.seed(self.seed)
 
-        # load mat73 file
-        data = read_mat(str(self.data_path))["dataset"]
-        self._process_data(data)
+        print(f"Loading dataset from: {self.data_path}")
+        try:
+            mat_data = read_mat(str(self.data_path))
+            if "dataset" not in mat_data:
+                raise KeyError("Loaded .mat file does not contain 'dataset' key.")
+            data = mat_data["dataset"]
+        except Exception as e:
+            print(f"Error loading MAT file: {e}")
+            raise
 
-        # perform train/test split
-        total_size = len(self.rx_positions)
+        print("Processing dataset...")
+        self._process_data(data)
+        print("Dataset processing complete.")
+
+        total_size = self.num_users
+        if total_size == 0:
+            raise ValueError("Dataset contains no users/samples.")
+
         train_size = int(total_size * train_ratio)
         test_size = total_size - train_size
 
-        generator = torch.Generator().manual_seed(self.seed)
-        train_dataset, test_dataset = random_split(
-            range(total_size), [train_size, test_size], generator=generator
+        if train_size == 0 or test_size == 0:
+            print(
+                f"Warning: train_ratio {train_ratio} resulted in zero samples for train/test split. Adjusting."
+            )
+            if total_size >= 2:
+                train_size = max(1, train_size)
+                test_size = total_size - train_size
+            else:
+                train_size = 1 if train else 0
+                test_size = 1 - train_size
+
+        self.indices = list(range(total_size))
+        train_indices, test_indices = random_split(
+            self.indices, [train_size, test_size], generator=generator
         )
 
-        self.indices = train_dataset if train else test_dataset
+        self.active_indices = train_indices if train else test_indices
+        print(f"{'Training' if train else 'Test'} set size: {len(self.active_indices)}")
 
     def _process_data(self, data):
+        """Extracts and processes data from the loaded dictionary."""
         self._store_config(data["config"])
 
-        self.point_cloud = torch.from_numpy(data["environment"]["point_cloud"]).float()
+        if "environment" in data and "point_cloud" in data["environment"]:
+            self.point_cloud_data = torch.from_numpy(
+                data["environment"]["point_cloud"]
+            ).float()
 
-        # handle complex channel matrix
-        H_raw = data["channel"]["H"]
-        H = torch.from_numpy(H_raw)
+        else:
+            self.point_cloud_data = None
 
-        num_users_from_pos = data["nodes"]["users_positions"].shape[1]
-        if num_users_from_pos != self.num_users:
-            print(
-                f"Warning: num_users mismatch. Config: {self.num_users}, Positions: {num_users_from_pos}. Using {num_users_from_pos}."
-            )
-            self.num_users = num_users_from_pos
+        if "environment" in data and "dimensions" in data["environment"]:
+            self.env_dims = torch.from_numpy(data["environment"]["dimensions"]).float()
 
-        target_shape = (self.num_users, self.num_tx_ant, self.num_rx_ant)
+        else:
+            self.env_dims = None
 
-        if len(H.shape) > 3:
-            if self.subcarrier_idx is None:
-                self.subcarrier_idx = H.shape[-1] // 2
-            elif self.subcarrier_idx >= H.shape[-1]:
+        if "nodes" in data and "ap_position" in data["nodes"]:
+            tx_pos_raw = data["nodes"]["ap_position"]
+            self.tx_position = torch.from_numpy(np.array(tx_pos_raw)).float().squeeze()
+            if self.tx_position.shape != (3,):
                 raise ValueError(
-                    f"Subcarrier index {self.subcarrier_idx} out of range [0, {H.shape[-1]-1}]"
+                    f"Unexpected transmitter position shape: {tx_pos_raw.shape}"
                 )
-            H_selected = H[..., self.subcarrier_idx]
-            self.channel_matrix = H_selected.reshape(target_shape)
-        elif len(H.shape) <= 3:
-            try:
-                self.channel_matrix = H.reshape(target_shape)
-            except RuntimeError as e:
-                raise RuntimeError(
-                    f"Error reshaping H with shape {H.shape} to target {target_shape}. Original MATLAB shape: {H_raw.shape}. Error: {e}"
-                )
+
         else:
             raise ValueError(
-                f"Unexpected channel matrix shape: {H.shape}. Original MATLAB shape: {H_raw.shape}"
+                "Transmitter position ('ap_position') not found in dataset."
             )
 
-        self.tx_position = torch.from_numpy(data["nodes"]["ap_position"]).float()
-        self.rx_positions = torch.from_numpy(data["nodes"]["users_positions"].T).float()
-        self.path_loss = torch.from_numpy(data["channel"]["path_loss"]).float()
+        if "nodes" in data and "users_positions" in data["nodes"]:
+            rx_pos_raw = data["nodes"]["users_positions"]
+            if rx_pos_raw.shape[0] != 3:
+                raise ValueError(
+                    f"Expected receiver positions shape (3, K), got {rx_pos_raw.shape}"
+                )
+            self.rx_positions = torch.from_numpy(rx_pos_raw.T).float()
 
-        def process_pl_per_ray(pl_list):
-            return [torch.from_numpy(np.array(d)).float() for d in pl_list]
+            num_users_from_pos = self.rx_positions.shape[0]
+            if num_users_from_pos != self.num_users:
+                print(
+                    f"Warning: num_users mismatch. Config: {self.num_users}, Rx Positions: {num_users_from_pos}. Using {num_users_from_pos}."
+                )
+                self.num_users = num_users_from_pos
+        else:
+            raise ValueError(
+                "Receiver positions ('users_positions') not found in dataset."
+            )
 
-        self.path_loss_per_ray = process_pl_per_ray(
-            data["channel"]["path_loss_per_ray"]
-        )
+        if "channel" in data and "H" in data["channel"]:
+            H_raw = data["channel"]["H"]
+            if isinstance(H_raw, dict) and "real" in H_raw and "imag" in H_raw:
+                H_real = np.array(H_raw["real"])
+                H_imag = np.array(H_raw["imag"])
+                if H_real.dtype.kind not in "iufc" or H_imag.dtype.kind not in "iufc":
+                    raise TypeError("Real/Imag parts of H are not numeric.")
+                H_complex = H_real + 1j * H_imag
+                H_tensor = torch.from_numpy(H_complex).to(torch.complex64)
+            elif isinstance(H_raw, np.ndarray) and np.iscomplexobj(H_raw):
+                H_tensor = torch.from_numpy(H_raw).to(torch.complex64)
+            else:
+                raise TypeError(
+                    f"Unsupported format for H: {type(H_raw)}. Expected complex numpy array or dict with 'real'/'imag'."
+                )
 
-        def process_angle_data(angle_list):
-            return [torch.from_numpy(np.array(d)).float() for d in angle_list]
+            print(f"Raw H tensor shape from MAT: {H_tensor.shape}")
+            expected_leading_dim = self.num_users
+            target_shape = (expected_leading_dim, self.num_tx_ant, self.num_rx_ant)
 
-        self.aod = process_angle_data(data["channel"]["AoD"])
-        self.aoa = process_angle_data(data["channel"]["AoA"])
-        self.env_dims = torch.from_numpy(data["environment"]["dimensions"]).float()
+            if H_tensor.dim() == 4:
+                num_sc = H_tensor.shape[-1]
+                sc_idx = num_sc // 2
+                print(
+                    f"Multiple subcarriers ({num_sc}) detected. Selecting middle subcarrier index {sc_idx}."
+                )
+                H_selected = H_tensor[:expected_leading_dim, :, :, sc_idx]
+                if H_selected.shape == target_shape:
+                    self.channel_matrix = H_selected
+                elif H_selected.numel() == np.prod(target_shape):
+                    print(
+                        f"Warning: Attempting flexible reshape of H (from 4D) from {H_selected.shape} to {target_shape}"
+                    )
+                    self.channel_matrix = H_selected.reshape(target_shape)
+                else:
+                    raise ValueError(
+                        f"Channel matrix shape mismatch (from 4D). Expected {target_shape} or compatible, got {H_selected.shape}."
+                    )
 
-        self._store_channel_info(data["channel"])
+            elif H_tensor.dim() == 3:
+                H_selected = H_tensor[:expected_leading_dim, :, :]
+                if H_selected.shape == target_shape:
+                    self.channel_matrix = H_selected
+                elif H_selected.numel() == np.prod(target_shape):
+                    print(
+                        f"Warning: Attempting flexible reshape of H (from 3D) from {H_selected.shape} to {target_shape}"
+                    )
+                    self.channel_matrix = H_selected.reshape(target_shape)
+                else:
+                    raise ValueError(
+                        f"Channel matrix shape mismatch (from 3D). Expected {target_shape} or compatible, got {H_selected.shape}."
+                    )
+
+            elif H_tensor.dim() == 1:
+                if self.is_siso:
+                    H_selected = H_tensor[:expected_leading_dim]
+                    if H_selected.shape[0] == expected_leading_dim:
+                        print("Reshaping SISO H from (N_user,) to (N_user, 1, 1)")
+                        self.channel_matrix = H_selected.reshape(target_shape)
+                    else:
+                        raise ValueError(
+                            f"Channel matrix shape mismatch (from 1D). Expected ({expected_leading_dim},), got {H_selected.shape}."
+                        )
+                else:
+                    raise ValueError(
+                        f"H tensor has dimension 1, but config is not SISO (Nt={self.num_tx_ant}, Nr={self.num_rx_ant})."
+                    )
+
+            elif H_tensor.dim() == 2:
+                if self.is_siso and H_tensor.shape[1] == 1:
+                    H_selected = H_tensor[:expected_leading_dim, :]
+                    print("Reshaping SISO H from (N_user, 1) to (N_user, 1, 1)")
+                    self.channel_matrix = H_selected.reshape(target_shape)
+                elif H_tensor.numel() == np.prod(target_shape):
+                    print(
+                        f"Warning: H tensor has dimension 2 ({H_tensor.shape}). Attempting flexible reshape to {target_shape}"
+                    )
+
+                    self.channel_matrix = H_tensor[:expected_leading_dim, :].reshape(
+                        target_shape
+                    )
+                else:
+                    raise ValueError(
+                        f"H tensor has dimension 2 ({H_tensor.shape}), but it's not compatible with SISO or MIMO target shape {target_shape}."
+                    )
+
+            else:
+                raise ValueError(
+                    f"Unexpected H tensor dimensions: {H_tensor.dim()}. Expected 1, 2, 3, or 4."
+                )
+
+            print(f"Processed channel matrix shape: {self.channel_matrix.shape}")
+
+        else:
+            raise ValueError("Channel matrix ('H') not found in dataset.")
 
     def _store_config(self, config):
-        self.num_tx_ant = int(config["tx_antennas"])
-        self.num_rx_ant = int(config["rx_antennas"])
-        self.frequency = float(config["frequency"])
-        self.wavelength = float(config["wavelength"])
-        self.num_users = int(config["num_users"])
-        self.use_siso = config.get("use_siso", None)
+        """Stores configuration values from the dataset and infers SISO."""
+        try:
+            self.num_tx_ant = int(config["tx_antennas"])
+            self.num_rx_ant = int(config["rx_antennas"])
+            self.frequency = float(config["frequency"])
+            self.wavelength = float(config["wavelength"])
+            self.num_users = int(config["num_users"])
+            self.config_use_siso = config.get("use_siso", False)
 
-    def _store_channel_info(self, channel):
-        self.frequencies = channel["frequencies"]
-        self.ray_steps = channel["ray_steps"]
-        self.ray_points = channel["ray_points"]
-        self.ray_interactions = channel["ray_interactions"]
-        self.ray_coefficients = channel["ray_coefficients"]
+            self.is_siso = (
+                self.num_tx_ant == 1 and self.num_rx_ant == 1
+            ) or self.config_use_siso
+            if self.is_siso:
 
-    def get_tx_position(self) -> torch.Tensor:
-        """Get transmitter position."""
-        if not hasattr(self, "tx_position"):
-            raise RuntimeError("Dataset not initialized - tx_position not available")
-        return self.tx_position
+                self.num_tx_ant = 1
+                self.num_rx_ant = 1
 
-    def get_env_dims(self) -> torch.Tensor:
-        """Get environment dimensions."""
-        if not hasattr(self, "env_dims"):
-            raise RuntimeError("Dataset not initialized - env_dims not available")
+            print(
+                f"Dataset Config: Nt={self.num_tx_ant}, Nr={self.num_rx_ant}, Freq={self.frequency/1e9:.2f}GHz, Lambda={self.wavelength:.4f}m, NumUsers={self.num_users}, IsSISO={self.is_siso}"
+            )
+
+        except KeyError as e:
+            print(f"Error: Missing key in dataset config: {e}")
+            raise
+        except ValueError as e:
+            print(f"Error: Invalid value type in dataset config: {e}")
+            raise
+
+    def get_point_cloud(self) -> Optional[torch.Tensor]:
+        """Get the loaded point cloud data if available."""
+        return self.point_cloud_data
+
+    def get_env_dims(self) -> Optional[torch.Tensor]:
+        """Get environment dimensions if available."""
         return self.env_dims
 
-    def get_point_cloud(
-        self, num_points: Optional[int] = None, seed: Optional[int] = None
-    ) -> torch.Tensor:
-        """Get point cloud, optionally sampled.
+    def get_tx_position(self) -> torch.Tensor:
+        """Get the transmitter position."""
+        return self.tx_position
 
-        Args:
-            num_points: Number of points to sample. If None, returns full point cloud
-            seed: Random seed for sampling. If None, uses dataset seed
-        """
-        if not hasattr(self, "point_cloud"):
-            raise RuntimeError("Dataset not initialized - point cloud not available")
-
-        if num_points is None or num_points >= len(self.point_cloud):
-            return self.point_cloud
-
-        rng = np.random.RandomState(seed if seed is not None else self.seed)
-        pc_indices = rng.choice(len(self.point_cloud), num_points, replace=False)
-        return self.point_cloud[pc_indices]
-
-    @property
-    def num_subcarriers(self) -> Optional[int]:
-        """Return the number of subcarriers in the dataset if multi-carrier, None otherwise."""
-        if hasattr(self, "frequencies"):
-            return len(self.frequencies) if self.frequencies is not None else None
-        return None
-
-    @property
-    def current_subcarrier_idx(self) -> Optional[int]:
-        """Return the currently selected subcarrier index."""
-        return self.subcarrier_idx
+    def get_metadata(self) -> dict:
+        """Returns essential metadata."""
+        return {
+            "num_tx_ant": self.num_tx_ant,
+            "num_rx_ant": self.num_rx_ant,
+            "frequency": self.frequency,
+            "wavelength": self.wavelength,
+            "is_siso": self.is_siso,
+            "tx_position": self.tx_position,
+            "env_dims": self.env_dims,
+        }
 
     def __len__(self):
-        return len(self.indices)
+        return len(self.active_indices)
 
     def __getitem__(self, idx):
-        current_idx = self.indices[idx]
-
-        channel_matrix = self.channel_matrix[current_idx]
-        channel_matrix_stkd = torch.hstack((channel_matrix.real, channel_matrix.imag))
-
-        aoa = self.aoa[current_idx]
-        aod = self.aod[current_idx]
-
-        if aoa.dim() < 2:
-            aoa = (
-                aoa.view(2, -1)
-                if aoa.numel() >= 2
-                else torch.zeros(2, 0, device=aoa.device)
-            )
-
-        if aod.dim() < 2:
-            aod = (
-                aod.view(2, -1)
-                if aod.numel() >= 2
-                else torch.zeros(2, 0, device=aod.device)
-            )
-
-        path_loss_per_ray = self.path_loss_per_ray[current_idx]
-
-        if path_loss_per_ray.dim() == 0:
-            path_loss_per_ray = torch.zeros(
-                aoa.shape[1], device=path_loss_per_ray.device
-            )
-
+        """Retrieves a single sample for the active split."""
+        original_idx = self.active_indices[idx]
         return {
-            "rx_position": self.rx_positions[current_idx],
-            "channel_matrix": channel_matrix_stkd,
-            "aod": aod,
-            "aoa": aoa,
-            "path_loss_per_ray": path_loss_per_ray,
-            "path_loss": self.path_loss[current_idx],
+            "rx_position": self.rx_positions[original_idx],
+            "channel_matrix": self.channel_matrix[original_idx],
+            "index": original_idx,
         }

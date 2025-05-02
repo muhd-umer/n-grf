@@ -4,6 +4,7 @@
 logs/
 eval_results/
 datasets/outputs
+datasets/quadriga_src
 
 # matlab
 *.mat

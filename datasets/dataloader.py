@@ -1,8 +1,9 @@
 # datasets/dataloader.py
-from typing import Any, Dict, Optional
+
+from typing import Any, Dict, Optional, Tuple
 
 import torch
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Dataset
 
 from .wireless_dataset import WirelessDataset
 
@@ -11,19 +12,22 @@ def collate_wireless_batch(batch: list) -> Dict[str, Any]:
     """Collate function for wireless dataset batches.
 
     Args:
-        batch (list): List of dataset items to be collated
+        batch (list): List of dataset items ({'rx_position': tensor, 'channel_matrix': tensor, 'index': int}).
 
     Returns:
-        Collated batch with stacked tensors
+        Collated batch with stacked tensors.
     """
     keys = batch[0].keys()
     collated = {}
 
     for key in keys:
-        if key in ["aoa", "aod", "path_loss_per_ray"]:
+        if isinstance(batch[0][key], torch.Tensor):
+            collated[key] = torch.stack([item[key] for item in batch])
+        elif isinstance(batch[0][key], int):
             collated[key] = [item[key] for item in batch]
         else:
-            collated[key] = torch.stack([item[key] for item in batch])
+            collated[key] = [item[key] for item in batch]
+
     return collated
 
 
@@ -33,34 +37,32 @@ def get_wireless_dataloader(
     num_workers: int = 0,
     shuffle: bool = True,
     train: bool = True,
-    train_ratio: float = 0.9,
+    train_ratio: float = 0.8,
     seed: Optional[int] = None,
     drop_last: bool = False,
-    subcarrier_idx: Optional[int] = None,
+    pin_memory: bool = True,
 ) -> DataLoader:
-    """Create a DataLoader for the wireless dataset.
+    """Create a DataLoader for wireless dataset.
 
     Args:
-        data_path (str): Path to the dataset file
-        batch_size (int): Number of samples per batch
-        num_workers (int): Number of workers for data loading
-        shuffle (bool): Whether to shuffle the data
-        train (bool): Whether to load training or test set
-        train_ratio (float): Ratio of data to use for training
-        seed (int, optional): Random seed for train/test split
-        drop_last (bool): Whether to drop the last incomplete batch
-        subcarrier_idx (int, optional): Index of subcarrier to use for multi-carrier data.
-            If None, uses middle subcarrier or extracts from filename for single-carrier.
+        data_path (str): Path to the dataset file.
+        batch_size (int): Number of samples per batch.
+        num_workers (int): Number of workers for data loading.
+        shuffle (bool): Whether to shuffle the data (typically True for train).
+        train (bool): Whether to load training or test set.
+        train_ratio (float): Ratio of data to use for training.
+        seed (int, optional): Random seed for train/test split.
+        drop_last (bool): Whether to drop the last incomplete batch (typically True for train).
+        pin_memory (bool): Whether to use pinned memory for faster GPU transfer.
 
     Returns:
-        The configured data loader
+        The configured data loader.
     """
     dataset = WirelessDataset(
         data_path,
         train=train,
         train_ratio=train_ratio,
         seed=seed,
-        subcarrier_idx=subcarrier_idx,
     )
 
     return DataLoader(
@@ -69,7 +71,7 @@ def get_wireless_dataloader(
         shuffle=shuffle,
         num_workers=num_workers,
         collate_fn=collate_wireless_batch,
-        pin_memory=True,
+        pin_memory=pin_memory,
         drop_last=drop_last,
     )
 
@@ -78,38 +80,34 @@ def get_dataloaders(
     data_path: str,
     batch_size: int = 1,
     num_workers: int = 0,
-    shuffle: bool = True,
-    train_ratio: float = 0.9,
+    train_ratio: float = 0.8,
     seed: Optional[int] = None,
-    drop_last: bool = False,
-    subcarrier_idx: Optional[int] = None,
-) -> tuple[DataLoader, DataLoader]:
-    """Create training and validation DataLoaders for the wireless dataset.
+    pin_memory: bool = True,
+) -> Tuple[DataLoader, DataLoader, Dict]:
+    """Create training and validation DataLoaders for wireless dataset.
 
     Args:
-        data_path (str): Path to the dataset file
-        batch_size (int): Number of samples per batch
-        num_workers (int): Number of workers for data loading
-        shuffle (bool): Whether to shuffle the data
-        train_ratio (float): Ratio of data to use for training
-        seed (int, optional): Random seed for train/test split
-        drop_last (bool): Whether to drop the last incomplete batch
-        subcarrier_idx (int, optional): Index of subcarrier to use for multi-carrier data.
-            If None, uses middle subcarrier or extracts from filename for single-carrier.
+        data_path (str): Path to the dataset file.
+        batch_size (int): Number of samples per batch for training loader.
+        num_workers (int): Number of workers for data loading.
+        train_ratio (float): Ratio of data to use for training.
+        seed (int, optional): Random seed for train/test split.
+        pin_memory (bool): Use pinned memory.
 
     Returns:
-        A tuple of training and validation DataLoaders
+        A tuple of (training loader, validation loader, dataset metadata).
+        Validation loader always uses batch_size=1 and shuffle=False.
     """
     train_loader = get_wireless_dataloader(
         data_path,
         batch_size=batch_size,
         num_workers=num_workers,
-        shuffle=shuffle,
+        shuffle=True,
         train=True,
         train_ratio=train_ratio,
         seed=seed,
-        drop_last=drop_last,
-        subcarrier_idx=subcarrier_idx,
+        drop_last=True,
+        pin_memory=pin_memory,
     )
 
     val_loader = get_wireless_dataloader(
@@ -120,8 +118,10 @@ def get_dataloaders(
         train=False,
         train_ratio=train_ratio,
         seed=seed,
-        drop_last=drop_last,
-        subcarrier_idx=subcarrier_idx,
+        drop_last=False,
+        pin_memory=pin_memory,
     )
 
-    return train_loader, val_loader
+    metadata = train_loader.dataset.get_metadata()
+
+    return train_loader, val_loader, metadata
