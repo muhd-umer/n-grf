@@ -102,7 +102,7 @@ def format_complex_tensor(tensor: torch.Tensor) -> str:
 
     formatted = np.array2string(
         tensor.cpu().numpy(),
-        formatter={"complex_kind": lambda x: f"{x.real:.3f}{x.imag:+.3f}j"},
+        formatter={"complex_kind": lambda x: f"{x.real:.6f}{x.imag:+.6f}j"},
         separator=", ",
     )
     return formatted
@@ -125,7 +125,9 @@ def evaluate(args):
     logger.info(f"Loading checkpoint: {checkpoint_path}")
 
     try:
-        model_state = torch.load(checkpoint_path, map_location="cpu")
+        model_state = torch.load(
+            checkpoint_path, map_location="cpu", weights_only=False
+        )
         model_config = model_state["config"]
         model = GaussianChannelFieldModel.load(checkpoint_path, device=device)[0]
         model.eval()
@@ -256,7 +258,7 @@ def evaluate(args):
 
     logger.info("\n----- Overall Metrics -----")
     logger.info(f"Average NMSE Loss: {stats['loss']['mean']:.6e}")
-    logger.info(f"Average SNR (dB):  {stats['snr']['mean']:.3f}")
+    logger.info(f"Average SNR (dB):  {stats['snr']['mean']:.6f}")
 
     logger.info("\n----- Statistics -----")
     logger.info(f"NMSE Loss:")
@@ -265,10 +267,10 @@ def evaluate(args):
     logger.info(f"  Min:  {stats['loss']['min']:.6e}")
     logger.info(f"  Max:  {stats['loss']['max']:.6e}")
     logger.info(f"SNR (dB):")
-    logger.info(f"  Mean: {stats['snr']['mean']:.3f}")
-    logger.info(f"  Std Dev: {stats['snr']['std']:.3f}")
-    logger.info(f"  Min:  {stats['snr']['min']:.3f}")
-    logger.info(f"  Max:  {stats['snr']['max']:.3f}")
+    logger.info(f"  Mean: {stats['snr']['mean']:.6f}")
+    logger.info(f"  Std Dev: {stats['snr']['std']:.6f}")
+    logger.info(f"  Min:  {stats['snr']['min']:.6f}")
+    logger.info(f"  Max:  {stats['snr']['max']:.6f}")
 
     if args.num_samples_to_log > 0 and sample_details:
         logger.info(f"\n----- Sample Predictions (Top {len(sample_details)}) -----")
@@ -276,7 +278,7 @@ def evaluate(args):
             logger.info(f"\nSample Index: {sample['index']}")
             logger.info(f"  Rx Position: {sample['rx_pos']}")
             logger.info(f"  NMSE Loss: {sample['loss']:.6e}")
-            logger.info(f"  SNR (dB):  {sample['snr']:.3f}")
+            logger.info(f"  SNR (dB):  {sample['snr']:.6f}")
 
             h_gt_str = format_complex_tensor(sample["h_gt"])
             h_pred_str = format_complex_tensor(sample["h_pred"])

@@ -334,7 +334,7 @@ class GaussianChannelFieldModel(nn.Module):
         if not filepath.exists():
             raise FileNotFoundError(f"Checkpoint not found at {filepath}")
 
-        state_dict = torch.load(str(filepath), map_location=device)
+        state_dict = torch.load(str(filepath), map_location=device, weights_only=False)
         config = state_dict["config"]
 
         model = cls(
