@@ -137,32 +137,59 @@ class GaussianChannelFieldModel(nn.Module):
         self,
         env_dims: Optional[torch.Tensor] = None,
         num_points: Optional[int] = None,
+        point_cloud: Optional[torch.Tensor] = None,
     ):
-        """
-        Initializes Gaussian parameters randomly within environment dimensions
-        or a default range. Does not use point clouds.
-        """
+        """Initializes Gaussian parameters."""
         num_to_init = num_points if num_points is not None else self.initial_gaussians
 
-        if env_dims is not None:
-            print(
-                f"Initializing {num_to_init} random Gaussians within environment dimensions."
-            )
-            env_min = env_dims[:, 0].to(self.device)
-            env_max = env_dims[:, 1].to(self.device)
-            if env_min.shape != (3,) or env_max.shape != (3,):
-                raise ValueError(
-                    f"env_dims should result in shapes (3,), got min: {env_min.shape}, max: {env_max.shape}"
+        if point_cloud is not None:
+            num_available_points = point_cloud.shape[0]
+            print(f"Point cloud provided with {num_available_points} points.")
+            if num_available_points == 0:
+                print(
+                    "Warning: Point cloud is empty. Falling back to random initialization."
                 )
-            xyz = (
-                torch.rand(num_to_init, 3, device=self.device) * (env_max - env_min)
-                + env_min
-            )
-        else:
-            print(
-                f"Initializing {num_to_init} random Gaussians (no env_dims provided, using [-1, 1] range)."
-            )
-            xyz = (torch.rand(num_to_init, 3, device=self.device) * 2 - 1) * 1.0
+                point_cloud = None
+            else:
+                if num_to_init > num_available_points:
+                    print(
+                        f"Warning: Requested {num_to_init} Gaussians, but point cloud only has {num_available_points}. "
+                        f"Using all {num_available_points} points."
+                    )
+                    num_to_init = num_available_points
+                    indices = torch.arange(num_available_points)
+                else:
+                    print(
+                        f"Randomly sampling {num_to_init} points from the point cloud."
+                    )
+                    indices = torch.randperm(num_available_points)[:num_to_init]
+
+                xyz = point_cloud[indices].to(self.device).float()
+                if xyz.shape[1] != 3:
+                    raise ValueError(
+                        f"Point cloud must have shape (N, 3), got {point_cloud.shape}"
+                    )
+
+        if point_cloud is None:
+            if env_dims is not None:
+                print(
+                    f"Initializing {num_to_init} random Gaussians within environment dimensions."
+                )
+                env_min = env_dims[:, 0].to(self.device)
+                env_max = env_dims[:, 1].to(self.device)
+                if env_min.shape != (3,) or env_max.shape != (3,):
+                    raise ValueError(
+                        f"env_dims should result in shapes (3,), got min: {env_min.shape}, max: {env_max.shape}"
+                    )
+                xyz = (
+                    torch.rand(num_to_init, 3, device=self.device) * (env_max - env_min)
+                    + env_min
+                )
+            else:
+                print(
+                    f"Initializing {num_to_init} random Gaussians (no env_dims/point_cloud provided, using [-1, 1] range)."
+                )
+                xyz = (torch.rand(num_to_init, 3, device=self.device) * 2 - 1) * 1.0
 
         self._xyz = nn.Parameter(xyz.requires_grad_(True))
         scales = torch.ones(num_to_init, 3, device=self.device) * self.init_log_scale

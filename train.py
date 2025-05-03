@@ -37,7 +37,14 @@ def parse_args():
         "--initial_gaussians",
         type=int,
         default=32_000,
-        help="Number of Gaussians to initialize randomly",
+        help="Number of Gaussians to initialize randomly or sample from point cloud",
+    )
+    parser.add_argument(
+        "--init_method",
+        type=str,
+        default="random",
+        choices=["random", "point_cloud"],
+        help="Initialization method for Gaussians ('random' or 'point_cloud')",
     )
     parser.add_argument(
         "--latent_dim",
@@ -274,9 +281,15 @@ def train(args):
         wavelength = metadata["wavelength"]
         tx_position = metadata["tx_position"].to(device)
         env_dims = metadata["env_dims"]
+        point_cloud = metadata.get("point_cloud")
         logger.info(
             f"Dataset Metadata: Nt={nt}, Nr={nr}, Freq={metadata['frequency']/1e9:.2f}GHz, Lambda={wavelength:.4f}m, IsSISO={metadata['is_siso']}"
         )
+        if point_cloud is not None:
+            logger.info(f"Point cloud loaded with shape: {point_cloud.shape}")
+        else:
+            logger.info("No point cloud data found in dataset.")
+
     except Exception as e:
         logger.exception(f"Failed to load data: {e}")
         if writer:
@@ -308,8 +321,24 @@ def train(args):
             args.resume = None
 
     if not args.resume:
+        init_pc = None
+        if args.init_method == "point_cloud":
+            if point_cloud is not None:
+                logger.info("Using point cloud for Gaussian initialization.")
+                init_pc = point_cloud.to(device)
+            else:
+                logger.warning(
+                    "Point cloud initialization requested but no point cloud data found. Falling back to random initialization."
+                )
+                args.init_method = "random"
+
+        if init_pc is None:
+            logger.info("Using random initialization for Gaussians.")
+
         model.init_gaussians(
-            env_dims=env_dims.to(device) if env_dims is not None else None
+            env_dims=env_dims.to(device) if env_dims is not None else None,
+            point_cloud=init_pc,
+            num_points=args.initial_gaussians,
         )
         model.training_setup(args)
 

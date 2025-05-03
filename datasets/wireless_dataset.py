@@ -275,6 +275,7 @@ class WirelessDataset(Dataset):
             "is_siso": self.is_siso,
             "tx_position": self.tx_position,
             "env_dims": self.env_dims,
+            "point_cloud": self.point_cloud_data,
         }
 
     def __len__(self):
