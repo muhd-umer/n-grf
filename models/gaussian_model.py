@@ -272,7 +272,7 @@ class GaussianChannelFieldModel(nn.Module):
         self.optimizer = torch.optim.Adam(
             params,
             lr=0.0,
-            eps=1e-15,
+            eps=1e-12,
             weight_decay=training_args.weight_decay,
         )
 
