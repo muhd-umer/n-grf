@@ -250,10 +250,9 @@ class GaussianChannelFieldModel(nn.Module):
         }
         params = self.get_params(lr_map)
 
-        self.optimizer = torch.optim.AdamW(
+        self.optimizer = torch.optim.SGD(
             params,
             lr=0.0,
-            eps=training_args.adam_eps,
             weight_decay=training_args.weight_decay,
         )
 
