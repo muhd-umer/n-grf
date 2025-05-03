@@ -1,11 +1,13 @@
 # models/gaussian_model.py
 
+import math
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple, Union
 
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from utils import (
     build_covariance_inverse,
@@ -14,22 +16,20 @@ from utils import (
     inverse_sigmoid,
 )
 
-from .networks import ContributionDecoderNetwork
+from .networks import AttributeNetwork, ContributionDecoderNetwork
 
 
 class GaussianChannelFieldModel(nn.Module):
-    """
-    Gaussian Channel Field (GCF) model.
-
-    Represents the wireless environment using 3D Gaussians, each holding
-    geometric parameters and latent features encoding channel contributions.
-    """
+    """Gaussian channel field (GCF) model."""
 
     def __init__(
         self,
         num_tx_ant: int,
         num_rx_ant: int,
         latent_dim: int,
+        attribute_mlp_hidden_dim: int = 64,
+        attribute_mlp_num_layers: int = 3,
+        attribute_pos_enc_freqs: int = 10,
         decoder_hidden_dim: int = 64,
         decoder_num_layers: int = 3,
         initial_gaussians: int = 30000,
@@ -48,8 +48,13 @@ class GaussianChannelFieldModel(nn.Module):
         self._xyz = nn.Parameter(torch.empty(0, 3, device=device))
         self._rotation = nn.Parameter(torch.empty(0, 4, device=device))
         self._scaling = nn.Parameter(torch.empty(0, 3, device=device))
-        self._latent_features = nn.Parameter(torch.empty(0, latent_dim, device=device))
-        self._base_activations = nn.Parameter(torch.empty(0, 1, device=device))
+
+        self.attribute_network = AttributeNetwork(
+            latent_dim=latent_dim,
+            mlp_hidden_dim=attribute_mlp_hidden_dim,
+            mlp_num_layers=attribute_mlp_num_layers,
+            pos_encoding_freqs=attribute_pos_enc_freqs,
+        ).to(device)
 
         self.contribution_decoder = ContributionDecoderNetwork(
             latent_dim=latent_dim,
@@ -73,7 +78,7 @@ class GaussianChannelFieldModel(nn.Module):
         """Setup activation functions."""
         self.scaling_activation = torch.exp
         self.opacity_activation = torch.sigmoid
-        self.rotation_activation = torch.nn.functional.normalize
+        self.rotation_activation = lambda r: F.normalize(r, p=2, dim=-1)
 
     @property
     def get_xyz(self):
@@ -83,27 +88,42 @@ class GaussianChannelFieldModel(nn.Module):
     @property
     def get_scaling(self):
         """Returns activated and clamped Gaussian scales."""
+
         return self.scaling_activation(self._scaling).clamp(min=1e-8)
 
     @property
     def get_rotation(self):
         """Returns normalized Gaussian rotations (quaternions)."""
-        return self.rotation_activation(self._rotation, dim=-1)
+        return self.rotation_activation(self._rotation)
 
-    @property
-    def get_latent_features(self):
-        """Returns Gaussian latent features."""
-        return self._latent_features
+    def get_attributes(
+        self, tx_position: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Computes latent features and base activations dynamically."""
+        if self._xyz.shape[0] == 0:
 
-    @property
-    def get_base_activations(self):
-        """Returns raw Gaussian base activation logits."""
-        return self._base_activations
+            return torch.empty(0, self.latent_dim, device=self.device), torch.empty(
+                0, 1, device=self.device
+            )
 
-    @property
-    def get_opacity_activated(self):
-        """Returns sigmoid-activated base activations."""
-        return self.opacity_activation(self._base_activations)
+        if tx_position.dim() == 1:
+            tx_position = tx_position.unsqueeze(0)
+
+        tx_pos_expanded = (
+            tx_position.expand(self._xyz.shape[0], -1)
+            if self._xyz.shape[0] > 0
+            else torch.empty(0, 3, device=self.device)
+        )
+
+        latent_features, base_activations = self.attribute_network(
+            self._xyz, tx_pos_expanded
+        )
+        return latent_features, base_activations
+
+    def get_opacity_activated(self, tx_position: torch.Tensor) -> torch.Tensor:
+        """Returns sigmoid-activated base activations, computed dynamically."""
+        _, base_activations = self.get_attributes(tx_position)
+        return self.opacity_activation(base_activations)
 
     def get_covariance(
         self, return_inverse=False, eps=1e-6
@@ -112,15 +132,20 @@ class GaussianChannelFieldModel(nn.Module):
         scaling = self.get_scaling
         rotation_q = self.get_rotation
 
+        if scaling.shape[0] == 0:
+            empty_cov = torch.empty(0, 3, 3, device=self.device)
+            return (empty_cov, empty_cov) if return_inverse else empty_cov
+
         R = build_rotation(rotation_q)
         S_sq_diag = torch.diag_embed(scaling * scaling)
         covariance = R @ S_sq_diag @ R.transpose(1, 2)
 
         if return_inverse:
             inv_covariance = build_covariance_inverse(R, scaling, eps)
+
             if torch.isnan(inv_covariance).any() or torch.isinf(inv_covariance).any():
                 print(
-                    "Warning: NaN or Inf detected in inverse covariance. Replacing with identity."
+                    "Warning: NaN or Inf detected in inverse covariance. Replacing offending matrices with identity."
                 )
                 bad_indices = torch.isnan(inv_covariance).any(dim=(1, 2)) | torch.isinf(
                     inv_covariance
@@ -162,7 +187,11 @@ class GaussianChannelFieldModel(nn.Module):
                     print(
                         f"Randomly sampling {num_to_init} points from the point cloud."
                     )
-                    indices = torch.randperm(num_available_points)[:num_to_init]
+
+                    indices_np = np.random.choice(
+                        num_available_points, num_to_init, replace=False
+                    )
+                    indices = torch.from_numpy(indices_np).long()
 
                 xyz = point_cloud[indices].to(self.device).float()
                 if xyz.shape[1] != 3:
@@ -194,15 +223,10 @@ class GaussianChannelFieldModel(nn.Module):
         self._xyz = nn.Parameter(xyz.requires_grad_(True))
         scales = torch.ones(num_to_init, 3, device=self.device) * self.init_log_scale
         self._scaling = nn.Parameter(scales.requires_grad_(True))
+
         rots = torch.zeros((num_to_init, 4), device=self.device)
         rots[:, 0] = 1.0
         self._rotation = nn.Parameter(rots.requires_grad_(True))
-        latents = torch.randn(num_to_init, self.latent_dim, device=self.device) * 0.01
-        self._latent_features = nn.Parameter(latents.requires_grad_(True))
-        activations = (
-            torch.ones(num_to_init, 1, device=self.device) * self.init_opacity_logit
-        )
-        self._base_activations = nn.Parameter(activations.requires_grad_(True))
 
         print(f"GCF Model initialized with {self.get_xyz.shape[0]} Gaussians.")
 
@@ -221,14 +245,9 @@ class GaussianChannelFieldModel(nn.Module):
                 "name": "scaling",
             },
             {
-                "params": [self._latent_features],
-                "lr": lr_dict.get("latent", 0.0),
-                "name": "latent",
-            },
-            {
-                "params": [self._base_activations],
-                "lr": lr_dict.get("activation", 0.0),
-                "name": "activation",
+                "params": self.attribute_network.parameters(),
+                "lr": lr_dict.get("attribute_net", 0.0),
+                "name": "attribute_net",
             },
             {
                 "params": self.contribution_decoder.parameters(),
@@ -239,20 +258,21 @@ class GaussianChannelFieldModel(nn.Module):
         return param_groups
 
     def training_setup(self, training_args: Any):
-        """Setup optimizer and learning rate schedulers."""
+        """Setup optimizer (Adam) and learning rate schedulers."""
+
         lr_map = {
             "xyz": training_args.position_lr_init,
             "rotation": training_args.rotation_lr,
             "scaling": training_args.scaling_lr,
-            "latent": training_args.latent_lr,
-            "activation": training_args.activation_lr,
+            "attribute_net": training_args.attribute_net_lr,
             "decoder": training_args.decoder_lr,
         }
         params = self.get_params(lr_map)
 
-        self.optimizer = torch.optim.SGD(
+        self.optimizer = torch.optim.Adam(
             params,
             lr=0.0,
+            eps=1e-15,
             weight_decay=training_args.weight_decay,
         )
 
@@ -262,18 +282,20 @@ class GaussianChannelFieldModel(nn.Module):
             lr_delay_mult=training_args.position_lr_delay_mult,
             max_steps=training_args.iterations,
         )
+
         for name, lr_init in lr_map.items():
             if name != "xyz":
                 self.lr_schedulers[name] = lambda step, lr=lr_init: lr
 
     def update_learning_rate(self, iteration: int, training_args: Any):
-        """Update learning rates for all parameter groups."""
+        """Update learning rates for all parameter groups based on schedulers."""
         if not self.optimizer:
             return
         for param_group in self.optimizer.param_groups:
             name = param_group["name"]
             if name in self.lr_schedulers:
                 new_lr = self.lr_schedulers[name](iteration)
+
                 if name == "xyz" and iteration > training_args.stop_xyz_iter:
                     new_lr = 0.0
                 param_group["lr"] = new_lr
@@ -286,8 +308,7 @@ class GaussianChannelFieldModel(nn.Module):
             "xyz": self._xyz.detach().cpu(),
             "rotation": self._rotation.detach().cpu(),
             "scaling": self._scaling.detach().cpu(),
-            "latent_features": self._latent_features.detach().cpu(),
-            "base_activations": self._base_activations.detach().cpu(),
+            "attribute_network_state_dict": self.attribute_network.state_dict(),
             "decoder_state_dict": self.contribution_decoder.state_dict(),
             "optimizer_state_dict": (
                 self.optimizer.state_dict() if self.optimizer else None
@@ -296,6 +317,9 @@ class GaussianChannelFieldModel(nn.Module):
                 "num_tx_ant": self.num_tx_ant,
                 "num_rx_ant": self.num_rx_ant,
                 "latent_dim": self.latent_dim,
+                "attribute_mlp_hidden_dim": self.attribute_network.network.hidden_dim,
+                "attribute_mlp_num_layers": self.attribute_network.network.num_layers,
+                "attribute_pos_enc_freqs": self.attribute_network.pos_encoder_mean.num_freqs,
                 "decoder_hidden_dim": self.contribution_decoder.hidden_dim,
                 "decoder_num_layers": self.contribution_decoder.num_layers,
             },
@@ -317,6 +341,9 @@ class GaussianChannelFieldModel(nn.Module):
             num_tx_ant=config["num_tx_ant"],
             num_rx_ant=config["num_rx_ant"],
             latent_dim=config["latent_dim"],
+            attribute_mlp_hidden_dim=config.get("attribute_mlp_hidden_dim", 64),
+            attribute_mlp_num_layers=config.get("attribute_mlp_num_layers", 3),
+            attribute_pos_enc_freqs=config.get("attribute_pos_enc_freqs", 10),
             decoder_hidden_dim=config.get("decoder_hidden_dim", 64),
             decoder_num_layers=config.get("decoder_num_layers", 3),
             device=device,
@@ -329,11 +356,9 @@ class GaussianChannelFieldModel(nn.Module):
         model._scaling = nn.Parameter(
             state_dict["scaling"].to(device).requires_grad_(True)
         )
-        model._latent_features = nn.Parameter(
-            state_dict["latent_features"].to(device).requires_grad_(True)
-        )
-        model._base_activations = nn.Parameter(
-            state_dict["base_activations"].to(device).requires_grad_(True)
+
+        model.attribute_network.load_state_dict(
+            state_dict["attribute_network_state_dict"]
         )
         model.contribution_decoder.load_state_dict(state_dict["decoder_state_dict"])
 
@@ -343,7 +368,9 @@ class GaussianChannelFieldModel(nn.Module):
             model.training_setup(training_args)
             if model.optimizer and state_dict.get("optimizer_state_dict"):
                 try:
+
                     model.optimizer.load_state_dict(state_dict["optimizer_state_dict"])
+
                     for state in model.optimizer.state.values():
                         for k, v in state.items():
                             if isinstance(v, torch.Tensor):
@@ -353,8 +380,12 @@ class GaussianChannelFieldModel(nn.Module):
                     print(
                         f"Warning: Could not load optimizer state: {e}. Optimizer state reset."
                     )
+
+                    model.optimizer.state = {}
             else:
                 print("Optimizer state not found in checkpoint or optimizer not setup.")
 
         print(f"GCF Model loaded from {filepath} (iteration {iteration}).")
+        print(f"Loaded model has {model.get_xyz.shape[0]} Gaussians.")
+
         return model, iteration

@@ -28,7 +28,6 @@ def parse_args():
     parser.add_argument(
         "--data_path", type=str, required=True, help="Path to dataset file (.mat)"
     )
-
     parser.add_argument(
         "--train_ratio", type=float, default=0.8, help="Ratio of data for training"
     )
@@ -43,8 +42,8 @@ def parse_args():
         "--init_method",
         type=str,
         default="random",
-        choices=["random", "point_cloud"],
-        help="Initialization method for Gaussians ('random' or 'point_cloud')",
+        choices=["random", "point_cloud", "cube"],
+        help="Initialization method for Gaussians ('random', 'point_cloud', 'cube')",
     )
     parser.add_argument(
         "--latent_dim",
@@ -52,17 +51,37 @@ def parse_args():
         default=32,
         help="Dimension of Gaussian latent features (F)",
     )
+
+    parser.add_argument(
+        "--attribute_mlp_hidden_dim",
+        type=int,
+        default=64,
+        help="Hidden dimension for Attribute Network MLP",
+    )
+    parser.add_argument(
+        "--attribute_mlp_num_layers",
+        type=int,
+        default=3,
+        help="Number of layers for Attribute Network MLP",
+    )
+    parser.add_argument(
+        "--attribute_pos_enc_freqs",
+        type=int,
+        default=10,
+        help="Number of frequencies for positional encoding in Attribute Network",
+    )
+
     parser.add_argument(
         "--decoder_hidden_dim",
         type=int,
         default=64,
-        help="Hidden dimension for decoder MLP",
+        help="Hidden dimension for Contribution Decoder MLP",
     )
     parser.add_argument(
         "--decoder_num_layers",
         type=int,
         default=4,
-        help="Number of layers for decoder MLP (including output)",
+        help="Number of layers for Contribution Decoder MLP (including output)",
     )
 
     parser.add_argument(
@@ -72,46 +91,10 @@ def parse_args():
         "--batch_size", type=int, default=16, help="Batch size for training"
     )
     parser.add_argument(
-        "--position_lr_init",
+        "--weight_decay",
         type=float,
-        default=1e-4,
-        help="Initial LR for Gaussian positions",
-    )
-    parser.add_argument(
-        "--position_lr_final",
-        type=float,
-        default=1e-6,
-        help="Final LR for Gaussian positions",
-    )
-    parser.add_argument(
-        "--position_lr_delay_mult",
-        type=float,
-        default=0.01,
-        help="Multiplier for position LR delay phase",
-    )
-    parser.add_argument(
-        "--rotation_lr", type=float, default=0.001, help="LR for Gaussian rotations"
-    )
-    parser.add_argument(
-        "--scaling_lr", type=float, default=0.005, help="LR for Gaussian scaling"
-    )
-    parser.add_argument(
-        "--latent_lr", type=float, default=0.001, help="LR for Gaussian latent features"
-    )
-    parser.add_argument(
-        "--activation_lr",
-        type=float,
-        default=0.01,
-        help="LR for Gaussian base activations",
-    )
-    parser.add_argument(
-        "--decoder_lr",
-        type=float,
-        default=0.001,
-        help="LR for the contribution decoder network",
-    )
-    parser.add_argument(
-        "--adam_eps", type=float, default=1e-12, help="Adam optimizer epsilon"
+        default=0.0,
+        help="Weight decay for Adam optimizer (default: 0)",
     )
     parser.add_argument(
         "--loss_eps",
@@ -126,16 +109,52 @@ def parse_args():
         help="Std dev of Gaussian noise added to Rx positions during training (0 to disable)",
     )
     parser.add_argument(
-        "--lambda_latent_l1",
-        type=float,
-        default=0.0,
-        help="L1 regularization weight for latent features (0 to disable)",
-    )
-    parser.add_argument(
         "--lambda_activation_l1",
         type=float,
         default=0.0,
         help="L1 regularization weight for base activations (0 to disable)",
+    )
+
+    parser.add_argument(
+        "--position_lr_init",
+        type=float,
+        default=1e-5,
+        help="Initial LR for Gaussian positions",
+    )
+    parser.add_argument(
+        "--position_lr_final",
+        type=float,
+        default=1e-7,
+        help="Final LR for Gaussian positions",
+    )
+    parser.add_argument(
+        "--position_lr_delay_mult",
+        type=float,
+        default=0.01,
+        help="Multiplier for position LR delay phase",
+    )
+    parser.add_argument(
+        "--rotation_lr", type=float, default=0.001, help="LR for Gaussian rotations"
+    )
+    parser.add_argument(
+        "--scaling_lr", type=float, default=0.005, help="LR for Gaussian scaling"
+    )
+
+    parser.add_argument(
+        "--attribute_net_lr", type=float, default=0.001, help="LR for Attribute Network"
+    )
+
+    parser.add_argument(
+        "--decoder_lr",
+        type=float,
+        default=0.001,
+        help="LR for the contribution decoder network",
+    )
+    parser.add_argument(
+        "--stop_xyz_iter",
+        type=int,
+        default=int(0.75 * 30_000),
+        help="Stop updating Gaussian positions after this iteration",
     )
 
     parser.add_argument(
@@ -147,28 +166,28 @@ def parse_args():
     parser.add_argument(
         "--log_freq",
         type=int,
-        default=5,
+        default=10,
         help="Log training metrics every N iterations",
     )
     parser.add_argument(
         "--eval_freq",
         type=int,
-        default=200,
+        default=1000,
         help="Evaluate on validation set every N iterations",
     )
     parser.add_argument(
         "--checkpoint_freq",
         type=int,
-        default=200,
+        default=1000,
         help="Save checkpoint every N iterations",
     )
     parser.add_argument(
         "--tensorboard", action="store_true", help="Enable TensorBoard logging"
     )
+
     parser.add_argument(
         "--num_workers", type=int, default=4, help="Number of dataloader workers"
     )
-
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument(
         "--device", type=str, default="cuda", help="Device to use (cuda or cpu)"
@@ -179,17 +198,15 @@ def parse_args():
         default=None,
         help="Path to checkpoint for resuming training",
     )
-    parser.add_argument(
-        "--weight_decay", type=float, default=1e-4, help="Weight decay for optimizer"
-    )
-    parser.add_argument(
-        "--stop_xyz_iter",
-        type=int,
-        default=int(0.5 * 30_000),
-        help="Stop updating Gaussian positions after this iteration",
-    )
 
     args = parser.parse_args()
+
+    if hasattr(args, "iterations"):
+        args.stop_xyz_iter = int(0.75 * args.iterations)
+    else:
+
+        args.stop_xyz_iter = float("inf")
+
     return args
 
 
@@ -198,6 +215,7 @@ def evaluate(
     val_loader: DataLoader,
     criterion: nn.Module,
     device: torch.device,
+    tx_position: torch.Tensor,
     wavelength: float,
     nt: int,
     nr: int,
@@ -215,18 +233,10 @@ def evaluate(
             h_gt_batch = batch["channel_matrix"].to(device)
             batch_size = rx_pos_batch.shape[0]
 
-            gauss_means = model.get_xyz
-            gauss_latents = model.get_latent_features
-            gauss_activations = model.get_base_activations
-            _, gauss_inv_covs = model.get_covariance(return_inverse=True)
-
             h_pred_batch = render_channel(
                 rx_positions=rx_pos_batch,
-                gauss_means=gauss_means,
-                gauss_inv_covs=gauss_inv_covs,
-                gauss_latents=gauss_latents,
-                gauss_activations=gauss_activations,
-                decoder_network=model.contribution_decoder,
+                model=model,
+                tx_position=tx_position,
                 wavelength=wavelength,
                 nt=nt,
                 nr=nr,
@@ -237,14 +247,16 @@ def evaluate(
             snr = calculate_snr(loss)
 
             total_loss += loss.item() * batch_size
-            if not torch.isinf(snr):
+            if not torch.isinf(snr) and not torch.isnan(snr):
                 total_snr += snr.item() * batch_size
             else:
-                print("Warning: Infinite SNR detected during evaluation.")
+
+                pass
 
             count += batch_size
 
     avg_loss = total_loss / count if count > 0 else 0.0
+
     avg_snr = total_snr / count if count > 0 else float("-inf")
 
     return {"val_loss": avg_loss, "val_snr_db": avg_snr}
@@ -285,10 +297,18 @@ def train(args):
         logger.info(
             f"Dataset Metadata: Nt={nt}, Nr={nr}, Freq={metadata['frequency']/1e9:.2f}GHz, Lambda={wavelength:.4f}m, IsSISO={metadata['is_siso']}"
         )
+        logger.info(f"Transmitter Position: {tx_position.cpu().numpy()}")
         if point_cloud is not None:
             logger.info(f"Point cloud loaded with shape: {point_cloud.shape}")
+            point_cloud = point_cloud.to(device)
         else:
             logger.info("No point cloud data found in dataset.")
+        if env_dims is not None:
+            env_dims = env_dims.to(device)
+        else:
+            logger.warning(
+                "No environment dimensions found in dataset. Random init will use default range."
+            )
 
     except Exception as e:
         logger.exception(f"Failed to load data: {e}")
@@ -301,6 +321,9 @@ def train(args):
         num_tx_ant=nt,
         num_rx_ant=nr,
         latent_dim=args.latent_dim,
+        attribute_mlp_hidden_dim=args.attribute_mlp_hidden_dim,
+        attribute_mlp_num_layers=args.attribute_mlp_num_layers,
+        attribute_pos_enc_freqs=args.attribute_pos_enc_freqs,
         decoder_hidden_dim=args.decoder_hidden_dim,
         decoder_num_layers=args.decoder_num_layers,
         initial_gaussians=args.initial_gaussians,
@@ -311,6 +334,7 @@ def train(args):
     if args.resume:
         logger.info(f"Resuming from checkpoint: {args.resume}")
         try:
+
             model, start_iteration = GaussianChannelFieldModel.load(
                 Path(args.resume), device, args
             )
@@ -321,29 +345,36 @@ def train(args):
             args.resume = None
 
     if not args.resume:
-        init_pc = None
+        init_pc_arg = None
         if args.init_method == "point_cloud":
             if point_cloud is not None:
                 logger.info("Using point cloud for Gaussian initialization.")
-                init_pc = point_cloud.to(device)
+                init_pc_arg = point_cloud
             else:
                 logger.warning(
                     "Point cloud initialization requested but no point cloud data found. Falling back to random initialization."
                 )
                 args.init_method = "random"
 
-        if init_pc is None:
+        if args.init_method == "random":
             logger.info("Using random initialization for Gaussians.")
+        elif args.init_method == "cube":
+            logger.info(
+                "Cube initialization not implemented yet. Falling back to random."
+            )
+
+            args.init_method = "random"
 
         model.init_gaussians(
-            env_dims=env_dims.to(device) if env_dims is not None else None,
-            point_cloud=init_pc,
+            env_dims=env_dims,
+            point_cloud=init_pc_arg,
             num_points=args.initial_gaussians,
         )
+
         model.training_setup(args)
 
     model = model.to(device)
-    logger.info(f"Model initialized with {model.get_xyz.shape[0]} Gaussians.")
+    logger.info(f"Model initialized/loaded with {model.get_xyz.shape[0]} Gaussians.")
     logger.info(
         f"Total trainable parameters: {sum(p.numel() for p in model.parameters() if p.requires_grad):,}"
     )
@@ -351,9 +382,7 @@ def train(args):
     criterion = NormalizedMSELoss(eps=args.loss_eps).to(device)
 
     logger.info("Starting training...")
-    progress_bar = tqdm(
-        range(start_iteration, args.iterations), desc="Training Gaussians"
-    )
+    progress_bar = tqdm(range(start_iteration, args.iterations), desc="Training GCF")
     ema_loss = -1.0
     train_iter = iter(train_loader)
 
@@ -375,18 +404,10 @@ def train(args):
             noise = torch.randn_like(rx_pos_batch) * args.rx_noise_std
             rx_pos_batch = rx_pos_batch + noise
 
-        gauss_means = model.get_xyz
-        gauss_latents = model.get_latent_features
-        gauss_activations = model.get_base_activations
-        _, gauss_inv_covs = model.get_covariance(return_inverse=True)
-
         h_pred_batch = render_channel(
             rx_positions=rx_pos_batch,
-            gauss_means=gauss_means,
-            gauss_inv_covs=gauss_inv_covs,
-            gauss_latents=gauss_latents,
-            gauss_activations=gauss_activations,
-            decoder_network=model.contribution_decoder,
+            model=model,
+            tx_position=tx_position,
             wavelength=wavelength,
             nt=nt,
             nr=nr,
@@ -395,14 +416,12 @@ def train(args):
 
         loss = criterion(h_pred_batch, h_gt_batch)
         total_loss = loss
-        l1_latent_loss = torch.tensor(0.0, device=device)
         l1_activation_loss = torch.tensor(0.0, device=device)
 
-        if args.lambda_latent_l1 > 0:
-            l1_latent_loss = torch.mean(torch.abs(model.get_latent_features))
-            total_loss = total_loss + args.lambda_latent_l1 * l1_latent_loss
-        if args.lambda_activation_l1 > 0:
-            l1_activation_loss = torch.mean(torch.abs(model.get_base_activations))
+        if args.lambda_activation_l1 > 0 and model.get_xyz.shape[0] > 0:
+
+            _, base_activations = model.get_attributes(tx_position)
+            l1_activation_loss = torch.mean(torch.abs(base_activations))
             total_loss = total_loss + args.lambda_activation_l1 * l1_activation_loss
 
         model.optimizer.zero_grad()
@@ -414,17 +433,17 @@ def train(args):
                 torch.isnan(param.grad).any() or torch.isinf(param.grad).any()
             ):
                 logger.warning(
-                    f"NaN or Inf gradient detected at iteration {iteration}. Skipping optimizer step."
+                    f"NaN or Inf gradient detected at iteration {iteration} for parameter. Skipping optimizer step."
                 )
                 found_nan_grad = True
                 break
 
+        grad_stats = {}
         if not found_nan_grad:
             grad_stats = compute_grad_stats(model)
             model.optimizer.step()
         else:
             model.optimizer.zero_grad()
-            grad_stats = {}
 
         iter_time = time.time() - iter_start_time
         with torch.no_grad():
@@ -441,10 +460,11 @@ def train(args):
 
             if iteration % args.log_freq == 0:
                 snr = calculate_snr(loss).item()
+                num_gaussians = model.get_xyz.shape[0]
                 log_msg = (
                     f"[{iteration}/{args.iterations}] Loss: {current_loss:.3e} | "
                     f"EMA Loss: {ema_loss:.3e} | SNR: {snr:.2f} dB | "
-                    f"Time: {iter_time:.2f}s | Gaussians: {gauss_means.shape[0]}"
+                    f"Time: {iter_time:.2f}s | Gaussians: {num_gaussians}"
                 )
                 logger.info(log_msg)
                 if grad_stats:
@@ -460,19 +480,13 @@ def train(args):
                     writer.add_scalar("train/ema_loss", ema_loss, iteration)
                     writer.add_scalar("train/snr_db", snr, iteration)
                     writer.add_scalar("train/iteration_time_sec", iter_time, iteration)
-                    writer.add_scalar(
-                        "train/num_gaussians", gauss_means.shape[0], iteration
-                    )
+                    writer.add_scalar("train/num_gaussians", num_gaussians, iteration)
                     if grad_stats:
                         writer.add_scalar(
                             "grads/norm", grad_stats["grad_norm"], iteration
                         )
                         writer.add_scalar(
                             "grads/mean_abs", grad_stats["mean_abs_grad"], iteration
-                        )
-                    if args.lambda_latent_l1 > 0:
-                        writer.add_scalar(
-                            "train/loss_l1_latent", l1_latent_loss.item(), iteration
                         )
                     if args.lambda_activation_l1 > 0:
                         writer.add_scalar(
@@ -495,6 +509,7 @@ def train(args):
                 val_loader=val_loader,
                 criterion=criterion,
                 device=device,
+                tx_position=tx_position,
                 wavelength=wavelength,
                 nt=nt,
                 nr=nr,
@@ -511,11 +526,12 @@ def train(args):
                     "validation/snr_db", eval_metrics["val_snr_db"], iteration
                 )
 
-        if iteration % args.checkpoint_freq == 0 or iteration == args.iterations - 1:
+        if (
+            iteration % args.checkpoint_freq == 0 and iteration > 0
+        ) or iteration == args.iterations - 1:
             checkpoint_path = checkpoints_dir / f"checkpoint_{iteration:07d}.pt"
             model.save(checkpoint_path, iteration=iteration)
-            if iteration != args.iterations - 1 and iteration != 0:
-                logger.info(f"Checkpoint saved to {checkpoint_path}")
+            logger.info(f"Checkpoint saved to {checkpoint_path}")
 
     final_model_path = log_dir / "final_model.pt"
     model.save(final_model_path, iteration=args.iterations - 1)
