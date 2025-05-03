@@ -31,7 +31,6 @@ def parse_args():
     parser.add_argument(
         "--train_ratio", type=float, default=0.8, help="Ratio of data for training"
     )
-
     parser.add_argument(
         "--initial_gaussians",
         type=int,
@@ -42,8 +41,8 @@ def parse_args():
         "--init_method",
         type=str,
         default="random",
-        choices=["random", "point_cloud", "cube"],
-        help="Initialization method for Gaussians ('random', 'point_cloud', 'cube')",
+        choices=["random", "point_cloud"],
+        help="Initialization method for Gaussians ('random', 'point_cloud')",
     )
     parser.add_argument(
         "--latent_dim",
@@ -51,15 +50,14 @@ def parse_args():
         default=32,
         help="Dimension of Gaussian latent features (F)",
     )
-
     parser.add_argument(
-        "--attribute_mlp_hidden_dim",
+        "--attribute_hidden_dim",
         type=int,
         default=64,
         help="Hidden dimension for Attribute Network MLP",
     )
     parser.add_argument(
-        "--attribute_mlp_num_layers",
+        "--attribute_num_layers",
         type=int,
         default=3,
         help="Number of layers for Attribute Network MLP",
@@ -70,7 +68,6 @@ def parse_args():
         default=10,
         help="Number of frequencies for positional encoding in Attribute Network",
     )
-
     parser.add_argument(
         "--decoder_hidden_dim",
         type=int,
@@ -83,7 +80,6 @@ def parse_args():
         default=4,
         help="Number of layers for Contribution Decoder MLP (including output)",
     )
-
     parser.add_argument(
         "--iterations", type=int, default=30_000, help="Total training iterations"
     )
@@ -114,17 +110,16 @@ def parse_args():
         default=0.0,
         help="L1 regularization weight for base activations (0 to disable)",
     )
-
     parser.add_argument(
         "--position_lr_init",
         type=float,
-        default=1e-5,
+        default=1e-4,
         help="Initial LR for Gaussian positions",
     )
     parser.add_argument(
         "--position_lr_final",
         type=float,
-        default=1e-7,
+        default=1e-6,
         help="Final LR for Gaussian positions",
     )
     parser.add_argument(
@@ -143,7 +138,6 @@ def parse_args():
     parser.add_argument(
         "--attribute_net_lr", type=float, default=0.001, help="LR for Attribute Network"
     )
-
     parser.add_argument(
         "--decoder_lr",
         type=float,
@@ -156,7 +150,6 @@ def parse_args():
         default=int(0.75 * 30_000),
         help="Stop updating Gaussian positions after this iteration",
     )
-
     parser.add_argument(
         "--log_dir",
         type=str,
@@ -172,7 +165,7 @@ def parse_args():
     parser.add_argument(
         "--eval_freq",
         type=int,
-        default=1000,
+        default=100,
         help="Evaluate on validation set every N iterations",
     )
     parser.add_argument(
@@ -184,7 +177,6 @@ def parse_args():
     parser.add_argument(
         "--tensorboard", action="store_true", help="Enable TensorBoard logging"
     )
-
     parser.add_argument(
         "--num_workers", type=int, default=4, help="Number of dataloader workers"
     )
@@ -321,8 +313,8 @@ def train(args):
         num_tx_ant=nt,
         num_rx_ant=nr,
         latent_dim=args.latent_dim,
-        attribute_mlp_hidden_dim=args.attribute_mlp_hidden_dim,
-        attribute_mlp_num_layers=args.attribute_mlp_num_layers,
+        attribute_hidden_dim=args.attribute_hidden_dim,
+        attribute_num_layers=args.attribute_num_layers,
         attribute_pos_enc_freqs=args.attribute_pos_enc_freqs,
         decoder_hidden_dim=args.decoder_hidden_dim,
         decoder_num_layers=args.decoder_num_layers,
@@ -358,12 +350,6 @@ def train(args):
 
         if args.init_method == "random":
             logger.info("Using random initialization for Gaussians.")
-        elif args.init_method == "cube":
-            logger.info(
-                "Cube initialization not implemented yet. Falling back to random."
-            )
-
-            args.init_method = "random"
 
         model.init_gaussians(
             env_dims=env_dims,

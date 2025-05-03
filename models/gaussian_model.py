@@ -27,8 +27,8 @@ class GaussianChannelFieldModel(nn.Module):
         num_tx_ant: int,
         num_rx_ant: int,
         latent_dim: int,
-        attribute_mlp_hidden_dim: int = 64,
-        attribute_mlp_num_layers: int = 3,
+        attribute_hidden_dim: int = 64,
+        attribute_num_layers: int = 3,
         attribute_pos_enc_freqs: int = 10,
         decoder_hidden_dim: int = 64,
         decoder_num_layers: int = 3,
@@ -51,8 +51,8 @@ class GaussianChannelFieldModel(nn.Module):
 
         self.attribute_network = AttributeNetwork(
             latent_dim=latent_dim,
-            mlp_hidden_dim=attribute_mlp_hidden_dim,
-            mlp_num_layers=attribute_mlp_num_layers,
+            mlp_hidden_dim=attribute_hidden_dim,
+            mlp_num_layers=attribute_num_layers,
             pos_encoding_freqs=attribute_pos_enc_freqs,
         ).to(device)
 
@@ -258,7 +258,7 @@ class GaussianChannelFieldModel(nn.Module):
         return param_groups
 
     def training_setup(self, training_args: Any):
-        """Setup optimizer (Adam) and learning rate schedulers."""
+        """Setup optimizer (AdamW) and learning rate schedulers."""
 
         lr_map = {
             "xyz": training_args.position_lr_init,
@@ -269,7 +269,7 @@ class GaussianChannelFieldModel(nn.Module):
         }
         params = self.get_params(lr_map)
 
-        self.optimizer = torch.optim.Adam(
+        self.optimizer = torch.optim.AdamW(
             params,
             lr=0.0,
             eps=1e-12,
@@ -317,8 +317,8 @@ class GaussianChannelFieldModel(nn.Module):
                 "num_tx_ant": self.num_tx_ant,
                 "num_rx_ant": self.num_rx_ant,
                 "latent_dim": self.latent_dim,
-                "attribute_mlp_hidden_dim": self.attribute_network.network.hidden_dim,
-                "attribute_mlp_num_layers": self.attribute_network.network.num_layers,
+                "attribute_hidden_dim": self.attribute_network.network.hidden_dim,
+                "attribute_num_layers": self.attribute_network.network.num_layers,
                 "attribute_pos_enc_freqs": self.attribute_network.pos_encoder_mean.num_freqs,
                 "decoder_hidden_dim": self.contribution_decoder.hidden_dim,
                 "decoder_num_layers": self.contribution_decoder.num_layers,
@@ -341,8 +341,8 @@ class GaussianChannelFieldModel(nn.Module):
             num_tx_ant=config["num_tx_ant"],
             num_rx_ant=config["num_rx_ant"],
             latent_dim=config["latent_dim"],
-            attribute_mlp_hidden_dim=config.get("attribute_mlp_hidden_dim", 64),
-            attribute_mlp_num_layers=config.get("attribute_mlp_num_layers", 3),
+            attribute_hidden_dim=config.get("attribute_hidden_dim", 64),
+            attribute_num_layers=config.get("attribute_num_layers", 3),
             attribute_pos_enc_freqs=config.get("attribute_pos_enc_freqs", 10),
             decoder_hidden_dim=config.get("decoder_hidden_dim", 64),
             decoder_num_layers=config.get("decoder_num_layers", 3),

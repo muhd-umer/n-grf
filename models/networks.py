@@ -62,9 +62,8 @@ class ContributionDecoderNetwork(SimpleMLP):
 
 class AttributeNetwork(nn.Module):
     """
-    Predicts latent features (f_n) and base activations (a_n) from
-    Gaussian position (μ_n) and fixed Tx position (P_TX).
-    Implements Phase 1 change.
+    Predicts latent features and base activations from
+    Gaussian position and fixed Tx position.
     """
 
     def __init__(
@@ -83,12 +82,12 @@ class AttributeNetwork(nn.Module):
 
         encoded_dim_mean = self.pos_encoder_mean.output_dims
         encoded_dim_tx = self.pos_encoder_tx.output_dims
-        input_mlp_dim = encoded_dim_mean + encoded_dim_tx
+        input_dim = encoded_dim_mean + encoded_dim_tx
 
         output_dim = latent_dim + 1
 
         self.network = SimpleMLP(
-            input_dim=input_mlp_dim,
+            input_dim=input_dim,
             output_dim=output_dim,
             hidden_dim=mlp_hidden_dim,
             num_layers=mlp_num_layers,
