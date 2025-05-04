@@ -4,7 +4,7 @@ import argparse
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict
+from typing import Dict
 
 import numpy as np
 import torch
@@ -14,24 +14,18 @@ from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
 from datasets.dataloader import get_dataloaders
-
-# import the updated rendering engine
-from engine.render_magnitude import render_magnitude
+from engine.render import render
 from models.gaussian_model import GaussianChannelFieldModel
 from utils.general_utils import set_random_seed
-
-# import updated loss and snr calculation
-from utils.loss import calculate_snr  # MSELoss is used directly from nn
+from utils.loss import calculate_snr
 from utils.train_utils import compute_grad_stats, setup_logging
 
 
 def parse_args():
     """Parse command line arguments for training."""
-    parser = argparse.ArgumentParser(
-        description="Train Gaussian Channel Field Model for Magnitude Prediction"
-    )
+    parser = argparse.ArgumentParser(description="Train Gaussian channel field model")
 
-    # --- Data and Initialization ---
+    # data and init params
     parser.add_argument(
         "--data_path", type=str, required=True, help="Path to dataset file (.mat)"
     )
@@ -44,7 +38,7 @@ def parse_args():
     parser.add_argument(
         "--initial_gaussians",
         type=int,
-        default=4_000,
+        default=1_000,
         help="Number of Gaussians to initialize",
     )
     parser.add_argument(
@@ -58,52 +52,52 @@ def parse_args():
         "--norm_eps",
         type=float,
         default=1e-8,
-        help="Epsilon for dataset magnitude normalization stability",
+        help="Epsilon for dataset normalization",
     )
 
-    # --- Model Architecture ---
+    # model params
     parser.add_argument(
         "--latent_dim",
         type=int,
-        default=32,
+        default=64,
         help="Dimension of Gaussian latent features (F)",
     )
     parser.add_argument(
         "--attribute_hidden_dim",
         type=int,
-        default=64,
-        help="Hidden dim for Attribute Network MLP",
+        default=128,
+        help="Hidden dim for Attribute network",
     )
     parser.add_argument(
         "--attribute_num_layers",
         type=int,
-        default=3,
-        help="Number of layers for Attribute Network MLP",
+        default=6,
+        help="Number of layers for Attribute network",
     )
     parser.add_argument(
         "--attribute_pos_enc_freqs",
         type=int,
-        default=42,
-        help="Num frequencies for positional encoding in Attribute Net",
+        default=57,
+        help="Num frequencies for positional encoding in Attribute network",
     )
     parser.add_argument(
         "--decoder_hidden_dim",
         type=int,
-        default=32,
-        help="Hidden dim for Contribution Decoder MLP",
+        default=64,
+        help="Hidden dim for ContributionDecoder",
     )
     parser.add_argument(
         "--decoder_num_layers",
         type=int,
         default=2,
-        help="Number of layers for Contribution Decoder MLP",
+        help="Number of layers for ContributionDecoder",
     )
 
-    # --- Training ---
+    # training params
     parser.add_argument(
         "--iterations",
         type=int,
-        default=30_000,  # Increased iterations
+        default=30_000,
         help="Total training iterations",
     )
     parser.add_argument(
@@ -125,25 +119,25 @@ def parse_args():
         help="Weight decay for AdamW optimizer",
     )
     parser.add_argument(
-        "--snr_calc_eps",
+        "--snr_eps",
         type=float,
         default=1e-10,
-        help="Epsilon for SNR calculation stability",
+        help="Epsilon for SNR calculation",
     )
     parser.add_argument(
         "--rx_noise_std",
         type=float,
-        default=0.02,
+        default=0.03,
         help="Std dev of Gaussian noise added to Rx positions during training",
     )
     parser.add_argument(
         "--lambda_activation_l1",
         type=float,
-        default=1e-3,  # Slightly increased L1 regularization
+        default=1e-2,
         help="L1 regularization weight for base activations logits",
     )
 
-    # --- Learning Rates ---
+    # lr params
     parser.add_argument(
         "--position_lr_init",
         type=float,
@@ -169,7 +163,7 @@ def parse_args():
         "--scaling_lr", type=float, default=0.005, help="LR for Gaussian scaling"
     )
     parser.add_argument(
-        "--attribute_net_lr", type=float, default=0.001, help="LR for Attribute Network"
+        "--attribute_net_lr", type=float, default=0.001, help="LR for Attribute network"
     )
     parser.add_argument(
         "--decoder_lr",
@@ -177,18 +171,18 @@ def parse_args():
         default=0.0015,
         help="LR for the contribution decoder network",
     )
+
+    # experiment params
     parser.add_argument(
         "--stop_xyz_iter",
         type=int,
-        default=int(0.5 * 50_000),  # Adjusted default based on new iterations default
+        default=int(0.75 * 30_000),
         help="Stop updating Gaussian positions after this iteration",
     )
-
-    # --- Logging and Saving ---
     parser.add_argument(
         "--log_dir",
         type=str,
-        default="logs/magnitude_prediction",
+        default="logs",
         help="Directory to save logs and checkpoints",
     )
     parser.add_argument(
@@ -200,7 +194,7 @@ def parse_args():
     parser.add_argument(
         "--eval_freq",
         type=int,
-        default=500,  # Evaluate less frequently
+        default=250,
         help="Evaluate on validation set every N iterations",
     )
     parser.add_argument(
@@ -213,7 +207,7 @@ def parse_args():
         "--tensorboard", action="store_true", help="Enable TensorBoard logging"
     )
 
-    # --- System ---
+    # misc params
     parser.add_argument(
         "--num_workers",
         type=int,
@@ -235,11 +229,9 @@ def parse_args():
 
     args = parser.parse_args()
 
-    # update stop_xyz_iter based on potentially changed iterations
     if hasattr(args, "iterations"):
         args.stop_xyz_iter = int(0.5 * args.iterations)
     else:
-        # fallback if iterations isn't parsed correctly (shouldn't happen)
         args.stop_xyz_iter = float("inf")
 
     return args
@@ -248,54 +240,49 @@ def parse_args():
 def evaluate(
     model: GaussianChannelFieldModel,
     val_loader: DataLoader,
-    criterion: nn.Module,  # expects MSELoss instance
+    criterion: nn.Module,
     device: torch.device,
     tx_position: torch.Tensor,
     nt: int,
     nr: int,
-    snr_calc_eps: float,
+    snr_eps: float,
 ) -> Dict[str, float]:
-    """Evaluates the model on the validation set for magnitude prediction."""
-    model.eval()  # set model to evaluation mode
+    """Evaluates the model on the validation set."""
+    model.eval()
     total_loss = 0.0
     total_snr = 0.0
     count = 0
 
-    with torch.no_grad():  # disable gradient calculations
-        # wrap val_loader with tqdm for progress bar
+    with torch.no_grad():
+
         for batch in tqdm(
             val_loader, desc="Evaluating", leave=False, dynamic_ncols=True
         ):
             rx_pos_batch = batch["rx_position"].to(device)
-            # target is now normalized magnitude
-            h_mag_gt_batch = batch["channel_magnitude"].to(device)
+
+            chan_gt_batch = batch["channel"].to(device)
             batch_size = rx_pos_batch.shape[0]
 
-            # render predicted magnitude
-            h_mag_pred_batch = render_magnitude(
+            chan_pred_batch = render(
                 rx_positions=rx_pos_batch,
                 model=model,
                 tx_position=tx_position,
                 nt=nt,
                 nr=nr,
-                eps=snr_calc_eps,  # use snr_calc_eps for rendering stability too
+                eps=snr_eps,
             )
 
-            # calculate MSE loss
-            loss = criterion(h_mag_pred_batch, h_mag_gt_batch)
-            # calculate SNR based on MSE and target magnitude
-            snr = calculate_snr(loss, h_mag_gt_batch, eps=snr_calc_eps)
+            loss = criterion(chan_pred_batch, chan_gt_batch)
+
+            snr = calculate_snr(loss, chan_gt_batch, eps=snr_eps)
 
             total_loss += loss.item() * batch_size
-            # accumulate SNR only if it's finite
+
             if not torch.isinf(snr) and not torch.isnan(snr):
                 total_snr += snr.item() * batch_size
-            # else:
-            # print(f"Warning: Skipping Inf/NaN SNR value ({snr.item()}) in validation accumulation.")
 
             count += batch_size
 
-    # calculate average loss and SNR
     avg_loss = total_loss / count if count > 0 else 0.0
     avg_snr = total_snr / count if count > 0 else float("-inf")
 
@@ -303,13 +290,12 @@ def evaluate(
 
 
 def train(args):
-    """Main training loop for magnitude prediction."""
+    """Main training loop."""
     set_random_seed(args.seed)
     device = torch.device(
         args.device if torch.cuda.is_available() and args.device == "cuda" else "cpu"
     )
 
-    # setup logging directory
     run_name = (
         datetime.now().strftime("%Y%m%d_%H%M%S")
         + f"_mag_L{args.latent_dim}_N{args.initial_gaussians}"
@@ -319,16 +305,14 @@ def train(args):
     checkpoints_dir = log_dir / "checkpoints"
     checkpoints_dir.mkdir(exist_ok=True)
 
-    # setup logging
     logger = setup_logging(log_dir)
     writer = SummaryWriter(str(log_dir / "tensorboard")) if args.tensorboard else None
 
     logger.info(f"Starting training run: {run_name}")
     logger.info(f"Log directory: {log_dir}")
-    logger.info(f"Arguments: {vars(args)}")  # log all arguments
+    logger.info(f"Arguments: {vars(args)}")
     logger.info(f"Using device: {device}")
 
-    # --- Data Loading ---
     logger.info("Loading data...")
     try:
         train_loader, val_loader, metadata = get_dataloaders(
@@ -337,7 +321,7 @@ def train(args):
             num_workers=args.num_workers,
             train_ratio=args.train_ratio,
             seed=args.seed,
-            norm_eps=args.norm_eps,  # pass norm eps
+            norm_eps=args.norm_eps,
         )
         nt = metadata["num_tx_ant"]
         nr = metadata["num_rx_ant"]
@@ -348,26 +332,23 @@ def train(args):
         max_mag = metadata.get("max_magnitude", 1.0)
 
         logger.info(
-            f"Dataset Metadata: Nt={nt}, Nr={nr}, Freq={metadata['frequency']/1e9:.2f}GHz, IsSISO={metadata['is_siso']}"
+            f"Dataset metadata: Nt={nt}, Nr={nr}, Freq={metadata['frequency']/1e9:.2f}GHz, IsSISO={metadata['is_siso']}"
         )
-        logger.info(f"Magnitude Normalization: Min={min_mag:.4e}, Max={max_mag:.4e}")
-        logger.info(f"Transmitter Position: {tx_position.cpu().numpy()}")
+        logger.info(f"Normalization min/max: Min={min_mag:.4e}, Max={max_mag:.4e}")
+        logger.info(f"Transmitter position: {tx_position.cpu().numpy()}")
         if point_cloud is not None:
             logger.info(f"Point cloud loaded with shape: {point_cloud.shape}")
-            point_cloud = point_cloud.to(
-                device
-            )  # move to device if using point cloud init
+            point_cloud = point_cloud.to(device)
         else:
-            logger.info("No point cloud data found or used for initialization.")
+            logger.info("No point cloud data found or used for initialization")
         if env_dims is not None:
             logger.info(f"Environment dimensions loaded: {env_dims.numpy().tolist()}")
-            env_dims = env_dims.to(device)  # move to device if using random init
+            env_dims = env_dims.to(device)
         else:
             logger.warning(
                 "No environment dimensions found. Random init will use default range [-1, 1]."
             )
 
-        # check if dataloaders are empty
         if len(train_loader) == 0:
             logger.error(
                 "Training dataloader is empty! Check dataset path and train_ratio."
@@ -386,7 +367,6 @@ def train(args):
             writer.close()
         return
 
-    # --- Model Initialization ---
     logger.info("Initializing model...")
     model = GaussianChannelFieldModel(
         num_tx_ant=nt,
@@ -405,33 +385,32 @@ def train(args):
     if args.resume:
         logger.info(f"Resuming from checkpoint: {args.resume}")
         try:
-            # load model and potentially optimizer state
             model, start_iteration = GaussianChannelFieldModel.load(
                 Path(args.resume),
                 device,
-                args,  # pass training args to load optimizer state
+                args,
             )
-            start_iteration += 1  # start from the next iteration
+            start_iteration += 1
             logger.info(f"Resumed from iteration {start_iteration -1}")
         except Exception as e:
-            logger.error(f"Failed to load checkpoint: {e}. Starting from scratch.")
-            args.resume = None  # ensure we don't try to resume again
+            logger.error(f"Failed to load checkpoint: {e}. Starting from scratch")
+            args.resume = None
 
-    # initialize gaussians and training setup only if not resuming
     if not args.resume:
         init_pc_arg = None
+
         if args.init_method == "point_cloud":
             if point_cloud is not None:
-                logger.info("Using point cloud for Gaussian initialization.")
+                logger.info("Using point cloud for Gaussian initialization")
                 init_pc_arg = point_cloud
             else:
                 logger.warning(
                     "Point cloud initialization requested but no point cloud data found. Falling back to random initialization."
                 )
-                args.init_method = "random"  # update arg to reflect fallback
+                args.init_method = "random"
 
         if args.init_method == "random":
-            logger.info("Using random initialization for Gaussians.")
+            logger.info("Using random initialization for Gaussians")
             model.init_gaussians(
                 env_dims=env_dims if env_dims is not None else None,
                 point_cloud=None,
@@ -444,80 +423,63 @@ def train(args):
                 num_points=args.initial_gaussians,
             )
 
-        # setup optimizer and LR schedulers
         model.training_setup(args)
 
-    # ensure model is on the correct device
     model = model.to(device)
-    logger.info(f"Model initialized/loaded with {model.get_xyz.shape[0]} Gaussians.")
+    logger.info(f"Model initialized/loaded with {model.get_xyz.shape[0]} Gaussians")
     logger.info(
         f"Total trainable parameters: {sum(p.numel() for p in model.parameters() if p.requires_grad):,}"
     )
 
-    # --- Loss Function ---
-    criterion = nn.MSELoss().to(device)  # use standard MSE loss
-    logger.info("Using MSE Loss for training.")
+    criterion = nn.MSELoss().to(device)
+    logger.info("Using MSE Loss for training")
 
-    # --- Training Loop ---
     logger.info(f"Starting training from iteration {start_iteration}...")
     progress_bar = tqdm(
         range(start_iteration, args.iterations), desc="Training GCF", dynamic_ncols=True
     )
-    ema_loss = -1.0  # use -1 to indicate not yet initialized
-    train_iter = iter(train_loader)  # create iterator for training data
+    ema_loss = -1.0
+    train_iter = iter(train_loader)
 
     for iteration in progress_bar:
         iter_start_time = time.time()
-        model.train()  # set model to training mode
-        model.update_learning_rate(
-            iteration, args
-        )  # update LRs based on current iteration
+        model.train()
+        model.update_learning_rate(iteration, args)
 
-        # --- Get Batch ---
         try:
             batch = next(train_iter)
         except StopIteration:
-            # epoch finished, reset iterator
             train_iter = iter(train_loader)
             batch = next(train_iter)
 
         rx_pos_batch = batch["rx_position"].to(device)
-        # target is normalized magnitude
-        h_mag_gt_batch = batch["channel_magnitude"].to(device)
+        chan_gt_batch = batch["channel"].to(device)
 
-        # --- Add Noise to Rx Positions (Data Augmentation) ---
         if args.rx_noise_std > 0:
             noise = torch.randn_like(rx_pos_batch) * args.rx_noise_std
             rx_pos_batch = rx_pos_batch + noise
 
-        # --- Forward Pass ---
-        h_mag_pred_batch = render_magnitude(
+        chan_pred_batch = render(
             rx_positions=rx_pos_batch,
             model=model,
             tx_position=tx_position,
             nt=nt,
             nr=nr,
-            eps=args.snr_calc_eps,  # use snr eps for stability here too
+            eps=args.snr_eps,
         )
 
-        # --- Calculate Loss ---
-        mse_loss = criterion(h_mag_pred_batch, h_mag_gt_batch)
+        mse_loss = criterion(chan_pred_batch, chan_gt_batch)
         total_loss = mse_loss
-        l1_activation_loss = torch.tensor(0.0, device=device)  # initialize
+        l1_activation_loss = torch.tensor(0.0, device=device)
 
-        # add L1 regularization on base activation *logits* if enabled
         if args.lambda_activation_l1 > 0 and model.get_xyz.shape[0] > 0:
-            # get the logits from the attribute network
             base_activations_logits = model.get_base_activation_logits(tx_position)
-            # calculate L1 loss on the logits
             l1_activation_loss = torch.mean(torch.abs(base_activations_logits))
             total_loss = total_loss + args.lambda_activation_l1 * l1_activation_loss
 
-        # --- Backward Pass and Optimization ---
-        model.optimizer.zero_grad()  # clear previous gradients
-        total_loss.backward()  # compute gradients
+        model.optimizer.zero_grad()
+        total_loss.backward()
 
-        # check for NaN/Inf gradients before optimizer step
         found_nan_grad = False
         for name, param in model.named_parameters():
             if param.grad is not None and (
@@ -527,43 +489,34 @@ def train(args):
                     f"NaN or Inf gradient detected at iteration {iteration} for parameter '{name}'. Skipping optimizer step."
                 )
                 found_nan_grad = True
-                break  # skip step if any param has bad grad
+                break
 
-        grad_stats = {}  # initialize grad stats dict
+        grad_stats = {}
         if not found_nan_grad:
-            # compute gradient statistics (optional but useful)
-            grad_stats = compute_grad_stats(model)
-            # clip gradients if needed (optional, can help stability)
-            # torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            model.optimizer.step()  # update model parameters
-        else:
-            model.optimizer.zero_grad()  # clear the bad gradients if step was skipped
 
-        # --- Logging ---
+            grad_stats = compute_grad_stats(model)
+
+            model.optimizer.step()
+        else:
+            model.optimizer.zero_grad()
+
         iter_time = time.time() - iter_start_time
-        with torch.no_grad():  # log metrics without tracking gradients
-            current_loss = mse_loss.item()  # get scalar loss value
-            # update EMA loss robustly
+        with torch.no_grad():
+            current_loss = mse_loss.item()
             if np.isnan(current_loss) or np.isinf(current_loss):
                 logger.warning(
                     f"NaN or Inf loss detected at iteration {iteration}. Resetting EMA loss."
                 )
-                # consider stopping training or reducing LR if this happens often
-                ema_loss = -1.0  # reset EMA
-            elif ema_loss < 0:  # first valid loss
+                ema_loss = -1.0
+            elif ema_loss < 0:
                 ema_loss = current_loss
-            else:  # update EMA
+            else:
                 ema_loss = 0.95 * ema_loss + 0.05 * current_loss
-
-            # log periodically
             if iteration % args.log_freq == 0:
-                # calculate SNR for logging
-                snr = calculate_snr(
-                    mse_loss, h_mag_gt_batch, eps=args.snr_calc_eps
-                ).item()
+
+                snr = calculate_snr(mse_loss, chan_gt_batch, eps=args.snr_eps).item()
                 num_gaussians = model.get_xyz.shape[0]
 
-                # format log message
                 log_msg_train = (
                     f"[{iteration}/{args.iterations}] | "
                     f"Loss(MSE): {current_loss:.4e} | EMA Loss: {ema_loss:.4e} | "
@@ -574,16 +527,14 @@ def train(args):
 
                 logger.info(log_msg_train)
 
-                # log gradient stats if computed
                 if grad_stats:
                     grad_log_msg = (
-                        f"    Grads - Norm: {grad_stats['grad_norm']:.3e} | Mean Abs: {grad_stats['mean_abs_grad']:.3e} | "
+                        f" Grads - Norm: {grad_stats['grad_norm']:.3e} | Mean Abs: {grad_stats['mean_abs_grad']:.3e} | "
                         f"Min: {grad_stats['min_grad']:.3e} | Max: {grad_stats['max_grad']:.3e} | "
                         f"Count: {grad_stats['param_count_with_grad']}"
                     )
                     logger.info(grad_log_msg)
 
-                # log to tensorboard if enabled
                 if writer is not None:
                     writer.add_scalar("train/mse_loss", current_loss, iteration)
                     writer.add_scalar("train/ema_loss", ema_loss, iteration)
@@ -596,7 +547,6 @@ def train(args):
                             l1_activation_loss.item(),
                             iteration,
                         )
-                    # log learning rates
                     if model.optimizer:
                         for i, param_group in enumerate(model.optimizer.param_groups):
                             writer.add_scalar(
@@ -604,7 +554,6 @@ def train(args):
                                 param_group["lr"],
                                 iteration,
                             )
-                    # log gradient stats
                     if grad_stats:
                         writer.add_scalar(
                             "grads/norm", grad_stats["grad_norm"], iteration
@@ -619,10 +568,9 @@ def train(args):
                             "grads/max", grad_stats["max_grad"], iteration
                         )
 
-        # --- Evaluation ---
         if iteration % args.eval_freq == 0 and iteration > 0:
-            if len(val_loader) > 0:  # only evaluate if val set exists
-                logger.info(f"--- Starting evaluation at iteration {iteration} ---")
+            if len(val_loader) > 0:
+                logger.info(f"Starting evaluation at iteration {iteration}")
                 eval_start_time = time.time()
                 eval_metrics = evaluate(
                     model=model,
@@ -632,15 +580,13 @@ def train(args):
                     tx_position=tx_position,
                     nt=nt,
                     nr=nr,
-                    snr_calc_eps=args.snr_calc_eps,
+                    snr_eps=args.snr_eps,
                 )
                 eval_time = time.time() - eval_start_time
                 logger.info(
-                    f"Validation | Loss(MSE): {eval_metrics['val_mse_loss']:.4e} | SNR: {eval_metrics['val_snr_db']:.2f} dB | Time: {eval_time:.2f}s"
+                    f"Validation | Loss: {eval_metrics['val_mse_loss']:.4e} | SNR: {eval_metrics['val_snr_db']:.2f} dB | Time: {eval_time:.2f}s"
                 )
-                logger.info(f"--- Evaluation finished ---")
 
-                # log validation metrics to tensorboard
                 if writer is not None:
                     writer.add_scalar(
                         "validation/mse_loss", eval_metrics["val_mse_loss"], iteration
@@ -649,11 +595,8 @@ def train(args):
                         "validation/snr_db", eval_metrics["val_snr_db"], iteration
                     )
             else:
-                logger.info(
-                    f"Skipping evaluation at iteration {iteration} (validation loader is empty)."
-                )
+                logger.info(f"Skipping evaluation at iteration {iteration}")
 
-        # --- Checkpointing ---
         if (
             iteration % args.checkpoint_freq == 0 and iteration > 0
         ) or iteration == args.iterations - 1:
@@ -661,15 +604,14 @@ def train(args):
             model.save(checkpoint_path, iteration=iteration)
             logger.info(f"Checkpoint saved to {checkpoint_path}")
 
-    # --- Training Finished ---
-    progress_bar.close()  # close the tqdm bar
+    progress_bar.close()
     final_model_path = log_dir / "final_model.pt"
     model.save(final_model_path, iteration=args.iterations - 1)
-    logger.info(f"Training completed after {args.iterations} iterations.")
+    logger.info(f"Training completed after {args.iterations} iterations")
     logger.info(f"Final model saved to {final_model_path}")
 
     if writer is not None:
-        writer.close()  # close tensorboard writer
+        writer.close()
 
 
 if __name__ == "__main__":

@@ -15,7 +15,7 @@ def inverse_sigmoid(x: torch.Tensor) -> torch.Tensor:
 @torch.jit.script
 def build_rotation(r: torch.Tensor) -> torch.Tensor:
     """Build rotation matrices from quaternions (ensure normalization)."""
-    # normalize the quaternion first
+
     norm = torch.sqrt(torch.sum(r * r, dim=1, keepdim=True)).clamp(min=1e-10)
     q = r / norm
 
@@ -45,6 +45,7 @@ def build_rotation(r: torch.Tensor) -> torch.Tensor:
     R[:, 2, 0] = 2.0 * (qxqz - qwqy)
     R[:, 2, 1] = 2.0 * (qyqz + qwqx)
     R[:, 2, 2] = 1.0 - 2.0 * (qx2 + qy2)
+
     return R
 
 
@@ -79,12 +80,12 @@ def build_covariance_inverse(
     Handles potential division by zero in scaling.
 
     Args:
-        R: Rotation matrices (N, 3, 3).
-        scaling: Activated scaling factors (N, 3).
-        eps: Small value to prevent division by zero.
+        R: Rotation matrices (N, 3, 3)
+        scaling: Activated scaling factors (N, 3)
+        eps: Small value to prevent division by zero
 
     Returns:
-        Inverse covariance matrices (N, 3, 3).
+        Inverse covariance matrices (N, 3, 3)
     """
     scaling_clamped = torch.clamp(scaling, min=eps)
     inv_scaling_sq = 1.0 / (scaling_clamped * scaling_clamped)

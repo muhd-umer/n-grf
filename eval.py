@@ -3,13 +3,14 @@
 import argparse
 import logging
 import time
+import warnings
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Tuple
 
 import numpy as np
 import torch
-import torch.nn as nn  # import nn for MSELoss
+import torch.nn as nn
 from rich.console import Console
 from rich.logging import RichHandler
 from rich.panel import Panel
@@ -18,46 +19,34 @@ from rich.table import Table
 from rich.text import Text
 
 from datasets.dataloader import get_wireless_dataloader
-
-# import updated rendering engine
-from engine.render_magnitude import render_magnitude
+from engine.render import render
 from models.gaussian_model import GaussianChannelFieldModel
 from utils.general_utils import set_random_seed
-
-# import updated loss and snr calculation
-from utils.loss import calculate_snr  # MSELoss is used directly
+from utils.loss import calculate_snr
 
 
-def setup_eval_logging(
-    log_dir: Path, checkpoint_name: str
-) -> Tuple[logging.Logger, Console]:
+def eval_logger(log_dir: Path, checkpoint_name: str) -> Tuple[logging.Logger, Console]:
     """Setup logging configuration for evaluation."""
     log_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     log_file = log_dir / f"eval_{checkpoint_name}_{timestamp}.log"
 
-    # create logger instance
     logger = logging.getLogger("EvaluationLogger")
-    logger.setLevel(logging.INFO)  # set logging level
+    logger.setLevel(logging.INFO)
 
-    # prevent duplicate handlers if called multiple times
     if logger.hasHandlers():
         logger.handlers.clear()
 
-    # file handler
     file_handler = logging.FileHandler(log_file)
     file_formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
     file_handler.setFormatter(file_formatter)
     logger.addHandler(file_handler)
 
-    # console handler (rich)
-    console = Console(log_path=False)  # prevent rich from writing its own log file
+    console = Console(log_path=False)
     console_handler = RichHandler(
         console=console, rich_tracebacks=True, markup=True, show_path=False
     )
-    console_handler.setFormatter(
-        logging.Formatter("%(message)s")
-    )  # simpler format for console
+    console_handler.setFormatter(logging.Formatter("%(message)s"))
     logger.addHandler(console_handler)
 
     logger.info(f"Evaluation logging initialized. Log file: {log_file}")
@@ -67,9 +56,10 @@ def setup_eval_logging(
 def parse_args():
     """Parse command line arguments for evaluation."""
     parser = argparse.ArgumentParser(
-        description="Evaluate Gaussian Channel Field Model for Magnitude Prediction"
+        description="Evaluate Gaussian channel field model"
     )
 
+    # common arguments
     parser.add_argument(
         "--checkpoint", type=str, required=True, help="Path to model checkpoint (.pt)"
     )
@@ -79,36 +69,35 @@ def parse_args():
     parser.add_argument(
         "--log_dir",
         type=str,
-        default="logs/eval_magnitude",
+        default="logs/eval",
         help="Directory to save evaluation logs",
     )
     parser.add_argument(
         "--batch_size",
         type=int,
         default=1,
-        help="Batch size for evaluation (default: 1)",
+        help="Batch size for evaluation",
     )
     parser.add_argument(
         "--num_workers",
         type=int,
         default=0,
-        help="Number of dataloader workers (default: 0)",
+        help="Number of dataloader workers",
     )
     parser.add_argument(
         "--device", type=str, default="cuda", help="Device to use (cuda or cpu)"
     )
+    parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument(
-        "--seed", type=int, default=42, help="Random seed (default: 42)"
-    )
-    parser.add_argument(
-        "--num_samples_to_log",
+        "--num_samples",
         type=int,
-        default=5,
+        default=3,
         help="Number of sample predictions to log in detail",
     )
-    # parser.add_argument("--loss_eps", type=float, default=1e-10, help="Epsilon for SNR calculation stability") # Renamed
+
+    # eval-specific arguments
     parser.add_argument(
-        "--snr_calc_eps",
+        "--snr_eps",
         type=float,
         default=1e-10,
         help="Epsilon for SNR calculation stability",
@@ -138,20 +127,19 @@ def parse_args():
 def format_magnitude_tensor(tensor: torch.Tensor) -> str:
     """Formats a magnitude tensor (real numbers) for logging."""
     if torch.is_complex(tensor):
-        # This shouldn't happen if evaluation is correct, but handle defensively
-        print("Warning: format_magnitude_tensor received a complex tensor.")
+
+        warnings.warn("Warning: format_magnitude_tensor received a complex tensor")
         tensor = torch.abs(tensor)
 
-    # format numpy array with fixed precision
     formatted = np.array2string(
         tensor.cpu().numpy(),
-        formatter={"float_kind": lambda x: f"{x:.6f}"},  # format floats
+        formatter={"float_kind": lambda x: f"{x:.6f}"},
         separator=", ",
     )
     return formatted
 
 
-def display_stats_table(console: Console, stats: Dict) -> None:
+def disp_stats(console: Console, stats: Dict) -> None:
     """Display statistics in a rich table."""
     table = Table(title="Evaluation Statistics")
 
@@ -162,7 +150,6 @@ def display_stats_table(console: Console, stats: Dict) -> None:
     table.add_column("Max", justify="right")
     table.add_column("Count", justify="right")
 
-    # add MSE loss row
     table.add_row(
         "MSE Loss (Normalized)",
         f"{stats['loss']['mean']:.6e}",
@@ -171,7 +158,6 @@ def display_stats_table(console: Console, stats: Dict) -> None:
         f"{stats['loss']['max']:.6e}",
         f"{stats['loss']['count']}",
     )
-    # add SNR row
     table.add_row(
         "SNR (dB)",
         f"{stats['snr']['mean']:.6f}",
@@ -184,7 +170,7 @@ def display_stats_table(console: Console, stats: Dict) -> None:
     console.print(table)
 
 
-def display_sample_details(
+def disp_samples(
     console: Console,
     sample_details: List[Dict],
     unnormalize: bool,
@@ -196,7 +182,7 @@ def display_sample_details(
     if not sample_details:
         console.print(
             Panel(
-                "[yellow]No samples were collected (evaluation might have failed early or num_samples_to_log=0).[/yellow]",
+                "[yellow]No samples were collected (evaluation might have failed early or num_samples=0).[/yellow]",
                 title="Sample Predictions",
             )
         )
@@ -218,7 +204,7 @@ def display_sample_details(
         panel_content = table
         panel = Panel(
             panel_content,
-            title=f"[bold]Sample Index {sample['index']}[/bold]",  # use original index
+            title=f"[bold]Sample Index {sample['index']}[/bold]",
             border_style="green",
         )
         console.print(panel)
@@ -226,10 +212,9 @@ def display_sample_details(
         h_gt_norm = sample["h_mag_gt"]
         h_pred_norm = sample["h_mag_pred"]
 
-        # un-normalize if requested
         if unnormalize:
             scale = max_mag - min_mag
-            # handle case where scale is zero or near zero
+
             if scale < norm_eps:
                 h_gt_unnorm = torch.full_like(h_gt_norm, (max_mag + min_mag) / 2)
                 h_pred_unnorm = torch.full_like(h_pred_norm, (max_mag + min_mag) / 2)
@@ -254,7 +239,7 @@ def display_sample_details(
             console.print(pred_title)
             console.print(format_magnitude_tensor(h_pred_norm))
 
-        console.print("")  # add spacing
+        console.print("")
 
 
 def evaluate(args):
@@ -266,25 +251,24 @@ def evaluate(args):
     checkpoint_path = Path(args.checkpoint)
     log_dir = Path(args.log_dir)
     checkpoint_name = checkpoint_path.stem
-    logger, console = setup_eval_logging(log_dir, checkpoint_name)
+    logger, console = eval_logger(log_dir, checkpoint_name)
 
     console.rule("[bold blue]Magnitude Prediction Evaluation Start[/bold blue]")
     logger.info(f"Evaluation Arguments: {vars(args)}")
     logger.info(f"Using device: {device}")
     logger.info(f"Loading checkpoint: {checkpoint_path}")
 
-    # --- Load Model ---
     try:
-        # load model state, don't need training_args for eval
+
         model_state = torch.load(
             checkpoint_path, map_location="cpu", weights_only=False
         )
         model_config = model_state["config"]
-        # load model using class method, specifying device
+
         model, load_iter = GaussianChannelFieldModel.load(
             checkpoint_path, device=device, training_args=None
         )
-        model.eval()  # set model to evaluation mode
+        model.eval()
         logger.info(
             f"[green]Model loaded successfully from iteration {load_iter}.[/green]"
         )
@@ -294,32 +278,30 @@ def evaluate(args):
         logger.exception(f"[bold red]Failed to load checkpoint:[/bold red] {e}")
         return
 
-    # --- Load Data ---
     logger.info(f"Loading data from: {args.data_path}")
     try:
-        # get the validation dataloader
+
         val_loader = get_wireless_dataloader(
             data_path=args.data_path,
             batch_size=args.batch_size,
             num_workers=args.num_workers,
-            shuffle=False,  # no shuffle for evaluation
-            train=False,  # use test split
-            train_ratio=args.train_ratio,  # ensure correct split
+            shuffle=False,
+            train=False,
+            train_ratio=args.train_ratio,
             seed=args.seed,
-            drop_last=False,  # keep all samples
+            drop_last=False,
             pin_memory=True,
-            norm_eps=args.norm_eps,  # pass norm eps
+            norm_eps=args.norm_eps,
         )
-        # get metadata, including normalization parameters
+
         metadata = val_loader.dataset.get_metadata()
         nt = metadata["num_tx_ant"]
         nr = metadata["num_rx_ant"]
-        # wavelength = metadata["wavelength"] # not needed for magnitude
+
         tx_position = metadata["tx_position"].to(device)
         min_mag = metadata.get("min_magnitude", 0.0)
         max_mag = metadata.get("max_magnitude", 1.0)
 
-        # display metadata
         metadata_table = Table(title="Dataset Metadata")
         metadata_table.add_column("Property", style="cyan")
         metadata_table.add_column("Value")
@@ -327,7 +309,7 @@ def evaluate(args):
         metadata_table.add_row("Transmit Antennas (Nt)", str(nt))
         metadata_table.add_row("Receive Antennas (Nr)", str(nr))
         metadata_table.add_row("Frequency", f"{metadata['frequency']/1e9:.2f} GHz")
-        # metadata_table.add_row("Wavelength", f"{wavelength:.4f} m")
+
         metadata_table.add_row("Is SISO", str(metadata["is_siso"]))
         metadata_table.add_row("Tx Position", str(tx_position.cpu().numpy()))
         metadata_table.add_row("Min Magnitude (Raw)", f"{min_mag:.4e}")
@@ -339,90 +321,74 @@ def evaluate(args):
         logger.exception(f"[bold red]Failed to load data:[/bold red] {e}")
         return
 
-    # --- Evaluation Loop ---
-    criterion = nn.MSELoss().to(device)  # use MSE loss
+    criterion = nn.MSELoss().to(device)
     all_losses = []
     all_snrs = []
-    sample_details: List[Dict] = []  # store detailed info for a few samples
+    sample_details: List[Dict] = []
 
     start_time = time.time()
-    with torch.no_grad():  # disable gradients during evaluation
-        # setup progress bar
+    with torch.no_grad():
         with Progress(
             TextColumn("[progress.description]{task.description}"),
             BarColumn(),
             TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
             TimeElapsedColumn(),
-            console=console,  # use the rich console
+            console=console,
         ) as progress:
             eval_task = progress.add_task("[cyan]Evaluating...", total=len(val_loader))
-
             for i, batch in enumerate(val_loader):
                 rx_pos_batch = batch["rx_position"].to(device)
-                # target is normalized magnitude
-                h_mag_gt_batch = batch["channel_magnitude"].to(device)
-                original_indices = batch["index"]  # get original indices
+
+                h_mag_gt_batch = batch["channel"].to(device)
+                original_indices = batch["index"]
                 current_batch_size = rx_pos_batch.shape[0]
 
-                # render predicted magnitude
-                h_mag_pred_batch = render_magnitude(
+                h_mag_pred_batch = render(
                     rx_positions=rx_pos_batch,
                     model=model,
                     tx_position=tx_position,
-                    # wavelength=wavelength, # not needed
                     nt=nt,
                     nr=nr,
-                    eps=args.snr_calc_eps,  # use eps for stability
+                    eps=args.snr_eps,
                 )
 
-                # iterate through batch items for individual loss/snr and sample logging
                 for j in range(current_batch_size):
-                    h_mag_pred = h_mag_pred_batch[j].unsqueeze(
-                        0
-                    )  # add batch dim back for loss
+                    h_mag_pred = h_mag_pred_batch[j].unsqueeze(0)
                     h_mag_gt = h_mag_gt_batch[j].unsqueeze(0)
 
-                    # calculate MSE loss for this sample
-                    loss = criterion(h_mag_pred, h_mag_gt).item()  # get scalar value
-                    # calculate SNR based on MSE and target magnitude
+                    loss = criterion(h_mag_pred, h_mag_gt).item()
+
                     snr_tensor = calculate_snr(
                         torch.tensor(loss, device=device),
                         h_mag_gt,
-                        eps=args.snr_calc_eps,
+                        eps=args.snr_eps,
                     )
                     snr = snr_tensor.item()
 
-                    # store metrics if they are valid numbers
                     if not np.isnan(loss) and not np.isinf(loss):
                         all_losses.append(loss)
-                    # store SNR if valid
                     if not np.isnan(snr) and not np.isinf(snr):
                         all_snrs.append(snr)
-
-                    # store details for the first few samples if requested
-                    if len(sample_details) < args.num_samples_to_log:
+                    if len(sample_details) < args.num_samples:
                         sample_details.append(
                             {
-                                "index": original_indices[j],  # store original index
+                                "index": original_indices[j],
                                 "rx_pos": rx_pos_batch[j].cpu().numpy(),
-                                "h_mag_gt": h_mag_gt_batch[j].cpu(),  # store on cpu
-                                "h_mag_pred": h_mag_pred_batch[j].cpu(),  # store on cpu
+                                "h_mag_gt": h_mag_gt_batch[j].cpu(),
+                                "h_mag_pred": h_mag_pred_batch[j].cpu(),
                                 "loss": loss,
                                 "snr": snr,
                             }
                         )
 
-                # update progress bar
                 progress.update(eval_task, advance=1)
 
     end_time = time.time()
     eval_duration = end_time - start_time
 
-    # --- Aggregate and Display Results ---
     losses_np = np.array(all_losses)
     snrs_np = np.array(all_snrs)
 
-    # calculate statistics safely
     stats = {}
     if len(losses_np) > 0:
         stats["loss"] = {
@@ -432,7 +398,7 @@ def evaluate(args):
             "max": np.max(losses_np),
             "count": len(losses_np),
         }
-    else:  # handle empty results
+    else:
         stats["loss"] = {
             "mean": np.nan,
             "std": np.nan,
@@ -449,7 +415,7 @@ def evaluate(args):
             "max": np.max(snrs_np),
             "count": len(snrs_np),
         }
-    else:  # handle empty results
+    else:
         stats["snr"] = {
             "mean": np.nan,
             "std": np.nan,
@@ -464,7 +430,6 @@ def evaluate(args):
     )
     console.print(f"Total samples evaluated: {stats['loss']['count']}")
 
-    # display overall metrics
     overall_table = Table(box=None, show_header=False)
     overall_table.add_column("Metric", style="cyan", width=25)
     overall_table.add_column("Value", style="green")
@@ -472,12 +437,10 @@ def evaluate(args):
     overall_table.add_row("Average SNR (dB)", f"{stats['snr']['mean']:.6f}")
     console.print(Panel(overall_table, title="[bold]Overall Metrics[/bold]"))
 
-    # display detailed statistics table
-    display_stats_table(console, stats)
+    disp_stats(console, stats)
 
-    # display sample details if requested
-    if args.num_samples_to_log > 0:
-        display_sample_details(
+    if args.num_samples > 0:
+        disp_samples(
             console,
             sample_details,
             args.unnormalize_samples,

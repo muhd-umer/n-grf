@@ -9,7 +9,7 @@ from utils.pos_encoder import PositionalEncoder
 
 
 class SimpleMLP(nn.Module):
-    """A simple Multi-Layer Perceptron"""
+    """A simple multi-layer perceptron"""
 
     def __init__(
         self,
@@ -17,35 +17,30 @@ class SimpleMLP(nn.Module):
         output_dim: int,
         hidden_dim: int,
         num_layers: int,
-        use_leaky_relu: bool = True,  # leaky relu often works well
-        dropout_p: float = 0.1,  # moderate dropout
-        final_activation: Optional[nn.Module] = None,  # allow final activation
+        use_leaky_relu: bool = True,
+        dropout_p: float = 0.1,
+        final_activation: Optional[nn.Module] = None,
     ):
         super().__init__()
         self.input_dim = input_dim
         self.output_dim = output_dim
         self.hidden_dim = hidden_dim
-        self.num_layers = num_layers  # total layers including output
+        self.num_layers = num_layers
 
         if num_layers < 2:
             raise ValueError("MLP must have at least 2 layers (input -> output)")
 
         layers = []
         current_dim = input_dim
-
-        # hidden layers
         for i in range(num_layers - 1):
             layers.append(nn.Linear(current_dim, hidden_dim))
-            # use leaky relu or gelu for hidden layers
+
             layers.append(nn.LeakyReLU(0.1) if use_leaky_relu else nn.GELU())
             if dropout_p > 0:
                 layers.append(nn.Dropout(dropout_p))
             current_dim = hidden_dim
 
-        # output layer
         layers.append(nn.Linear(current_dim, output_dim))
-
-        # add final activation if specified
         if final_activation is not None:
             layers.append(final_activation)
 
@@ -56,30 +51,26 @@ class SimpleMLP(nn.Module):
 
 
 class ContributionDecoderNetwork(SimpleMLP):
-    """
-    Decodes latent features into channel magnitude contributions (normalized).
-    Output dimension is Nt * Nr. Includes a final Sigmoid activation.
-    """
+    """Decodes latent features into channel contributions."""
 
     def __init__(
         self, latent_dim: int, output_dim: int, hidden_dim: int, num_layers: int
     ):
-        # output_dim should be Nt * Nr
         super().__init__(
             input_dim=latent_dim,
             output_dim=output_dim,
             hidden_dim=hidden_dim,
             num_layers=num_layers,
-            use_leaky_relu=True,  # leaky relu for hidden layers
-            dropout_p=0.1,  # moderate dropout
-            final_activation=nn.Sigmoid(),  # sigmoid to output [0, 1] normalized magnitude
+            use_leaky_relu=True,
+            dropout_p=0.1,
+            final_activation=nn.Sigmoid(),
         )
 
 
 class AttributeNetwork(nn.Module):
     """
-    Predicts latent features and base activations logits from
-    Gaussian position and fixed Tx position using positional encoding.
+    Predicts latent features and base activations logits from Gaussian position
+    and fixed Tx position using positional encoding.
     """
 
     def __init__(
@@ -92,7 +83,6 @@ class AttributeNetwork(nn.Module):
         super().__init__()
         self.latent_dim = latent_dim
 
-        # positional encoders for gaussian mean and tx position
         self.pos_encoder_mean = PositionalEncoder(
             input_dims=3, num_freqs=pos_encoding_freqs, include_input=True
         )
@@ -102,21 +92,18 @@ class AttributeNetwork(nn.Module):
 
         encoded_dim_mean = self.pos_encoder_mean.output_dims
         encoded_dim_tx = self.pos_encoder_tx.output_dims
-        # concatenated input dimension for the MLP
-        input_dim = encoded_dim_mean + encoded_dim_tx
 
-        # output dimension is latent_dim + 1 (for base activation logit)
+        input_dim = encoded_dim_mean + encoded_dim_tx
         output_dim = latent_dim + 1
 
-        # main MLP network
         self.network = SimpleMLP(
             input_dim=input_dim,
             output_dim=output_dim,
             hidden_dim=mlp_hidden_dim,
             num_layers=mlp_num_layers,
-            use_leaky_relu=True,  # use leaky relu in attribute net as well
-            dropout_p=0.0,  # typically no dropout here, but could be added
-            final_activation=None,  # no final activation needed here
+            use_leaky_relu=True,
+            dropout_p=0.0,
+            final_activation=None,
         )
 
     def forward(
@@ -140,16 +127,13 @@ class AttributeNetwork(nn.Module):
                 0, 1, device=mu_n.device
             )
 
-        # encode positions
         encoded_mu = self.pos_encoder_mean(mu_n)
-        encoded_ptx = self.pos_encoder_tx(p_tx)  # assume p_tx is already expanded
+        encoded_ptx = self.pos_encoder_tx(p_tx)
 
-        # concatenate and pass through MLP
         mlp_input = torch.cat([encoded_mu, encoded_ptx], dim=-1)
         output = self.network(mlp_input)
 
-        # split output into latent features and base activation logits
         latent_features = output[:, : self.latent_dim]
-        base_activations_logits = output[:, self.latent_dim :]  # shape (N, 1)
+        base_activations_logits = output[:, self.latent_dim :]
 
         return latent_features, base_activations_logits

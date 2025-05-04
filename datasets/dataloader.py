@@ -1,5 +1,6 @@
 # datasets/dataloader.py
 
+import warnings
 from typing import Any, Dict, Optional, Tuple
 
 import torch
@@ -70,7 +71,7 @@ def get_wireless_dataloader(
     )
 
     if len(dataset) == 0:
-        print(
+        warnings.warn(
             f"Warning: DataLoader created for an empty dataset ({'train' if train else 'test'} split)."
         )
 
@@ -148,11 +149,11 @@ def get_dataloaders(
         and len(val_loader.dataset) > 0
     ):
         metadata = val_loader.dataset.get_metadata()
-        print(
+        warnings.warn(
             "Warning: Using metadata from validation dataset as training dataset might be empty."
         )
     else:
-        print(
+        warnings.warn(
             "Warning: Could not retrieve metadata as both train and val datasets seem unavailable or empty."
         )
 

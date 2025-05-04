@@ -48,6 +48,7 @@ class PositionalEncoder(nn.Module):
 
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
         """Apply positional encoding.
+
         Args:
             inputs: Input tensor (..., input_dims)
         Returns:

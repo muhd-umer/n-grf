@@ -1,8 +1,7 @@
 # utils/general_utils.py
 
 import random
-from pathlib import Path
-from typing import Any, Dict, Optional, Union
+from typing import Optional
 
 import numpy as np
 import torch
@@ -10,6 +9,7 @@ import torch
 
 def set_random_seed(seed: Optional[int] = None) -> None:
     """Set random seeds for reproducibility."""
+
     if seed is not None:
         print(f"Setting random seed to {seed}")
         random.seed(seed)

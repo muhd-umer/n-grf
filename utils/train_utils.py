@@ -1,8 +1,8 @@
 # utils/train_utils.py
 
 import logging
+import warnings
 from datetime import datetime
-from functools import lru_cache
 from pathlib import Path
 from typing import Callable, Dict
 
@@ -24,17 +24,13 @@ def get_expon_lr_func(
             return 0.0
         if lr_init == 0.0 and lr_final == 0.0:
             return 0.0
-
         if lr_delay_steps > 0:
-            # apply delay multiplier during delay phase
             delay_factor = lr_delay_mult + (1.0 - lr_delay_mult) * np.sin(
                 0.5 * np.pi * min(step / lr_delay_steps, 1.0)
             )
         else:
             delay_factor = 1.0
 
-        # calculate exponential decay progress
-        # ensure progress doesn't exceed 1.0 even if step > max_steps
         progress = min(step / max_steps, 1.0)
 
         if lr_init <= 0:
@@ -47,7 +43,6 @@ def get_expon_lr_func(
         else:
             log_lr_final = np.log(lr_final)
 
-        # linear interpolation in log space = exponential decay in linear space
         log_lerped_lr = log_lr_init * (1.0 - progress) + log_lr_final * progress
         lerped_lr = np.exp(log_lerped_lr)
 
@@ -63,7 +58,7 @@ def setup_logging(log_dir: Path) -> logging.Logger:
     log_file = log_dir / f"train_{timestamp}.log"
 
     root_logger = logging.getLogger()
-    # clear existing handlers to avoid duplicate logs if called multiple times
+
     if root_logger.hasHandlers():
         root_logger.handlers.clear()
 
@@ -72,7 +67,7 @@ def setup_logging(log_dir: Path) -> logging.Logger:
         format="%(asctime)s [%(levelname)s] %(message)s",
         handlers=[logging.FileHandler(log_file), logging.StreamHandler()],
     )
-    logger = logging.getLogger(__name__)  # get logger for this module
+    logger = logging.getLogger(__name__)
     logger.info(f"Logging initialized. Log file: {log_file}")
     return logger
 
@@ -92,7 +87,7 @@ def compute_grad_stats(
     for name, param in model.named_parameters():
         if param.grad is not None:
             if torch.isnan(param.grad).any() or torch.isinf(param.grad).any():
-                print(
+                warnings.warn(
                     f"Warning: NaN or Inf detected in gradients for parameter '{name}'. Skipping stats for this param."
                 )
                 continue
@@ -107,12 +102,11 @@ def compute_grad_stats(
             current_max = param.grad.max().item()
             min_grad = min(min_grad, current_min)
             max_grad = max(max_grad, current_max)
-        elif param.requires_grad:  # only list params that *should* have grads
+        elif param.requires_grad:
             params_without_grad.append(name)
 
-    # Log parameters that should have gradients but don't
     if params_without_grad:
-        print(
+        warnings.warn(
             f"Warning: Parameters requiring grad but missing gradients: {params_without_grad}"
         )
 
