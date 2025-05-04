@@ -38,14 +38,14 @@ def parse_args():
     parser.add_argument(
         "--train_ratio",
         type=float,
-        default=0.8,
-        help="Ratio of data for training (default: 0.8)",
+        default=0.9,
+        help="Ratio of data for training",
     )
     parser.add_argument(
         "--initial_gaussians",
         type=int,
-        default=32_000,
-        help="Number of Gaussians to initialize (default: 32k)",
+        default=4_000,
+        help="Number of Gaussians to initialize",
     )
     parser.add_argument(
         "--init_method",
@@ -66,83 +66,82 @@ def parse_args():
         "--latent_dim",
         type=int,
         default=32,
-        help="Dimension of Gaussian latent features (F) (default: 32)",
+        help="Dimension of Gaussian latent features (F)",
     )
     parser.add_argument(
         "--attribute_hidden_dim",
         type=int,
         default=64,
-        help="Hidden dim for Attribute Network MLP (default: 64)",
+        help="Hidden dim for Attribute Network MLP",
     )
     parser.add_argument(
         "--attribute_num_layers",
         type=int,
         default=3,
-        help="Number of layers for Attribute Network MLP (default: 3)",
+        help="Number of layers for Attribute Network MLP",
     )
     parser.add_argument(
         "--attribute_pos_enc_freqs",
         type=int,
-        default=10,
-        help="Num frequencies for positional encoding in Attribute Net (default: 10)",
+        default=42,
+        help="Num frequencies for positional encoding in Attribute Net",
     )
     parser.add_argument(
         "--decoder_hidden_dim",
         type=int,
-        default=64,
-        help="Hidden dim for Contribution Decoder MLP (default: 64)",
+        default=32,
+        help="Hidden dim for Contribution Decoder MLP",
     )
     parser.add_argument(
         "--decoder_num_layers",
         type=int,
-        default=4,
-        help="Number of layers for Contribution Decoder MLP (default: 4)",
+        default=2,
+        help="Number of layers for Contribution Decoder MLP",
     )
 
     # --- Training ---
     parser.add_argument(
         "--iterations",
         type=int,
-        default=50_000,
-        help="Total training iterations (increased default)",
+        default=30_000,  # Increased iterations
+        help="Total training iterations",
     )
     parser.add_argument(
         "--batch_size",
         type=int,
         default=32,
-        help="Batch size for training (increased default)",
+        help="Batch size for training",
     )
     parser.add_argument(
         "--optimizer_eps",
         type=float,
         default=1e-8,
-        help="AdamW optimizer epsilon (default: 1e-8)",
+        help="AdamW optimizer epsilon",
     )
     parser.add_argument(
         "--weight_decay",
         type=float,
         default=1e-6,
-        help="Weight decay for AdamW optimizer (small default)",
-    )  # added small default wd
-    # parser.add_argument("--loss_eps", type=float, default=1e-10, help="Epsilon for SNR calculation stability (default: 1e-10)") # Renamed from loss_eps
+        help="Weight decay for AdamW optimizer",
+    )
     parser.add_argument(
         "--snr_calc_eps",
         type=float,
         default=1e-10,
-        help="Epsilon for SNR calculation stability (default: 1e-10)",
+        help="Epsilon for SNR calculation stability",
     )
     parser.add_argument(
         "--rx_noise_std",
         type=float,
-        default=0.01,
-        help="Std dev of Gaussian noise added to Rx positions during training (small default)",
-    )  # added small default noise
+        default=0.02,
+        help="Std dev of Gaussian noise added to Rx positions during training",
+    )
     parser.add_argument(
         "--lambda_activation_l1",
         type=float,
-        default=1e-4,
-        help="L1 regularization weight for base activations logits (small default)",
-    )  # added small default reg
+        default=1e-3,  # Slightly increased L1 regularization
+        help="L1 regularization weight for base activations logits",
+    )
 
     # --- Learning Rates ---
     parser.add_argument(
@@ -176,14 +175,14 @@ def parse_args():
         "--decoder_lr",
         type=float,
         default=0.0015,
-        help="LR for the contribution decoder network (slightly increased)",
-    )  # slightly increased decoder LR
+        help="LR for the contribution decoder network",
+    )
     parser.add_argument(
         "--stop_xyz_iter",
         type=int,
-        default=int(0.75 * 50_000),
-        help="Stop updating Gaussian positions after this iteration (default: 75% of total)",
-    )  # adjusted default
+        default=int(0.5 * 50_000),  # Adjusted default based on new iterations default
+        help="Stop updating Gaussian positions after this iteration",
+    )
 
     # --- Logging and Saving ---
     parser.add_argument(
@@ -201,9 +200,9 @@ def parse_args():
     parser.add_argument(
         "--eval_freq",
         type=int,
-        default=250,
+        default=500,  # Evaluate less frequently
         help="Evaluate on validation set every N iterations",
-    )  # less frequent eval
+    )
     parser.add_argument(
         "--checkpoint_freq",
         type=int,
@@ -219,7 +218,7 @@ def parse_args():
         "--num_workers",
         type=int,
         default=4,
-        help="Number of dataloader workers (default: 4)",
+        help="Number of dataloader workers",
     )
     parser.add_argument(
         "--seed", type=int, default=42, help="Random seed (default: 42)"
@@ -238,7 +237,7 @@ def parse_args():
 
     # update stop_xyz_iter based on potentially changed iterations
     if hasattr(args, "iterations"):
-        args.stop_xyz_iter = int(0.75 * args.iterations)
+        args.stop_xyz_iter = int(0.5 * args.iterations)
     else:
         # fallback if iterations isn't parsed correctly (shouldn't happen)
         args.stop_xyz_iter = float("inf")
@@ -252,7 +251,6 @@ def evaluate(
     criterion: nn.Module,  # expects MSELoss instance
     device: torch.device,
     tx_position: torch.Tensor,
-    # wavelength: float, # wavelength not directly needed for magnitude rendering
     nt: int,
     nr: int,
     snr_calc_eps: float,
@@ -278,7 +276,6 @@ def evaluate(
                 rx_positions=rx_pos_batch,
                 model=model,
                 tx_position=tx_position,
-                # wavelength=wavelength, # not needed
                 nt=nt,
                 nr=nr,
                 eps=snr_calc_eps,  # use snr_calc_eps for rendering stability too
@@ -300,7 +297,7 @@ def evaluate(
 
     # calculate average loss and SNR
     avg_loss = total_loss / count if count > 0 else 0.0
-    avg_snr = total_snr / count if count > 0 else float("-inf")  # or float('nan')?
+    avg_snr = total_snr / count if count > 0 else float("-inf")
 
     return {"val_mse_loss": avg_loss, "val_snr_db": avg_snr}
 
@@ -344,11 +341,10 @@ def train(args):
         )
         nt = metadata["num_tx_ant"]
         nr = metadata["num_rx_ant"]
-        # wavelength = metadata["wavelength"] # not directly used in magnitude rendering
         tx_position = metadata["tx_position"].to(device)
-        env_dims = metadata.get("env_dims")  # use get for safety
+        env_dims = metadata.get("env_dims")
         point_cloud = metadata.get("point_cloud")
-        min_mag = metadata.get("min_magnitude", 0.0)  # get normalization params
+        min_mag = metadata.get("min_magnitude", 0.0)
         max_mag = metadata.get("max_magnitude", 1.0)
 
         logger.info(
@@ -401,7 +397,7 @@ def train(args):
         attribute_pos_enc_freqs=args.attribute_pos_enc_freqs,
         decoder_hidden_dim=args.decoder_hidden_dim,
         decoder_num_layers=args.decoder_num_layers,
-        initial_gaussians=args.initial_gaussians,  # pass this for potential use if not resuming
+        initial_gaussians=args.initial_gaussians,
         device=device,
     )
 
@@ -436,17 +432,16 @@ def train(args):
 
         if args.init_method == "random":
             logger.info("Using random initialization for Gaussians.")
-            # ensure env_dims is passed if available
             model.init_gaussians(
                 env_dims=env_dims if env_dims is not None else None,
-                point_cloud=None,  # explicitly None for random
+                point_cloud=None,
                 num_points=args.initial_gaussians,
             )
         elif args.init_method == "point_cloud":
             model.init_gaussians(
-                env_dims=None,  # not needed if using point cloud
+                env_dims=None,
                 point_cloud=init_pc_arg,
-                num_points=args.initial_gaussians,  # num_points acts as max sample size here
+                num_points=args.initial_gaussians,
             )
 
         # setup optimizer and LR schedulers
@@ -485,9 +480,6 @@ def train(args):
             # epoch finished, reset iterator
             train_iter = iter(train_loader)
             batch = next(train_iter)
-            logger.info(
-                f"Epoch finished, restarting data loader at iteration {iteration}"
-            )
 
         rx_pos_batch = batch["rx_position"].to(device)
         # target is normalized magnitude
@@ -503,7 +495,6 @@ def train(args):
             rx_positions=rx_pos_batch,
             model=model,
             tx_position=tx_position,
-            # wavelength=wavelength, # not needed
             nt=nt,
             nr=nr,
             eps=args.snr_calc_eps,  # use snr eps for stability here too
@@ -517,7 +508,7 @@ def train(args):
         # add L1 regularization on base activation *logits* if enabled
         if args.lambda_activation_l1 > 0 and model.get_xyz.shape[0] > 0:
             # get the logits from the attribute network
-            _, base_activations_logits = model.get_attributes(tx_position)
+            base_activations_logits = model.get_base_activation_logits(tx_position)
             # calculate L1 loss on the logits
             l1_activation_loss = torch.mean(torch.abs(base_activations_logits))
             total_loss = total_loss + args.lambda_activation_l1 * l1_activation_loss
@@ -639,7 +630,6 @@ def train(args):
                     criterion=criterion,
                     device=device,
                     tx_position=tx_position,
-                    # wavelength=wavelength, # not needed
                     nt=nt,
                     nr=nr,
                     snr_calc_eps=args.snr_calc_eps,

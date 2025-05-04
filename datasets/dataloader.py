@@ -145,16 +145,24 @@ def get_dataloaders(
     # get metadata from one of the datasets (they share the same base data)
     # ensure train_loader.dataset exists even if empty
     metadata = {}
-    if hasattr(train_loader, "dataset") and train_loader.dataset is not None:
+    if (
+        hasattr(train_loader, "dataset")
+        and train_loader.dataset is not None
+        and len(train_loader.dataset) > 0
+    ):
         metadata = train_loader.dataset.get_metadata()
-    elif hasattr(val_loader, "dataset") and val_loader.dataset is not None:
+    elif (
+        hasattr(val_loader, "dataset")
+        and val_loader.dataset is not None
+        and len(val_loader.dataset) > 0
+    ):
         metadata = val_loader.dataset.get_metadata()
         print(
             "Warning: Using metadata from validation dataset as training dataset might be empty."
         )
     else:
         print(
-            "Warning: Could not retrieve metadata as both train and val datasets seem unavailable."
+            "Warning: Could not retrieve metadata as both train and val datasets seem unavailable or empty."
         )
         # provide default or raise error depending on requirements
         metadata = {  # provide some defaults maybe?
@@ -166,8 +174,8 @@ def get_dataloaders(
             "tx_position": torch.zeros(3),
             "env_dims": None,
             "point_cloud": None,
-            "min_magnitude": 0,
-            "max_magnitude": 1,
+            "min_magnitude": 0.0,
+            "max_magnitude": 1.0,
             "norm_eps": norm_eps,
         }
 

@@ -4,7 +4,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-# remove calculate_nmse and NormalizedMSELoss as they are replaced by MSE
+# removed calculate_nmse and NormalizedMSELoss as they are replaced by MSE
 
 
 def calculate_snr(
@@ -16,7 +16,7 @@ def calculate_snr(
 
     Args:
         mse_loss: The calculated Mean Squared Error loss (scalar tensor).
-        target: The ground truth target tensor (e.g., magnitudes).
+        target: The ground truth target tensor (e.g., normalized magnitudes).
         eps: Small value for numerical stability, especially for clamping MSE.
 
     Returns:
@@ -32,9 +32,10 @@ def calculate_snr(
     target = target.to(device=mse_loss.device)
 
     # calculate average signal power: Mean(Target^2)
+    # target should be normalized magnitude [0, 1]
     signal_power = torch.mean(target**2)
 
-    # handle case where signal power is zero or negative (shouldn't happen for magnitude)
+    # handle case where signal power is zero or negative
     if signal_power <= eps:
         print(
             f"Warning: Target signal power is near zero ({signal_power.item():.2e}). SNR calculation may be unstable or -inf."
@@ -60,24 +61,3 @@ def calculate_snr(
         return torch.tensor(float("-inf"), device=mse_loss.device)
 
     return snr
-
-
-# Note: Consider adding a standard MSELoss class wrapper if needed elsewhere,
-# but usually `torch.nn.MSELoss()` is used directly.
-# class MSELoss(nn.Module):
-#     """Computes the Mean Squared Error (MSE) loss."""
-#     def __init__(self, reduction: str = 'mean'):
-#         super().__init__()
-#         self.mse = nn.MSELoss(reduction=reduction)
-
-#     def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-#         """
-#         Args:
-#             pred: Predicted tensor.
-#             target: Ground truth tensor.
-#         Returns:
-#             Scalar MSE loss.
-#         """
-#         # ensure target is on the same device and type
-#         target = target.to(device=pred.device, dtype=pred.dtype)
-#         return self.mse(pred, target)

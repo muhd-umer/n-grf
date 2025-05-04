@@ -15,6 +15,7 @@ def inverse_sigmoid(x: torch.Tensor) -> torch.Tensor:
 @torch.jit.script
 def build_rotation(r: torch.Tensor) -> torch.Tensor:
     """Build rotation matrices from quaternions (ensure normalization)."""
+    # normalize the quaternion first
     norm = torch.sqrt(torch.sum(r * r, dim=1, keepdim=True)).clamp(min=1e-10)
     q = r / norm
 

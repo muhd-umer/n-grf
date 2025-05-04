@@ -78,7 +78,7 @@ class ContributionDecoderNetwork(SimpleMLP):
 
 class AttributeNetwork(nn.Module):
     """
-    Predicts latent features and base activations from
+    Predicts latent features and base activations logits from
     Gaussian position and fixed Tx position using positional encoding.
     """
 
@@ -127,7 +127,7 @@ class AttributeNetwork(nn.Module):
 
         Args:
             mu_n: Gaussian means (N, 3)
-            p_tx: Transmitter position (1, 3) or (3,) - will be expanded
+            p_tx: Transmitter position (N, 3) - MUST be expanded to match N
 
         Returns:
             Tuple[torch.Tensor, torch.Tensor]:
@@ -140,21 +140,9 @@ class AttributeNetwork(nn.Module):
                 0, 1, device=mu_n.device
             )
 
-        # ensure p_tx is (N, 3)
-        if p_tx.dim() == 1:
-            p_tx_expanded = p_tx.unsqueeze(0).expand(num_gaussians, -1)
-        elif p_tx.shape[0] == 1:
-            p_tx_expanded = p_tx.expand(num_gaussians, -1)
-        elif p_tx.shape[0] == num_gaussians:
-            p_tx_expanded = p_tx  # already expanded
-        else:
-            raise ValueError(
-                f"p_tx shape {p_tx.shape} incompatible with mu_n shape {mu_n.shape}"
-            )
-
         # encode positions
         encoded_mu = self.pos_encoder_mean(mu_n)
-        encoded_ptx = self.pos_encoder_tx(p_tx_expanded)
+        encoded_ptx = self.pos_encoder_tx(p_tx)  # assume p_tx is already expanded
 
         # concatenate and pass through MLP
         mlp_input = torch.cat([encoded_mu, encoded_ptx], dim=-1)

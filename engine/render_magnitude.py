@@ -1,4 +1,4 @@
-# engine/render_magnitude.py # renamed from render_channel.py
+# engine/render_magnitude.py
 
 import torch
 import torch.nn.functional as F
@@ -87,14 +87,10 @@ def render_magnitude(
         print("Warning: Rendering magnitude with zero Gaussians.")
         return torch.zeros(batch_size, nt, nr, dtype=torch.float32, device=device)
 
-    # get dynamically computed attributes: latent features and base activation *logits*
-    gauss_latents, gauss_activation_logits = model.get_attributes(
+    # get dynamically computed attributes: latent features and *activated* base activations
+    gauss_latents, gauss_activations_activated = model.get_attributes_and_activation(
         tx_position
     )  # (N, latent_dim), (N, 1)
-    # activate the base activation logits
-    gauss_activations_activated = model.opacity_activation(
-        gauss_activation_logits
-    )  # (N, 1)
 
     # get inverse covariance matrices
     _, gauss_inv_covs = model.get_covariance(return_inverse=True, eps=eps)  # (N, 3, 3)

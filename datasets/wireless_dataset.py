@@ -98,11 +98,15 @@ class WirelessDataset(Dataset):
         self.point_cloud_data = None
         self.env_dims = None
         if "environment" in data:
-            if "point_cloud" in data["environment"]:
+            if "point_cloud" in data["environment"] and isinstance(
+                data["environment"]["point_cloud"], np.ndarray
+            ):
                 self.point_cloud_data = torch.from_numpy(
                     data["environment"]["point_cloud"]
                 ).float()
-            if "dimensions" in data["environment"]:
+            if "dimensions" in data["environment"] and isinstance(
+                data["environment"]["dimensions"], np.ndarray
+            ):
                 self.env_dims = torch.from_numpy(
                     data["environment"]["dimensions"]
                 ).float()
@@ -123,11 +127,15 @@ class WirelessDataset(Dataset):
         if "nodes" in data and "users_positions" in data["nodes"]:
             rx_pos_raw = data["nodes"]["users_positions"]
             # expect shape (3, K), transpose to (K, 3)
-            if rx_pos_raw.ndim == 2 and rx_pos_raw.shape[0] == 3:
+            if (
+                isinstance(rx_pos_raw, np.ndarray)
+                and rx_pos_raw.ndim == 2
+                and rx_pos_raw.shape[0] == 3
+            ):
                 self.rx_positions = torch.from_numpy(rx_pos_raw.T).float()
             else:
                 raise ValueError(
-                    f"Expected receiver positions shape (3, K), got {rx_pos_raw.shape}"
+                    f"Expected receiver positions shape (3, K), got {rx_pos_raw.shape if isinstance(rx_pos_raw, np.ndarray) else type(rx_pos_raw)}"
                 )
 
             num_users_from_pos = self.rx_positions.shape[0]
@@ -155,9 +163,16 @@ class WirelessDataset(Dataset):
                 H_tensor = torch.from_numpy(H_complex).to(torch.complex64)
             elif isinstance(H_raw, np.ndarray) and np.iscomplexobj(H_raw):
                 H_tensor = torch.from_numpy(H_raw).to(torch.complex64)
+            elif (
+                isinstance(H_raw, np.ndarray) and H_raw.dtype.kind in "iuf"
+            ):  # Handle real-valued H (e.g., SISO magnitude only)
+                print(
+                    "Warning: Loaded H is real-valued. Assuming it represents magnitude."
+                )
+                H_tensor = torch.from_numpy(H_raw).float()  # Keep as float
             else:
                 raise TypeError(
-                    f"Unsupported format for H: {type(H_raw)}. Expected complex numpy array or dict with 'real'/'imag'."
+                    f"Unsupported format for H: {type(H_raw)}. Expected complex numpy array, real numpy array, or dict with 'real'/'imag'."
                 )
 
             print(f"Raw H tensor shape from MAT: {H_tensor.shape}")
@@ -182,7 +197,10 @@ class WirelessDataset(Dataset):
 
             elif H_tensor.dim() == 1:  # (N_user,) - possible SISO case
                 if self.is_siso:
-                    H_selected = H_tensor[:expected_leading_dim]
+                    # Reshape to (N_user, 1, 1) for consistency
+                    H_selected = (
+                        H_tensor[:expected_leading_dim].unsqueeze(-1).unsqueeze(-1)
+                    )
                 else:
                     raise ValueError(
                         f"H tensor has dim 1, but config is MIMO (Nt={self.num_tx_ant}, Nr={self.num_rx_ant})."
@@ -193,7 +211,8 @@ class WirelessDataset(Dataset):
             ):  # (N_user, Nr) or (N_user, Nt) or maybe (N_user, N_sc)?
                 # handle SISO case (N_user, 1)
                 if self.is_siso and H_tensor.shape[1] == 1:
-                    H_selected = H_tensor[:expected_leading_dim, :]
+                    # Reshape to (N_user, 1, 1) for consistency
+                    H_selected = H_tensor[:expected_leading_dim, :].unsqueeze(-1)
                 # handle potential flattened MIMO (N_user, Nt*Nr) - less likely from generation script
                 elif (
                     H_tensor.shape[0] == expected_leading_dim
@@ -202,7 +221,10 @@ class WirelessDataset(Dataset):
                     print(
                         f"Warning: H tensor has shape {H_tensor.shape}. Assuming flattened MIMO and reshaping."
                     )
-                    H_selected = H_tensor[:expected_leading_dim, :]
+                    # Reshape to (N_user, Nt, Nr)
+                    H_selected = H_tensor[:expected_leading_dim, :].view(
+                        expected_leading_dim, self.num_tx_ant, self.num_rx_ant
+                    )
                 else:
                     raise ValueError(
                         f"Ambiguous H tensor shape {H_tensor.shape} for MIMO/SISO config."
@@ -213,20 +235,21 @@ class WirelessDataset(Dataset):
                 )
 
             # ensure H_selected has the target shape
-            try:
-                H_reshaped = H_selected.reshape(target_shape)
-            except RuntimeError as e:
-                print(
-                    f"Error reshaping H from {H_selected.shape} to {target_shape}: {e}"
-                )
+            if H_selected.shape != target_shape:
                 raise ValueError(
-                    f"Could not reshape H tensor to target shape {target_shape}."
+                    f"Processed H tensor shape {H_selected.shape} does not match target shape {target_shape}."
                 )
 
-            print(f"Reshaped H tensor shape: {H_reshaped.shape}")
+            print(f"Processed H tensor shape: {H_selected.shape}")
 
             # --- Calculate Magnitude ---
-            self.channel_magnitude_raw = torch.abs(H_reshaped)
+            # Ensure magnitude calculation handles both complex and real inputs
+            if torch.is_complex(H_selected):
+                self.channel_magnitude_raw = torch.abs(H_selected).float()
+            else:
+                # If H was already real (magnitude), just ensure it's float
+                self.channel_magnitude_raw = H_selected.float()
+
             print(f"Raw magnitude tensor shape: {self.channel_magnitude_raw.shape}")
 
             # --- Calculate Normalization Parameters (Min/Max) ---
@@ -238,9 +261,10 @@ class WirelessDataset(Dataset):
             )
 
             # --- Apply Normalization ---
-            if (self.max_magnitude - self.min_magnitude) < self.norm_eps:
+            magnitude_range = self.max_magnitude - self.min_magnitude
+            if magnitude_range < self.norm_eps:
                 print(
-                    f"Warning: Magnitude range is very small ({self.max_magnitude - self.min_magnitude:.2e}). Setting normalized magnitude to 0.5."
+                    f"Warning: Magnitude range is very small ({magnitude_range:.2e}). Setting normalized magnitude to 0.5."
                 )
                 self.channel_magnitude_normalized = torch.full_like(
                     self.channel_magnitude_raw, 0.5
@@ -248,7 +272,7 @@ class WirelessDataset(Dataset):
             else:
                 self.channel_magnitude_normalized = (
                     self.channel_magnitude_raw - self.min_magnitude
-                ) / (self.max_magnitude - self.min_magnitude + self.norm_eps)
+                ) / (magnitude_range + self.norm_eps)
                 # clamp to [0, 1] just in case eps causes slight overshoot
                 self.channel_magnitude_normalized = torch.clamp(
                     self.channel_magnitude_normalized, 0.0, 1.0
@@ -318,8 +342,16 @@ class WirelessDataset(Dataset):
             "tx_position": self.tx_position,
             "env_dims": self.env_dims,
             "point_cloud": self.point_cloud_data,
-            "min_magnitude": self.min_magnitude,
-            "max_magnitude": self.max_magnitude,
+            "min_magnitude": (
+                self.min_magnitude.item()
+                if isinstance(self.min_magnitude, torch.Tensor)
+                else self.min_magnitude
+            ),  # ensure scalar
+            "max_magnitude": (
+                self.max_magnitude.item()
+                if isinstance(self.max_magnitude, torch.Tensor)
+                else self.max_magnitude
+            ),  # ensure scalar
             "norm_eps": self.norm_eps,
         }
 

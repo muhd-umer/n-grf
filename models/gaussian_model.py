@@ -9,8 +9,12 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from utils import inverse_sigmoid  # still potentially useful for init opacity logit
-from utils import build_covariance_inverse, build_rotation, get_expon_lr_func
+from utils import (
+    build_covariance_inverse,
+    build_rotation,
+    get_expon_lr_func,
+    inverse_sigmoid,
+)
 
 # import updated networks
 from .networks import AttributeNetwork, ContributionDecoderNetwork
@@ -28,7 +32,7 @@ class GaussianChannelFieldModel(nn.Module):
         attribute_num_layers: int = 3,
         attribute_pos_enc_freqs: int = 10,
         decoder_hidden_dim: int = 64,
-        decoder_num_layers: int = 4,  # increased default slightly
+        decoder_num_layers: int = 4,
         initial_gaussians: int = 30000,
         init_opacity_value: float = 0.1,  # initial base activation (before sigmoid) related value
         init_scale_value: float = 0.02,  # initial scale (before exp) related value
@@ -104,10 +108,10 @@ class GaussianChannelFieldModel(nn.Module):
         """Returns normalized Gaussian rotations (quaternions)."""
         return self.rotation_activation(self._rotation)
 
-    def get_attributes(
+    def get_attributes_and_activation(
         self, tx_position: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Computes latent features and base activation logits dynamically."""
+        """Computes latent features and *activated* base activations dynamically."""
         if self._xyz.shape[0] == 0:
             # handle case with no gaussians
             return torch.empty(0, self.latent_dim, device=self.device), torch.empty(
@@ -122,19 +126,39 @@ class GaussianChannelFieldModel(nn.Module):
         elif tx_position.shape[0] == self._xyz.shape[0]:
             tx_position_exp = tx_position
         else:
-            raise ValueError("tx_position shape mismatch")
+            raise ValueError(
+                f"tx_position shape {tx_position.shape} mismatch with Gaussians {self._xyz.shape[0]}"
+            )
 
         # pass means and expanded tx position to attribute network
         latent_features, base_activations_logits = self.attribute_network(
             self._xyz, tx_position_exp
         )
-        return latent_features, base_activations_logits  # return logits directly
+        # apply activation
+        base_activations_activated = self.opacity_activation(base_activations_logits)
 
-    def get_opacity_activated(self, tx_position: torch.Tensor) -> torch.Tensor:
-        """Returns sigmoid-activated base activations, computed dynamically."""
-        _, base_activations_logits = self.get_attributes(tx_position)
-        # apply sigmoid activation to the logits
-        return self.opacity_activation(base_activations_logits)
+        return (
+            latent_features,
+            base_activations_activated,
+        )  # return features and *activated* base activations
+
+    def get_base_activation_logits(self, tx_position: torch.Tensor) -> torch.Tensor:
+        """Returns the base activation *logits* (before sigmoid), computed dynamically."""
+        if self._xyz.shape[0] == 0:
+            return torch.empty(0, 1, device=self.device)
+
+        # ensure tx_position is expanded correctly
+        if tx_position.dim() == 1:
+            tx_position_exp = tx_position.unsqueeze(0).expand(self._xyz.shape[0], -1)
+        elif tx_position.shape[0] == 1:
+            tx_position_exp = tx_position.expand(self._xyz.shape[0], -1)
+        elif tx_position.shape[0] == self._xyz.shape[0]:
+            tx_position_exp = tx_position
+        else:
+            raise ValueError("tx_position shape mismatch")
+
+        _, base_activations_logits = self.attribute_network(self._xyz, tx_position_exp)
+        return base_activations_logits
 
     def get_covariance(
         self, return_inverse=False, eps=1e-6
@@ -212,9 +236,8 @@ class GaussianChannelFieldModel(nn.Module):
                 if num_to_init > num_available_points:
                     print(
                         f"Warning: Requested {num_to_init} Gaussians, but point cloud only has {num_available_points}. "
-                        f"Using all {num_available_points} points and potentially adding random points."
+                        f"Using all {num_available_points} points."
                     )
-                    # use all points and maybe add more later if needed? or just use available? let's use available.
                     num_to_init = num_available_points
                     indices = torch.arange(num_available_points)
 
