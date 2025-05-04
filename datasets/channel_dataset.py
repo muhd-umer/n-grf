@@ -1,7 +1,8 @@
 # datasets/wireless_dataset.py
-import re
+
+import warnings
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional
 
 import numpy as np
 import torch
@@ -9,7 +10,7 @@ from pymatreader import read_mat
 from torch.utils.data import Dataset, random_split
 
 
-class WirelessDataset(Dataset):
+class ChannelDataset(Dataset):
     """A dataset class for MIMO/SISO channel magnitude data.
 
     Handles loading and processing of wireless channel data from .mat files,
@@ -38,7 +39,7 @@ class WirelessDataset(Dataset):
         self.seed = seed if seed is not None else 42
         self.norm_eps = norm_eps
         generator = torch.Generator().manual_seed(self.seed)
-        np.random.seed(self.seed)  # ensure numpy uses seed too if needed elsewhere
+        np.random.seed(self.seed)
 
         print(f"Loading dataset from: {self.data_path}")
         try:
@@ -62,23 +63,18 @@ class WirelessDataset(Dataset):
         test_size = total_size - train_size
 
         if train_size == 0 or test_size == 0:
-            print(
+            warnings.warn(
                 f"Warning: train_ratio {train_ratio} resulted in zero samples for train/test split. Adjusting."
             )
             if total_size >= 2:
                 train_size = max(1, train_size)
                 test_size = total_size - train_size
-            else:  # total_size == 1
+            else:
                 train_size = 1 if train else 0
                 test_size = 1 - train_size
             print(f"Adjusted split: Train={train_size}, Test={test_size}")
 
         self.indices = list(range(total_size))
-        # use torch.randperm for splitting if generator is needed consistently
-        # indices_perm = torch.randperm(total_size, generator=generator).tolist()
-        # train_indices = indices_perm[:train_size]
-        # test_indices = indices_perm[train_size:]
-        # using random_split is simpler if exact indices aren't needed elsewhere
         train_indices_dataset, test_indices_dataset = random_split(
             range(total_size), [train_size, test_size], generator=generator
         )
@@ -88,13 +84,11 @@ class WirelessDataset(Dataset):
         self.active_indices = self.train_indices if train else self.test_indices
         print(f"{'Training' if train else 'Test'} set size: {len(self.active_indices)}")
         if not self.active_indices:
-            print(f"Warning: {'Training' if train else 'Test'} set is empty!")
+            warnings.warn(f"Warning: {'Training' if train else 'Test'} set is empty!")
 
     def _process_data(self, data):
         """Extracts, processes, and normalizes data from the loaded dictionary."""
         self._store_config(data["config"])
-
-        # load environment data if available
         self.point_cloud_data = None
         self.env_dims = None
         if "environment" in data:
@@ -111,7 +105,6 @@ class WirelessDataset(Dataset):
                     data["environment"]["dimensions"]
                 ).float()
 
-        # load node positions
         if "nodes" in data and "ap_position" in data["nodes"]:
             tx_pos_raw = data["nodes"]["ap_position"]
             self.tx_position = torch.from_numpy(np.array(tx_pos_raw)).float().squeeze()
@@ -126,7 +119,6 @@ class WirelessDataset(Dataset):
 
         if "nodes" in data and "users_positions" in data["nodes"]:
             rx_pos_raw = data["nodes"]["users_positions"]
-            # expect shape (3, K), transpose to (K, 3)
             if (
                 isinstance(rx_pos_raw, np.ndarray)
                 and rx_pos_raw.ndim == 2
@@ -140,7 +132,7 @@ class WirelessDataset(Dataset):
 
             num_users_from_pos = self.rx_positions.shape[0]
             if num_users_from_pos != self.num_users:
-                print(
+                warnings.warn(
                     f"Warning: num_users mismatch. Config: {self.num_users}, Rx Positions: {num_users_from_pos}. Using {num_users_from_pos}."
                 )
                 self.num_users = num_users_from_pos
@@ -149,27 +141,23 @@ class WirelessDataset(Dataset):
                 "Receiver positions ('users_positions') not found in dataset."
             )
 
-        # load and process channel matrix H
         if "channel" in data and "H" in data["channel"]:
             H_raw = data["channel"]["H"]
-            # handle complex struct format from matlab
             if isinstance(H_raw, dict) and "real" in H_raw and "imag" in H_raw:
                 H_real = np.array(H_raw["real"])
                 H_imag = np.array(H_raw["imag"])
                 if H_real.dtype.kind not in "iufc" or H_imag.dtype.kind not in "iufc":
                     raise TypeError("Real/Imag parts of H are not numeric.")
-                # ensure correct type casting before complex creation
+
                 H_complex = H_real.astype(np.float32) + 1j * H_imag.astype(np.float32)
                 H_tensor = torch.from_numpy(H_complex).to(torch.complex64)
             elif isinstance(H_raw, np.ndarray) and np.iscomplexobj(H_raw):
                 H_tensor = torch.from_numpy(H_raw).to(torch.complex64)
-            elif (
-                isinstance(H_raw, np.ndarray) and H_raw.dtype.kind in "iuf"
-            ):  # Handle real-valued H (e.g., SISO magnitude only)
-                print(
+            elif isinstance(H_raw, np.ndarray) and H_raw.dtype.kind in "iuf":
+                warnings.warn(
                     "Warning: Loaded H is real-valued. Assuming it represents magnitude."
                 )
-                H_tensor = torch.from_numpy(H_raw).float()  # Keep as float
+                H_tensor = torch.from_numpy(H_raw).float()
             else:
                 raise TypeError(
                     f"Unsupported format for H: {type(H_raw)}. Expected complex numpy array, real numpy array, or dict with 'real'/'imag'."
@@ -177,27 +165,23 @@ class WirelessDataset(Dataset):
 
             print(f"Raw H tensor shape from MAT: {H_tensor.shape}")
 
-            # --- Reshape H tensor ---
-            # target shape (num_users, Nt, Nr)
             expected_leading_dim = self.num_users
             target_shape = (expected_leading_dim, self.num_tx_ant, self.num_rx_ant)
 
-            if H_tensor.dim() == 4:  # (N_user, Nt, Nr, N_sc)
+            if H_tensor.dim() == 4:
                 num_sc = H_tensor.shape[-1]
-                # select middle subcarrier if multiple exist
+
                 sc_idx = num_sc // 2
                 print(
                     f"Multiple subcarriers ({num_sc}) detected. Selecting middle subcarrier index {sc_idx}."
                 )
-                # slice first N_user samples correctly
                 H_selected = H_tensor[:expected_leading_dim, :, :, sc_idx]
 
-            elif H_tensor.dim() == 3:  # (N_user, Nt, Nr)
+            elif H_tensor.dim() == 3:
                 H_selected = H_tensor[:expected_leading_dim, :, :]
 
-            elif H_tensor.dim() == 1:  # (N_user,) - possible SISO case
+            elif H_tensor.dim() == 1:
                 if self.is_siso:
-                    # Reshape to (N_user, 1, 1) for consistency
                     H_selected = (
                         H_tensor[:expected_leading_dim].unsqueeze(-1).unsqueeze(-1)
                     )
@@ -206,22 +190,16 @@ class WirelessDataset(Dataset):
                         f"H tensor has dim 1, but config is MIMO (Nt={self.num_tx_ant}, Nr={self.num_rx_ant})."
                     )
 
-            elif (
-                H_tensor.dim() == 2
-            ):  # (N_user, Nr) or (N_user, Nt) or maybe (N_user, N_sc)?
-                # handle SISO case (N_user, 1)
+            elif H_tensor.dim() == 2:
                 if self.is_siso and H_tensor.shape[1] == 1:
-                    # Reshape to (N_user, 1, 1) for consistency
                     H_selected = H_tensor[:expected_leading_dim, :].unsqueeze(-1)
-                # handle potential flattened MIMO (N_user, Nt*Nr) - less likely from generation script
                 elif (
                     H_tensor.shape[0] == expected_leading_dim
                     and H_tensor.shape[1] == self.num_tx_ant * self.num_rx_ant
                 ):
-                    print(
+                    warnings.warn(
                         f"Warning: H tensor has shape {H_tensor.shape}. Assuming flattened MIMO and reshaping."
                     )
-                    # Reshape to (N_user, Nt, Nr)
                     H_selected = H_tensor[:expected_leading_dim, :].view(
                         expected_leading_dim, self.num_tx_ant, self.num_rx_ant
                     )
@@ -234,7 +212,6 @@ class WirelessDataset(Dataset):
                     f"Unexpected H tensor dimensions: {H_tensor.dim()}. Expected 1, 2, 3, or 4."
                 )
 
-            # ensure H_selected has the target shape
             if H_selected.shape != target_shape:
                 raise ValueError(
                     f"Processed H tensor shape {H_selected.shape} does not match target shape {target_shape}."
@@ -242,47 +219,36 @@ class WirelessDataset(Dataset):
 
             print(f"Processed H tensor shape: {H_selected.shape}")
 
-            # --- Calculate Magnitude ---
-            # Ensure magnitude calculation handles both complex and real inputs
             if torch.is_complex(H_selected):
-                self.channel_magnitude_raw = torch.abs(H_selected).float()
+                self.channel_raw = torch.abs(H_selected).float()
             else:
-                # If H was already real (magnitude), just ensure it's float
-                self.channel_magnitude_raw = H_selected.float()
 
-            print(f"Raw magnitude tensor shape: {self.channel_magnitude_raw.shape}")
+                self.channel_raw = H_selected.float()
 
-            # --- Calculate Normalization Parameters (Min/Max) ---
-            # compute over the *entire dataset* before splitting
-            self.min_magnitude = torch.min(self.channel_magnitude_raw)
-            self.max_magnitude = torch.max(self.channel_magnitude_raw)
+            print(f"Raw magnitude tensor shape: {self.channel_raw.shape}")
+
+            self.min_magnitude = torch.min(self.channel_raw)
+            self.max_magnitude = torch.max(self.channel_raw)
             print(
                 f"Magnitude range (min/max): {self.min_magnitude:.4e} / {self.max_magnitude:.4e}"
             )
 
-            # --- Apply Normalization ---
             magnitude_range = self.max_magnitude - self.min_magnitude
             if magnitude_range < self.norm_eps:
-                print(
+                warnings.warn(
                     f"Warning: Magnitude range is very small ({magnitude_range:.2e}). Setting normalized magnitude to 0.5."
                 )
-                self.channel_magnitude_normalized = torch.full_like(
-                    self.channel_magnitude_raw, 0.5
-                )
+                self.channel_normalized = torch.full_like(self.channel_raw, 0.5)
             else:
-                self.channel_magnitude_normalized = (
-                    self.channel_magnitude_raw - self.min_magnitude
-                ) / (magnitude_range + self.norm_eps)
-                # clamp to [0, 1] just in case eps causes slight overshoot
-                self.channel_magnitude_normalized = torch.clamp(
-                    self.channel_magnitude_normalized, 0.0, 1.0
+                self.channel_normalized = (self.channel_raw - self.min_magnitude) / (
+                    magnitude_range + self.norm_eps
                 )
 
+                self.channel_normalized = torch.clamp(self.channel_normalized, 0.0, 1.0)
+
+            print(f"Normalized magnitude tensor shape: {self.channel_normalized.shape}")
             print(
-                f"Normalized magnitude tensor shape: {self.channel_magnitude_normalized.shape}"
-            )
-            print(
-                f"Normalized magnitude range (min/max): {torch.min(self.channel_magnitude_normalized):.4f} / {torch.max(self.channel_magnitude_normalized):.4f}"
+                f"Normalized magnitude range (min/max): {torch.min(self.channel_normalized):.4f} / {torch.max(self.channel_normalized):.4f}"
             )
 
         else:
@@ -296,20 +262,17 @@ class WirelessDataset(Dataset):
             self.frequency = float(config["frequency"])
             self.wavelength = float(config["wavelength"])
             self.num_users = int(config["num_users"])
-            # handle missing 'use_siso' key gracefully
-            self.config_use_siso = config.get("use_siso", False)
 
-            # determine if SISO based on antenna counts OR the config flag
+            self.config_use_siso = config.get("use_siso", False)
             self.is_siso = (
                 self.num_tx_ant == 1 and self.num_rx_ant == 1
             ) or self.config_use_siso
             if self.is_siso:
-                # enforce SISO antenna counts if flag is true or counts imply it
                 self.num_tx_ant = 1
                 self.num_rx_ant = 1
 
             print(
-                f"Dataset Config: Nt={self.num_tx_ant}, Nr={self.num_rx_ant}, Freq={self.frequency/1e9:.2f}GHz, Lambda={self.wavelength:.4f}m, NumUsers={self.num_users}, IsSISO={self.is_siso}"
+                f"Dataset Config: Nt={self.num_tx_ant}, Nr={self.num_rx_ant}, Freq={self.frequency/1e9:.2f}GHz, Lambda={self.wavelength:.3f}m, NumUsers={self.num_users}, IsSISO={self.is_siso}"
             )
 
         except KeyError as e:
@@ -346,12 +309,12 @@ class WirelessDataset(Dataset):
                 self.min_magnitude.item()
                 if isinstance(self.min_magnitude, torch.Tensor)
                 else self.min_magnitude
-            ),  # ensure scalar
+            ),
             "max_magnitude": (
                 self.max_magnitude.item()
                 if isinstance(self.max_magnitude, torch.Tensor)
                 else self.max_magnitude
-            ),  # ensure scalar
+            ),
             "norm_eps": self.norm_eps,
         }
 
@@ -360,10 +323,9 @@ class WirelessDataset(Dataset):
 
     def __getitem__(self, idx):
         """Retrieves a single sample (normalized magnitude) for the active split."""
-        # map the index relative to the active split to the original index
         original_idx = self.active_indices[idx]
         return {
             "rx_position": self.rx_positions[original_idx],
-            "channel_magnitude": self.channel_magnitude_normalized[original_idx],
-            "index": original_idx,  # return original index for reference
+            "channel": self.channel_normalized[original_idx],
+            "index": original_idx,
         }
