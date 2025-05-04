@@ -1,3 +1,4 @@
 # engine/__init__.py
 
-from .render_channel import render_channel
+# update the import to reflect the new module name and function
+from .render_magnitude import render_magnitude
