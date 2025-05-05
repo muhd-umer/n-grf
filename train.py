@@ -290,6 +290,9 @@ def train(cfg: DictConfig):
 
     validation_results: List[Dict] = []
     max_val_disp = 4
+    best_val_snr = float("-inf")
+    best_val_loss = float("inf")
+    best_iteration = -1
 
     progress = Progress(
         SpinnerColumn(),
@@ -498,6 +501,17 @@ def train(cfg: DictConfig):
                         logger.info(
                             f"Validation @ {iteration} | Loss={eval_metrics['val_mse_loss']:.4e} | SNR={eval_metrics['val_snr_db']:.2f} dB | Time={eval_time:.2f}s"
                         )
+                        current_val_snr = eval_metrics["val_snr_db"]
+                        if current_val_snr > best_val_snr:
+                            best_val_snr = current_val_snr
+                            best_val_loss = eval_metrics["val_mse_loss"]
+                            best_iteration = iteration
+                            best_model_path = log_dir / "best_model.pt"
+                            model.save(best_model_path, iteration=iteration, cfg=cfg)
+                            logger.info(
+                                f"New best validation SNR: {best_val_snr:.2f} dB at iter {best_iteration}. Saved model to {best_model_path}"
+                            )
+
                         val_table = Table(
                             title=f"Validation Results (Last {len(validation_results)})",
                             expand=False,
@@ -515,7 +529,17 @@ def train(cfg: DictConfig):
                                 f"{res['val_snr_db']:.2f}",
                                 f"{res['time_sec']:.2f}",
                             )
+
+                        if best_iteration != -1:
+                            val_table.add_section()
+                            val_table.add_row(
+                                f"[bold cyan]Best @ {best_iteration}[/bold cyan]",
+                                f"[bold magenta]{best_val_loss:.4e}[/bold magenta]",
+                                f"[bold green]{best_val_snr:.2f}[/bold green]",
+                                "---",
+                            )
                         console.print(val_table)
+
                         if writer is not None:
                             writer.add_scalar(
                                 "validation/mse_loss",
