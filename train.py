@@ -9,6 +9,7 @@ from typing import Dict, List
 import numpy as np
 import torch
 import torch.nn as nn
+from omegaconf import DictConfig, OmegaConf
 from rich.padding import Padding
 from rich.panel import Panel
 from rich.progress import (
@@ -19,6 +20,7 @@ from rich.progress import (
     TimeElapsedColumn,
     TimeRemainingColumn,
 )
+from rich.syntax import Syntax
 from rich.table import Table
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
@@ -31,225 +33,38 @@ from utils.loss import calculate_snr
 from utils.train_utils import compute_grad_stats, setup_logging
 
 
-def parse_args():
-    """Parse command line arguments for training."""
+def load_config() -> DictConfig:
+    """Loads configuration using OmegaConf."""
     parser = argparse.ArgumentParser(description="Train Gaussian channel field model")
 
-    # data and init params
     parser.add_argument(
         "--data_path", type=str, required=True, help="Path to dataset file (.mat)"
     )
     parser.add_argument(
-        "--train_ratio",
-        type=float,
-        default=0.9,
-        help="Ratio of data for training",
-    )
-    parser.add_argument(
-        "--initial_gaussians",
-        type=int,
-        default=1_000,
-        help="Number of Gaussians to initialize",
-    )
-    parser.add_argument(
-        "--init_method",
+        "--config",
         type=str,
-        default="random",
-        choices=["random", "point_cloud"],
-        help="Initialization method ('random', 'point_cloud')",
-    )
-    parser.add_argument(
-        "--norm_eps",
-        type=float,
-        default=1e-8,
-        help="Epsilon for dataset normalization",
+        default="configs/default.yaml",
+        help="Path to the configuration file",
     )
 
-    # model params
-    parser.add_argument(
-        "--latent_dim",
-        type=int,
-        default=64,
-        help="Dimension of Gaussian latent features (F)",
-    )
-    parser.add_argument(
-        "--attribute_hidden_dim",
-        type=int,
-        default=128,
-        help="Hidden dim for Attribute network",
-    )
-    parser.add_argument(
-        "--attribute_num_layers",
-        type=int,
-        default=6,
-        help="Number of layers for Attribute network",
-    )
-    parser.add_argument(
-        "--attribute_pos_enc_freqs",
-        type=int,
-        default=57,
-        help="Num frequencies for positional encoding in Attribute network",
-    )
-    parser.add_argument(
-        "--decoder_hidden_dim",
-        type=int,
-        default=64,
-        help="Hidden dim for ContributionDecoder",
-    )
-    parser.add_argument(
-        "--decoder_num_layers",
-        type=int,
-        default=2,
-        help="Number of layers for ContributionDecoder",
+    args, unknown_args = parser.parse_known_args()
+    default_cfg = OmegaConf.load("configs/default.yaml")
+    user_cfg = (
+        OmegaConf.load(args.config)
+        if Path(args.config).exists()
+        else OmegaConf.create()
     )
 
-    # training params
-    parser.add_argument(
-        "--iterations",
-        type=int,
-        default=30_000,
-        help="Total training iterations",
-    )
-    parser.add_argument(
-        "--batch_size",
-        type=int,
-        default=32,
-        help="Batch size for training",
-    )
-    parser.add_argument(
-        "--optimizer_eps",
-        type=float,
-        default=1e-8,
-        help="AdamW optimizer epsilon",
-    )
-    parser.add_argument(
-        "--weight_decay",
-        type=float,
-        default=1e-6,
-        help="Weight decay for AdamW optimizer",
-    )
-    parser.add_argument(
-        "--snr_eps",
-        type=float,
-        default=1e-10,
-        help="Epsilon for SNR calculation",
-    )
-    parser.add_argument(
-        "--rx_noise_std",
-        type=float,
-        default=0.03,
-        help="Std dev of Gaussian noise added to Rx positions during training",
-    )
-    parser.add_argument(
-        "--lambda_activation_l1",
-        type=float,
-        default=1e-2,
-        help="L1 regularization weight for base activations logits",
-    )
+    cli_cfg = OmegaConf.from_cli(unknown_args)
+    cfg = OmegaConf.merge(default_cfg, user_cfg, cli_cfg)
+    cfg.data.path = args.data_path
 
-    # lr params
-    parser.add_argument(
-        "--position_lr_init",
-        type=float,
-        default=1e-4,
-        help="Initial LR for Gaussian positions",
-    )
-    parser.add_argument(
-        "--position_lr_final",
-        type=float,
-        default=1e-6,
-        help="Final LR for Gaussian positions",
-    )
-    parser.add_argument(
-        "--position_lr_delay_mult",
-        type=float,
-        default=0.01,
-        help="Multiplier for position LR delay phase",
-    )
-    parser.add_argument(
-        "--rotation_lr", type=float, default=0.001, help="LR for Gaussian rotations"
-    )
-    parser.add_argument(
-        "--scaling_lr", type=float, default=0.005, help="LR for Gaussian scaling"
-    )
-    parser.add_argument(
-        "--attribute_net_lr", type=float, default=0.001, help="LR for Attribute network"
-    )
-    parser.add_argument(
-        "--decoder_lr",
-        type=float,
-        default=0.0015,
-        help="LR for the contribution decoder network",
-    )
+    if cfg.data.path is None:
+        raise ValueError(
+            "data.path must be provided either in config or via --data_path"
+        )
 
-    # experiment params
-    parser.add_argument(
-        "--stop_xyz_iter",
-        type=int,
-        default=int(0.75 * 30_000),
-        help="Stop updating Gaussian positions after this iteration",
-    )
-    parser.add_argument(
-        "--log_dir",
-        type=str,
-        default="logs",
-        help="Directory to save logs and checkpoints",
-    )
-    parser.add_argument(
-        "--log_freq",
-        type=int,
-        default=30,
-        help="Log training metrics every N iterations",
-    )
-    parser.add_argument(
-        "--eval_freq",
-        type=int,
-        default=250,
-        help="Evaluate on validation set every N iterations",
-    )
-    parser.add_argument(
-        "--checkpoint_freq",
-        type=int,
-        default=2000,
-        help="Save checkpoint every N iterations",
-    )
-    parser.add_argument(
-        "--tensorboard", action="store_true", help="Enable TensorBoard logging"
-    )
-
-    # misc params
-    parser.add_argument(
-        "--num_workers",
-        type=int,
-        default=4,
-        help="Number of dataloader workers",
-    )
-    parser.add_argument(
-        "--seed", type=int, default=42, help="Random seed (default: 42)"
-    )
-    parser.add_argument(
-        "--device", type=str, default="cuda", help="Device to use (cuda or cpu)"
-    )
-    parser.add_argument(
-        "--resume",
-        type=str,
-        default=None,
-        help="Path to checkpoint for resuming training",
-    )
-    parser.add_argument(
-        "--log_grad_stats",
-        action="store_true",
-        help="Log detailed gradient statistics to the console",
-    )
-
-    args = parser.parse_args()
-
-    if hasattr(args, "iterations"):
-        args.stop_xyz_iter = int(0.5 * args.iterations)
-    else:
-        args.stop_xyz_iter = float("inf")
-
-    return args
+    return cfg
 
 
 def evaluate(
@@ -260,13 +75,14 @@ def evaluate(
     tx_position: torch.Tensor,
     nt: int,
     nr: int,
-    snr_eps: float,
+    cfg: DictConfig,
 ) -> Dict[str, float]:
     """Evaluates the model on the validation set."""
     model.eval()
     total_loss = 0.0
     total_snr = 0.0
     count = 0
+    snr_eps = cfg.training.snr_eps
 
     with torch.no_grad():
         for batch in val_loader:
@@ -285,9 +101,7 @@ def evaluate(
             )
 
             loss = criterion(chan_pred_batch, chan_gt_batch)
-
             snr = calculate_snr(loss, chan_gt_batch, eps=snr_eps)
-
             total_loss += loss.item() * batch_size
 
             if not torch.isinf(snr) and not torch.isnan(snr):
@@ -301,42 +115,51 @@ def evaluate(
     return {"val_mse_loss": avg_loss, "val_snr_db": avg_snr}
 
 
-def train(args):
+def train(cfg: DictConfig):
     """Main training loop."""
-    set_random_seed(args.seed)
+    set_random_seed(cfg.experiment.seed)
     device = torch.device(
-        args.device if torch.cuda.is_available() and args.device == "cuda" else "cpu"
+        cfg.experiment.device
+        if torch.cuda.is_available() and cfg.experiment.device == "cuda"
+        else "cpu"
     )
 
-    run_name = datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_dir = Path(args.log_dir) / run_name
+    run_name = cfg.experiment.name + "_" + datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_dir = Path(cfg.experiment.log_dir) / run_name
     log_dir.mkdir(parents=True, exist_ok=True)
     checkpoints_dir = log_dir / "checkpoints"
     checkpoints_dir.mkdir(exist_ok=True)
 
+    config_save_path = log_dir / "config.yaml"
+    with open(config_save_path, "w") as f:
+        OmegaConf.save(cfg, f)
+
     logger, console = setup_logging(log_dir, use_rich=True)
     if console is None:
         raise RuntimeError("Failed to initialize Rich Console.")
-    writer = SummaryWriter(str(log_dir / "tensorboard")) if args.tensorboard else None
+    writer = (
+        SummaryWriter(str(log_dir / "tensorboard"))
+        if cfg.experiment.tensorboard
+        else None
+    )
 
     console.rule(f"[bold blue]Starting training run: {run_name}[/bold blue]")
     console.print(
         Panel(
-            f"Log directory: {log_dir}\nDevice: {device}", title="Setup", expand=False
+            f"Log directory: {log_dir}\nDevice: {device}\nConfig: {config_save_path}",
+            title="Setup",
+            expand=False,
         )
     )
-    console.print(Panel(str(vars(args)), title="Arguments", expand=False))
+
+    config_str = OmegaConf.to_yaml(cfg)
+    syntax = Syntax(config_str, "yaml", background_color="default", line_numbers=True)
+    console.print(Panel(syntax, title="Configuration", expand=False))
 
     logger.info("Loading data...")
     try:
-        train_loader, val_loader, metadata = get_dataloaders(
-            data_path=args.data_path,
-            batch_size=args.batch_size,
-            num_workers=args.num_workers,
-            train_ratio=args.train_ratio,
-            seed=args.seed,
-            norm_eps=args.norm_eps,
-        )
+        train_loader, val_loader, metadata = get_dataloaders(cfg=cfg)
+
         nt = metadata["num_tx_ant"]
         nr = metadata["num_rx_ant"]
         tx_position = metadata["tx_position"].to(device)
@@ -348,7 +171,7 @@ def train(args):
         metadata_table = Table(title="Dataset Metadata", show_header=False, box=None)
         metadata_table.add_column("Property", style="cyan")
         metadata_table.add_column("Value")
-        metadata_table.add_row("Path", args.data_path)
+        metadata_table.add_row("Path", cfg.data.path)
         metadata_table.add_row("Nt", str(nt))
         metadata_table.add_row("Nr", str(nr))
         metadata_table.add_row("Frequency", f"{metadata['frequency']/1e9:.2f} GHz")
@@ -392,35 +215,46 @@ def train(args):
     model = GaussianChannelFieldModel(
         num_tx_ant=nt,
         num_rx_ant=nr,
-        latent_dim=args.latent_dim,
-        attribute_hidden_dim=args.attribute_hidden_dim,
-        attribute_num_layers=args.attribute_num_layers,
-        attribute_pos_enc_freqs=args.attribute_pos_enc_freqs,
-        decoder_hidden_dim=args.decoder_hidden_dim,
-        decoder_num_layers=args.decoder_num_layers,
-        initial_gaussians=args.initial_gaussians,
+        latent_dim=cfg.model.latent_dim,
+        attribute_hidden_dim=cfg.model.attribute_network.hidden_dim,
+        attribute_num_layers=cfg.model.attribute_network.num_layers,
+        attribute_pos_enc_freqs=cfg.model.attribute_network.pos_enc_freqs,
+        decoder_hidden_dim=cfg.model.contribution_decoder.hidden_dim,
+        decoder_num_layers=cfg.model.contribution_decoder.num_layers,
+        initial_gaussians=cfg.initialization.num_gaussians,
+        init_opacity_value=cfg.initialization.opacity_value,
+        init_scale_value=cfg.initialization.scale_value,
         device=device,
     )
 
     start_iteration = 0
-    if args.resume:
-        logger.info(f"Resuming from checkpoint: {args.resume}")
+
+    resume_path_str = cfg.get("resume", None)
+    resume_path = Path(resume_path_str) if resume_path_str else None
+
+    if resume_path and resume_path.exists():
+        logger.info(f"Resuming from checkpoint: {resume_path}")
         try:
             model, start_iteration = GaussianChannelFieldModel.load(
-                Path(args.resume),
+                resume_path,
                 device,
-                args,
+                resume_cfg=cfg,
             )
             start_iteration += 1
             logger.info(f"Resumed from iteration {start_iteration -1}")
         except Exception as e:
             logger.error(f"Failed to load checkpoint: {e}. Starting from scratch")
-            args.resume = None
+            resume_path = None
+    else:
+        if resume_path:
+            logger.warning(
+                f"Resume checkpoint not found at {resume_path}. Starting from scratch."
+            )
+        resume_path = None
 
-    if not args.resume:
+    if not resume_path:
         init_pc_arg = None
-
-        if args.init_method == "point_cloud":
+        if cfg.initialization.method == "point_cloud":
             if point_cloud is not None:
                 logger.info("Using point cloud for Gaussian initialization")
                 init_pc_arg = point_cloud
@@ -428,23 +262,22 @@ def train(args):
                 logger.warning(
                     "Point cloud initialization requested but no point cloud data found. Falling back to random initialization."
                 )
-                args.init_method = "random"
+                cfg.initialization.method = "random"
 
-        if args.init_method == "random":
+        if cfg.initialization.method == "random":
             logger.info("Using random initialization for Gaussians")
             model.init_gaussians(
                 env_dims=env_dims if env_dims is not None else None,
                 point_cloud=None,
-                num_points=args.initial_gaussians,
+                num_points=cfg.initialization.num_gaussians,
             )
-        elif args.init_method == "point_cloud":
+        elif cfg.initialization.method == "point_cloud":
             model.init_gaussians(
                 env_dims=None,
                 point_cloud=init_pc_arg,
-                num_points=args.initial_gaussians,
+                num_points=cfg.initialization.num_gaussians,
             )
-
-        model.training_setup(args)
+        model.training_setup(cfg)
 
     model = model.to(device)
     logger.info(f"Model initialized/loaded with {model.get_xyz.shape[0]} Gaussians")
@@ -463,7 +296,7 @@ def train(args):
         TextColumn("[progress.description]{task.description}"),
         BarColumn(),
         TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
-        TextColumn("Loss={task.fields[loss]:.3e}"),
+        TextColumn("Loss={task.fields[loss]:.3e}, "),
         TextColumn("SNR={task.fields[snr]:.2f} dB"),
         TimeRemainingColumn(),
         TimeElapsedColumn(),
@@ -473,20 +306,26 @@ def train(args):
     ema_loss = -1.0
     train_iter = iter(train_loader)
 
+    stop_xyz_iter = int(cfg.training.iterations * cfg.training.stop_xyz_iter_ratio)
+    logger.info(
+        f"Will stop updating Gaussian XYZ positions after iteration {stop_xyz_iter}"
+    )
+
     logger.info(f"Starting training loop from iteration {start_iteration}...")
     with progress:
         task = progress.add_task(
             "[cyan]Training...",
-            total=args.iterations,
+            total=cfg.training.iterations,
             completed=start_iteration,
             loss=float("nan"),
             snr=float("nan"),
         )
 
-        for iteration in range(start_iteration, args.iterations):
+        for iteration in range(start_iteration, cfg.training.iterations):
             iter_start_time = time.time()
             model.train()
-            model.update_learning_rate(iteration, args)
+
+            model.update_learning_rate(iteration, cfg)
 
             try:
                 batch = next(train_iter)
@@ -497,8 +336,8 @@ def train(args):
             rx_pos_batch = batch["rx_position"].to(device)
             chan_gt_batch = batch["channel"].to(device)
 
-            if args.rx_noise_std > 0:
-                noise = torch.randn_like(rx_pos_batch) * args.rx_noise_std
+            if cfg.training.rx_noise_std > 0:
+                noise = torch.randn_like(rx_pos_batch) * cfg.training.rx_noise_std
                 rx_pos_batch = rx_pos_batch + noise
 
             chan_pred_batch = render(
@@ -507,17 +346,19 @@ def train(args):
                 tx_position=tx_position,
                 nt=nt,
                 nr=nr,
-                eps=args.snr_eps,
+                eps=cfg.training.snr_eps,
             )
 
             mse_loss = criterion(chan_pred_batch, chan_gt_batch)
             total_loss = mse_loss
             l1_activation_loss = torch.tensor(0.0, device=device)
 
-            if args.lambda_activation_l1 > 0 and model.get_xyz.shape[0] > 0:
+            if cfg.training.lambda_activation_l1 > 0 and model.get_xyz.shape[0] > 0:
                 base_activations_logits = model.get_base_activation_logits(tx_position)
                 l1_activation_loss = torch.mean(torch.abs(base_activations_logits))
-                total_loss = total_loss + args.lambda_activation_l1 * l1_activation_loss
+                total_loss = (
+                    total_loss + cfg.training.lambda_activation_l1 * l1_activation_loss
+                )
 
             model.optimizer.zero_grad()
             total_loss.backward()
@@ -543,14 +384,6 @@ def train(args):
                     f"NaN/Inf gradient detected at iter {iteration}. Skipping optimizer step."
                 )
 
-                found_nan_grad = False
-                for name, param in model.named_parameters():
-                    if param.grad is not None and (
-                        torch.isnan(param.grad).any() or torch.isinf(param.grad).any()
-                    ):
-                        found_nan_grad = True
-                        break
-
             iter_time = time.time() - iter_start_time
             with torch.no_grad():
                 current_loss = mse_loss.item()
@@ -564,18 +397,20 @@ def train(args):
                 else:
                     ema_loss = 0.95 * ema_loss + 0.05 * current_loss
 
-                snr = calculate_snr(mse_loss, chan_gt_batch, eps=args.snr_eps).item()
+                snr = calculate_snr(
+                    mse_loss, chan_gt_batch, eps=cfg.training.snr_eps
+                ).item()
                 num_gaussians = model.get_xyz.shape[0]
 
                 progress.update(task, advance=1, loss=current_loss, snr=snr)
-                if iteration % args.log_freq == 0:
+                if iteration % cfg.experiment.log_freq == 0:
                     log_msg_file = (
-                        f"[{iteration}/{args.iterations}] <<< "
+                        f"[{iteration}/{cfg.training.iterations}] <<< "
                         f"Loss={current_loss:.4e} | EMA={ema_loss:.4e} | "
                         f"SNR={snr:.2f} dB | Time={iter_time:.3f}s >>>"
                     )
                     logger.info(log_msg_file)
-                    if args.log_grad_stats and grad_stats:
+                    if cfg.experiment.log_grad_stats and grad_stats:
                         grad_table = Table(
                             title=f"Gradient stats",
                             box=None,
@@ -606,7 +441,7 @@ def train(args):
                         writer.add_scalar(
                             "train/num_gaussians", num_gaussians, iteration
                         )
-                        if args.lambda_activation_l1 > 0:
+                        if cfg.training.lambda_activation_l1 > 0:
                             writer.add_scalar(
                                 "train/l1_activation_loss",
                                 l1_activation_loss.item(),
@@ -635,7 +470,7 @@ def train(args):
                                 "grads/max", grad_stats["max_grad"], iteration
                             )
 
-                if iteration % args.eval_freq == 0 and iteration > 0:
+                if iteration % cfg.experiment.eval_freq == 0 and iteration > 0:
                     if len(val_loader) > 0:
                         progress.update(task, description="[yellow]Evaluating...")
                         eval_start_time = time.time()
@@ -647,7 +482,7 @@ def train(args):
                             tx_position=tx_position,
                             nt=nt,
                             nr=nr,
-                            snr_eps=args.snr_eps,
+                            cfg=cfg,
                         )
                         eval_time = time.time() - eval_start_time
                         progress.update(task, description="[cyan]Training...")
@@ -691,21 +526,23 @@ def train(args):
                                 iteration,
                             )
                     else:
-                        if iteration % (args.eval_freq * 5) == 0:
+                        if iteration % (cfg.experiment.eval_freq * 5) == 0:
                             logger.info(
                                 f"Skipping evaluation at iteration {iteration} (empty val loader)"
                             )
                 if (
-                    iteration % args.checkpoint_freq == 0 and iteration > 0
-                ) or iteration == args.iterations - 1:
+                    iteration % cfg.experiment.checkpoint_freq == 0 and iteration > 0
+                ) or iteration == cfg.training.iterations - 1:
                     checkpoint_path = checkpoints_dir / f"checkpoint_{iteration:07d}.pt"
-                    model.save(checkpoint_path, iteration=iteration)
+
+                    model.save(checkpoint_path, iteration=iteration, cfg=cfg)
                     logger.info(f"Checkpoint saved to {checkpoint_path}")
 
     progress.stop()
     final_model_path = log_dir / "final_model.pt"
-    model.save(final_model_path, iteration=args.iterations - 1)
-    logger.info(f"Training completed after {args.iterations} iterations")
+
+    model.save(final_model_path, iteration=cfg.training.iterations - 1, cfg=cfg)
+    logger.info(f"Training completed after {cfg.training.iterations} iterations")
     logger.info(f"Final model saved to {final_model_path}")
 
     console.rule("[bold blue]Training end[/bold blue]")
@@ -714,5 +551,5 @@ def train(args):
 
 
 if __name__ == "__main__":
-    args = parse_args()
-    train(args)
+    cfg = load_config()
+    train(cfg)

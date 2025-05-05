@@ -1,0 +1,59 @@
+# configs/default.yaml
+
+experiment:
+  name: "gcf_run"
+  seed: 42
+  device: "cuda"
+  log_dir: "logs"
+  log_freq: 30
+  eval_freq: 250
+  checkpoint_freq: 15
+  tensorboard: true
+  log_grad_stats: false
+
+data:
+  path: null
+  train_ratio: 0.9
+  norm_eps: 1e-8
+  num_workers: 4
+
+initialization:
+  method: "random"
+  num_gaussians: 1000
+  opacity_value: 0.1
+  scale_value: 0.02
+
+model:
+  latent_dim: 64
+  attribute_network:
+    hidden_dim: 128
+    num_layers: 6
+    pos_enc_freqs: 57
+  contribution_decoder:
+    hidden_dim: 64
+    num_layers: 2
+
+training:
+  iterations: 30000
+  batch_size: 32
+  stop_xyz_iter_ratio: 0.5
+  rx_noise_std: 0.03
+  lambda_activation_l1: 0.01
+  optimizer:
+    eps: 1e-8
+    weight_decay: 1e-6
+  learning_rate:
+    position_init: 1e-4
+    position_final: 1e-6
+    position_delay_mult: 0.01
+    rotation: 0.001
+    scaling: 0.005
+    attribute_net: 0.001
+    decoder: 0.0015
+  snr_eps: 1e-10
+
+evaluation:
+  batch_size: 1
+  num_samples: 3
+  snr_eps: 1e-10
+  unnormalize_samples: false

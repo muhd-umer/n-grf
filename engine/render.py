@@ -71,7 +71,7 @@ def render(
     num_gaussians = gauss_means.shape[0]
 
     if num_gaussians == 0:
-        print("Warning: Rendering magnitude with zero Gaussians.")
+        print("Warning: Rendering channel with zero Gaussians.")
         return torch.zeros(batch_size, nt, nr, dtype=torch.float32, device=device)
 
     gauss_latents, gauss_activations_activated = model.get_attributes_and_activation(

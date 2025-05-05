@@ -9,6 +9,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from omegaconf import DictConfig, OmegaConf, open_dict
 
 from utils import (
     build_covariance_inverse,
@@ -69,7 +70,6 @@ class GaussianChannelFieldModel(nn.Module):
         self.init_opacity_logit = inverse_sigmoid(
             torch.tensor(init_opacity_value, device=device)
         )
-
         self.init_log_scale = torch.log(torch.tensor(init_scale_value, device=device))
 
         self.optimizer = None
@@ -195,9 +195,11 @@ class GaussianChannelFieldModel(nn.Module):
         point_cloud: Optional[torch.Tensor] = None,
     ):
         """Initializes Gaussian parameters (position, rotation, scale)."""
-        num_to_init = num_points if num_points is not None else self.initial_gaussians
+        num_to_init = num_points if num_points is not None else 0
         if num_to_init <= 0:
-            warnings.warn("Warning: No Gaussians requested for initialization.")
+            warnings.warn(
+                "Warning: No Gaussians requested for initialization (num_points <= 0)."
+            )
             self._xyz = nn.Parameter(
                 torch.empty(0, 3, device=self.device).requires_grad_(True)
             )
@@ -306,49 +308,41 @@ class GaussianChannelFieldModel(nn.Module):
 
         return param_groups
 
-    def training_setup(self, training_args: Any):
-        """Setup optimizer and learning rate schedulers based on
-        training args."""
+    def training_setup(self, cfg: DictConfig):
+        """Setup optimizer and learning rate schedulers based on config."""
 
         lr_map = {
-            "xyz": training_args.position_lr_init,
-            "rotation": training_args.rotation_lr,
-            "scaling": training_args.scaling_lr,
-            "attribute_net": training_args.attribute_net_lr,
-            "decoder": training_args.decoder_lr,
+            "xyz": cfg.training.learning_rate.position_init,
+            "rotation": cfg.training.learning_rate.rotation,
+            "scaling": cfg.training.learning_rate.scaling,
+            "attribute_net": cfg.training.learning_rate.attribute_net,
+            "decoder": cfg.training.learning_rate.decoder,
         }
         params = self.get_params(lr_map)
 
         self.optimizer = torch.optim.AdamW(
             params,
             lr=0.0,
-            eps=(
-                training_args.optimizer_eps
-                if hasattr(training_args, "optimizer_eps")
-                else 1e-8
-            ),
-            weight_decay=training_args.weight_decay,
+            eps=cfg.training.optimizer.eps,
+            weight_decay=cfg.training.optimizer.weight_decay,
         )
         print(
-            f"Optimizer AdamW initialized with weight decay: {training_args.weight_decay}"
+            f"Optimizer AdamW initialized with weight decay: {cfg.training.optimizer.weight_decay}"
         )
 
         self.lr_schedulers = {}
-
         self.lr_schedulers["xyz"] = get_expon_lr_func(
-            lr_init=training_args.position_lr_init,
-            lr_final=training_args.position_lr_final,
-            lr_delay_mult=training_args.position_lr_delay_mult,
-            max_steps=training_args.iterations,
+            lr_init=cfg.training.learning_rate.position_init,
+            lr_final=cfg.training.learning_rate.position_final,
+            lr_delay_mult=cfg.training.learning_rate.position_delay_mult,
+            max_steps=cfg.training.iterations,
         )
 
         for name, lr_init in lr_map.items():
             if name != "xyz":
-
                 self.lr_schedulers[name] = lambda step, lr=lr_init: lr
-        print("Learning rate schedulers set up.")
 
-    def update_learning_rate(self, iteration: int, training_args: Any):
+    def update_learning_rate(self, iteration: int, cfg: DictConfig):
         """Update learning rates for all parameter groups based on schedulers and iteration."""
         if not self.optimizer:
             warnings.warn(
@@ -356,20 +350,37 @@ class GaussianChannelFieldModel(nn.Module):
             )
             return
 
+        stop_xyz_iter = int(cfg.training.iterations * cfg.training.stop_xyz_iter_ratio)
         for param_group in self.optimizer.param_groups:
             name = param_group["name"]
             if name in self.lr_schedulers:
-
                 new_lr = self.lr_schedulers[name](iteration)
-
-                if name == "xyz" and iteration >= training_args.stop_xyz_iter:
+                if name == "xyz" and iteration >= stop_xyz_iter:
                     new_lr = 0.0
-
                 param_group["lr"] = new_lr
 
-    def save(self, filepath: Path, iteration: Optional[int] = None):
+    def save(
+        self,
+        filepath: Path,
+        iteration: Optional[int] = None,
+        cfg: Optional[DictConfig] = None,
+    ):
         """Save model state, optimizer state, and configuration."""
         filepath.parent.mkdir(parents=True, exist_ok=True)
+
+        config_dict_to_save = None
+        if cfg is None:
+            warnings.warn(
+                "Warning: Saving model without config. Loading might be incomplete."
+            )
+        else:
+            temp_cfg = cfg.copy()
+            with open_dict(temp_cfg):
+                if "model" not in temp_cfg:
+                    temp_cfg.model = OmegaConf.create()
+                temp_cfg.model.num_tx_ant = self.num_tx_ant
+                temp_cfg.model.num_rx_ant = self.num_rx_ant
+            config_dict_to_save = OmegaConf.to_container(temp_cfg, resolve=True)
 
         state_dict = {
             "iteration": iteration,
@@ -381,41 +392,48 @@ class GaussianChannelFieldModel(nn.Module):
             "optimizer_state_dict": (
                 self.optimizer.state_dict() if self.optimizer else None
             ),
-            "config": {
-                "num_tx_ant": self.num_tx_ant,
-                "num_rx_ant": self.num_rx_ant,
-                "latent_dim": self.latent_dim,
-                "attribute_hidden_dim": self.attribute_network.network.hidden_dim,
-                "attribute_num_layers": self.attribute_network.network.num_layers,
-                "attribute_pos_enc_freqs": self.attribute_network.pos_encoder_mean.num_freqs,
-                "decoder_hidden_dim": self.contribution_decoder.hidden_dim,
-                "decoder_num_layers": self.contribution_decoder.num_layers,
-            },
+            "config_dict": config_dict_to_save,
         }
         torch.save(state_dict, str(filepath))
 
     @classmethod
     def load(
-        cls, filepath: Path, device: torch.device, training_args: Optional[Any] = None
+        cls,
+        filepath: Path,
+        device: torch.device,
+        resume_cfg: Optional[DictConfig] = None,
     ):
         """Load model state from a checkpoint."""
         if not filepath.exists():
             raise FileNotFoundError(f"Checkpoint not found at {filepath}")
 
         state_dict = torch.load(str(filepath), map_location=device, weights_only=False)
-        config = state_dict["config"]
+        if "config_dict" not in state_dict or state_dict["config_dict"] is None:
+            raise ValueError(
+                f"Checkpoint {filepath} does not contain 'config_dict'. Cannot load model architecture."
+            )
+        config_dict = state_dict["config_dict"]
+        base_cfg = OmegaConf.load("configs/default.yaml")
+        checkpoint_cfg = OmegaConf.merge(base_cfg, OmegaConf.create(config_dict))
 
-        model = cls(
-            num_tx_ant=config["num_tx_ant"],
-            num_rx_ant=config["num_rx_ant"],
-            latent_dim=config["latent_dim"],
-            attribute_hidden_dim=config.get("attribute_hidden_dim", 64),
-            attribute_num_layers=config.get("attribute_num_layers", 3),
-            attribute_pos_enc_freqs=config.get("attribute_pos_enc_freqs", 10),
-            decoder_hidden_dim=config.get("decoder_hidden_dim", 64),
-            decoder_num_layers=config.get("decoder_num_layers", 4),
-            device=device,
-        )
+        try:
+            model = cls(
+                num_tx_ant=checkpoint_cfg.model.num_tx_ant,
+                num_rx_ant=checkpoint_cfg.model.num_rx_ant,
+                latent_dim=checkpoint_cfg.model.latent_dim,
+                attribute_hidden_dim=checkpoint_cfg.model.attribute_network.hidden_dim,
+                attribute_num_layers=checkpoint_cfg.model.attribute_network.num_layers,
+                attribute_pos_enc_freqs=checkpoint_cfg.model.attribute_network.pos_enc_freqs,
+                decoder_hidden_dim=checkpoint_cfg.model.contribution_decoder.hidden_dim,
+                decoder_num_layers=checkpoint_cfg.model.contribution_decoder.num_layers,
+                init_opacity_value=checkpoint_cfg.initialization.opacity_value,
+                init_scale_value=checkpoint_cfg.initialization.scale_value,
+                device=device,
+            )
+        except Exception as e:
+            print("Error during model instantiation using loaded config:")
+            print(OmegaConf.to_yaml(checkpoint_cfg))
+            raise e
 
         model._xyz = nn.Parameter(state_dict["xyz"].to(device).requires_grad_(True))
         model._rotation = nn.Parameter(
@@ -429,16 +447,13 @@ class GaussianChannelFieldModel(nn.Module):
             state_dict["attribute_network_state_dict"]
         )
         model.contribution_decoder.load_state_dict(state_dict["decoder_state_dict"])
-
         iteration = state_dict.get("iteration", 0)
 
-        if training_args is not None:
-            model.training_setup(training_args)
-
+        if resume_cfg is not None:
+            model.training_setup(resume_cfg)
             if model.optimizer and state_dict.get("optimizer_state_dict"):
                 try:
                     model.optimizer.load_state_dict(state_dict["optimizer_state_dict"])
-
                     for state in model.optimizer.state.values():
                         for k, v in state.items():
                             if isinstance(v, torch.Tensor):
@@ -454,7 +469,9 @@ class GaussianChannelFieldModel(nn.Module):
                     "Optimizer state not found in checkpoint or optimizer not setup for loading."
                 )
         else:
-            print("No training_args provided, optimizer state not loaded.")
+            print(
+                "Not resuming training (resume_cfg=None), optimizer state not loaded."
+            )
 
         print(f"GCF Model loaded from {filepath} (iteration {iteration}).")
         print(f"Loaded model has {model.get_xyz.shape[0]} Gaussians.")
