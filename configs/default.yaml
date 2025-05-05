@@ -1,16 +1,5 @@
 # configs/default.yaml
 
-experiment:
-  name: "gcf_run"
-  seed: 42
-  device: "cuda"
-  log_dir: "logs"
-  log_freq: 30
-  eval_freq: 250
-  checkpoint_freq: 15
-  tensorboard: true
-  log_grad_stats: false
-
 data:
   path: null
   train_ratio: 0.9
@@ -51,6 +40,17 @@ training:
     attribute_net: 0.001
     decoder: 0.0015
   snr_eps: 1e-10
+
+experiment:
+  name: "gcf_run"
+  seed: 42
+  device: "cuda"
+  log_dir: "logs"
+  log_freq: 30
+  eval_freq: 250
+  checkpoint_freq: 1500
+  tensorboard: true
+  log_grad_stats: false
 
 evaluation:
   batch_size: 1
