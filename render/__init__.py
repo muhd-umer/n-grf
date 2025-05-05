@@ -1,4 +1,4 @@
-# engine/render.py
+# render/__init__.py
 
 import torch
 
@@ -41,7 +41,7 @@ def compute_spatial_weight(
     return weight
 
 
-def render(
+def render_cmr(
     rx_positions: torch.Tensor,
     model: GaussianChannelFieldModel,
     tx_position: torch.Tensor,

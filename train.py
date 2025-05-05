@@ -26,8 +26,8 @@ from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 
 from datasets.dataloader import get_dataloaders
-from engine.render import render
 from models.gaussian_model import GaussianChannelFieldModel
+from render import render_cmr
 from utils.general_utils import set_random_seed
 from utils.loss import calculate_snr
 from utils.train_utils import compute_grad_stats, setup_logging
@@ -91,7 +91,7 @@ def evaluate(
             cmr_gt_batch = batch["cmr"].to(device)
             batch_size = rx_pos_batch.shape[0]
 
-            cmr_pred_batch = render(
+            cmr_pred_batch = render_cmr(
                 rx_positions=rx_pos_batch,
                 model=model,
                 tx_position=tx_position,
@@ -343,7 +343,7 @@ def train(cfg: DictConfig):
                 noise = torch.randn_like(rx_pos_batch) * cfg.training.rx_noise_std
                 rx_pos_batch = rx_pos_batch + noise
 
-            cmr_pred_batch = render(
+            cmr_pred_batch = render_cmr(
                 rx_positions=rx_pos_batch,
                 model=model,
                 tx_position=tx_position,
