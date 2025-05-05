@@ -4,14 +4,24 @@ import argparse
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Dict
+from typing import Dict, List
 
 import numpy as np
 import torch
 import torch.nn as nn
+from rich.padding import Padding
+from rich.panel import Panel
+from rich.progress import (
+    BarColumn,
+    Progress,
+    SpinnerColumn,
+    TextColumn,
+    TimeElapsedColumn,
+    TimeRemainingColumn,
+)
+from rich.table import Table
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
-from tqdm import tqdm
 
 from datasets.dataloader import get_dataloaders
 from engine.render import render
@@ -188,7 +198,7 @@ def parse_args():
     parser.add_argument(
         "--log_freq",
         type=int,
-        default=20,
+        default=30,
         help="Log training metrics every N iterations",
     )
     parser.add_argument(
@@ -226,6 +236,11 @@ def parse_args():
         default=None,
         help="Path to checkpoint for resuming training",
     )
+    parser.add_argument(
+        "--log_grad_stats",
+        action="store_true",
+        help="Log detailed gradient statistics to the console",
+    )
 
     args = parser.parse_args()
 
@@ -254,10 +269,7 @@ def evaluate(
     count = 0
 
     with torch.no_grad():
-
-        for batch in tqdm(
-            val_loader, desc="Evaluating", leave=False, dynamic_ncols=True
-        ):
+        for batch in val_loader:
             rx_pos_batch = batch["rx_position"].to(device)
 
             chan_gt_batch = batch["channel"].to(device)
@@ -296,22 +308,24 @@ def train(args):
         args.device if torch.cuda.is_available() and args.device == "cuda" else "cpu"
     )
 
-    run_name = (
-        datetime.now().strftime("%Y%m%d_%H%M%S")
-        + f"_mag_L{args.latent_dim}_N{args.initial_gaussians}"
-    )
+    run_name = datetime.now().strftime("%Y%m%d_%H%M%S")
     log_dir = Path(args.log_dir) / run_name
     log_dir.mkdir(parents=True, exist_ok=True)
     checkpoints_dir = log_dir / "checkpoints"
     checkpoints_dir.mkdir(exist_ok=True)
 
-    logger = setup_logging(log_dir)
+    logger, console = setup_logging(log_dir, use_rich=True)
+    if console is None:
+        raise RuntimeError("Failed to initialize Rich Console.")
     writer = SummaryWriter(str(log_dir / "tensorboard")) if args.tensorboard else None
 
-    logger.info(f"Starting training run: {run_name}")
-    logger.info(f"Log directory: {log_dir}")
-    logger.info(f"Arguments: {vars(args)}")
-    logger.info(f"Using device: {device}")
+    console.rule(f"[bold blue]Starting training run: {run_name}[/bold blue]")
+    console.print(
+        Panel(
+            f"Log directory: {log_dir}\nDevice: {device}", title="Setup", expand=False
+        )
+    )
+    console.print(Panel(str(vars(args)), title="Arguments", expand=False))
 
     logger.info("Loading data...")
     try:
@@ -331,10 +345,17 @@ def train(args):
         min_mag = metadata.get("min_magnitude", 0.0)
         max_mag = metadata.get("max_magnitude", 1.0)
 
-        logger.info(
-            f"Dataset metadata: Nt={nt}, Nr={nr}, Freq={metadata['frequency']/1e9:.2f}GHz, IsSISO={metadata['is_siso']}"
-        )
-        logger.info(f"Normalization min/max: Min={min_mag:.4e}, Max={max_mag:.4e}")
+        metadata_table = Table(title="Dataset Metadata", show_header=False, box=None)
+        metadata_table.add_column("Property", style="cyan")
+        metadata_table.add_column("Value")
+        metadata_table.add_row("Path", args.data_path)
+        metadata_table.add_row("Nt", str(nt))
+        metadata_table.add_row("Nr", str(nr))
+        metadata_table.add_row("Frequency", f"{metadata['frequency']/1e9:.2f} GHz")
+        metadata_table.add_row("Is SISO", str(metadata["is_siso"]))
+        metadata_table.add_row("Norm Min/Max", f"{min_mag:.4e} / {max_mag:.4e}")
+        console.print(metadata_table)
+
         logger.info(f"Transmitter position: {tx_position.cpu().numpy()}")
         if point_cloud is not None:
             logger.info(f"Point cloud loaded with shape: {point_cloud.shape}")
@@ -434,182 +455,260 @@ def train(args):
     criterion = nn.MSELoss().to(device)
     logger.info("Using MSE Loss for training")
 
-    logger.info(f"Starting training from iteration {start_iteration}...")
-    progress_bar = tqdm(
-        range(start_iteration, args.iterations), desc="Training GCF", dynamic_ncols=True
+    validation_results: List[Dict] = []
+    max_val_disp = 5
+
+    progress = Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+        TextColumn("Loss={task.fields[loss]:.3e}"),
+        TextColumn("SNR={task.fields[snr]:.2f} dB"),
+        TimeRemainingColumn(),
+        TimeElapsedColumn(),
+        console=console,
     )
+
     ema_loss = -1.0
     train_iter = iter(train_loader)
 
-    for iteration in progress_bar:
-        iter_start_time = time.time()
-        model.train()
-        model.update_learning_rate(iteration, args)
-
-        try:
-            batch = next(train_iter)
-        except StopIteration:
-            train_iter = iter(train_loader)
-            batch = next(train_iter)
-
-        rx_pos_batch = batch["rx_position"].to(device)
-        chan_gt_batch = batch["channel"].to(device)
-
-        if args.rx_noise_std > 0:
-            noise = torch.randn_like(rx_pos_batch) * args.rx_noise_std
-            rx_pos_batch = rx_pos_batch + noise
-
-        chan_pred_batch = render(
-            rx_positions=rx_pos_batch,
-            model=model,
-            tx_position=tx_position,
-            nt=nt,
-            nr=nr,
-            eps=args.snr_eps,
+    logger.info(f"Starting training loop from iteration {start_iteration}...")
+    with progress:
+        task = progress.add_task(
+            "[cyan]Training...",
+            total=args.iterations,
+            completed=start_iteration,
+            loss=float("nan"),
+            snr=float("nan"),
         )
 
-        mse_loss = criterion(chan_pred_batch, chan_gt_batch)
-        total_loss = mse_loss
-        l1_activation_loss = torch.tensor(0.0, device=device)
+        for iteration in range(start_iteration, args.iterations):
+            iter_start_time = time.time()
+            model.train()
+            model.update_learning_rate(iteration, args)
 
-        if args.lambda_activation_l1 > 0 and model.get_xyz.shape[0] > 0:
-            base_activations_logits = model.get_base_activation_logits(tx_position)
-            l1_activation_loss = torch.mean(torch.abs(base_activations_logits))
-            total_loss = total_loss + args.lambda_activation_l1 * l1_activation_loss
+            try:
+                batch = next(train_iter)
+            except StopIteration:
+                train_iter = iter(train_loader)
+                batch = next(train_iter)
 
-        model.optimizer.zero_grad()
-        total_loss.backward()
+            rx_pos_batch = batch["rx_position"].to(device)
+            chan_gt_batch = batch["channel"].to(device)
 
-        found_nan_grad = False
-        for name, param in model.named_parameters():
-            if param.grad is not None and (
-                torch.isnan(param.grad).any() or torch.isinf(param.grad).any()
-            ):
-                logger.warning(
-                    f"NaN or Inf gradient detected at iteration {iteration} for parameter '{name}'. Skipping optimizer step."
-                )
-                found_nan_grad = True
-                break
+            if args.rx_noise_std > 0:
+                noise = torch.randn_like(rx_pos_batch) * args.rx_noise_std
+                rx_pos_batch = rx_pos_batch + noise
 
-        grad_stats = {}
-        if not found_nan_grad:
+            chan_pred_batch = render(
+                rx_positions=rx_pos_batch,
+                model=model,
+                tx_position=tx_position,
+                nt=nt,
+                nr=nr,
+                eps=args.snr_eps,
+            )
 
-            grad_stats = compute_grad_stats(model)
+            mse_loss = criterion(chan_pred_batch, chan_gt_batch)
+            total_loss = mse_loss
+            l1_activation_loss = torch.tensor(0.0, device=device)
 
-            model.optimizer.step()
-        else:
+            if args.lambda_activation_l1 > 0 and model.get_xyz.shape[0] > 0:
+                base_activations_logits = model.get_base_activation_logits(tx_position)
+                l1_activation_loss = torch.mean(torch.abs(base_activations_logits))
+                total_loss = total_loss + args.lambda_activation_l1 * l1_activation_loss
+
             model.optimizer.zero_grad()
+            total_loss.backward()
 
-        iter_time = time.time() - iter_start_time
-        with torch.no_grad():
-            current_loss = mse_loss.item()
-            if np.isnan(current_loss) or np.isinf(current_loss):
-                logger.warning(
-                    f"NaN or Inf loss detected at iteration {iteration}. Resetting EMA loss."
-                )
-                ema_loss = -1.0
-            elif ema_loss < 0:
-                ema_loss = current_loss
+            found_nan_grad = False
+            for name, param in model.named_parameters():
+                if param.grad is not None and (
+                    torch.isnan(param.grad).any() or torch.isinf(param.grad).any()
+                ):
+                    logger.warning(
+                        f"NaN or Inf gradient detected at iteration {iteration} for parameter '{name}'. Skipping optimizer step."
+                    )
+                    found_nan_grad = True
+                    break
+
+            grad_stats = {}
+            if not found_nan_grad:
+                grad_stats = compute_grad_stats(model)
+                model.optimizer.step()
             else:
-                ema_loss = 0.95 * ema_loss + 0.05 * current_loss
-            if iteration % args.log_freq == 0:
+                model.optimizer.zero_grad()
+                logger.warning(
+                    f"NaN/Inf gradient detected at iter {iteration}. Skipping optimizer step."
+                )
+
+                found_nan_grad = False
+                for name, param in model.named_parameters():
+                    if param.grad is not None and (
+                        torch.isnan(param.grad).any() or torch.isinf(param.grad).any()
+                    ):
+                        found_nan_grad = True
+                        break
+
+            iter_time = time.time() - iter_start_time
+            with torch.no_grad():
+                current_loss = mse_loss.item()
+                if np.isnan(current_loss) or np.isinf(current_loss):
+                    logger.warning(
+                        f"NaN or Inf loss detected at iteration {iteration}. Resetting EMA loss."
+                    )
+                    ema_loss = -1.0
+                elif ema_loss < 0:
+                    ema_loss = current_loss
+                else:
+                    ema_loss = 0.95 * ema_loss + 0.05 * current_loss
 
                 snr = calculate_snr(mse_loss, chan_gt_batch, eps=args.snr_eps).item()
                 num_gaussians = model.get_xyz.shape[0]
 
-                log_msg_train = (
-                    f"[{iteration}/{args.iterations}] | "
-                    f"Loss(MSE): {current_loss:.4e} | EMA Loss: {ema_loss:.4e} | "
-                    f"SNR: {snr:.2f} dB | Time: {iter_time:.3f}s | Gauss: {num_gaussians}"
-                )
-                if args.lambda_activation_l1 > 0:
-                    log_msg_train += f" | L1 Act Loss: {l1_activation_loss.item():.4e}"
-
-                logger.info(log_msg_train)
-
-                if grad_stats:
-                    grad_log_msg = (
-                        f" Grads - Norm: {grad_stats['grad_norm']:.3e} | Mean Abs: {grad_stats['mean_abs_grad']:.3e} | "
-                        f"Min: {grad_stats['min_grad']:.3e} | Max: {grad_stats['max_grad']:.3e} | "
-                        f"Count: {grad_stats['param_count_with_grad']}"
+                progress.update(task, advance=1, loss=current_loss, snr=snr)
+                if iteration % args.log_freq == 0:
+                    log_msg_file = (
+                        f"[{iteration}/{args.iterations}] <<< "
+                        f"Loss={current_loss:.4e} | EMA={ema_loss:.4e} | "
+                        f"SNR={snr:.2f} dB | Time={iter_time:.3f}s >>>"
                     )
-                    logger.info(grad_log_msg)
-
-                if writer is not None:
-                    writer.add_scalar("train/mse_loss", current_loss, iteration)
-                    writer.add_scalar("train/ema_loss", ema_loss, iteration)
-                    writer.add_scalar("train/snr_db", snr, iteration)
-                    writer.add_scalar("train/iteration_time_sec", iter_time, iteration)
-                    writer.add_scalar("train/num_gaussians", num_gaussians, iteration)
-                    if args.lambda_activation_l1 > 0:
-                        writer.add_scalar(
-                            "train/l1_activation_loss",
-                            l1_activation_loss.item(),
-                            iteration,
+                    logger.info(log_msg_file)
+                    if args.log_grad_stats and grad_stats:
+                        grad_table = Table(
+                            title=f"Gradient stats",
+                            box=None,
+                            show_header=False,
                         )
-                    if model.optimizer:
-                        for i, param_group in enumerate(model.optimizer.param_groups):
+                        grad_table.add_column("Metric", style="dim cyan")
+                        grad_table.add_column("Value", justify="right")
+                        grad_table.add_row(
+                            "Norm (L2)", f"{grad_stats['grad_norm']:.3e}"
+                        )
+                        grad_table.add_row(
+                            "Mean Abs", f"{grad_stats['mean_abs_grad']:.3e}"
+                        )
+                        grad_table.add_row("Min", f"{grad_stats['min_grad']:.3e}")
+                        grad_table.add_row("Max", f"{grad_stats['max_grad']:.3e}")
+                        grad_table.add_row(
+                            "Param Count", f"{grad_stats['param_count_with_grad']}"
+                        )
+                        console.print(Padding(grad_table, (0, 0, 0, 2)))
+
+                    if writer is not None:
+                        writer.add_scalar("train/mse_loss", current_loss, iteration)
+                        writer.add_scalar("train/ema_loss", ema_loss, iteration)
+                        writer.add_scalar("train/snr_db", snr, iteration)
+                        writer.add_scalar(
+                            "train/iteration_time_sec", iter_time, iteration
+                        )
+                        writer.add_scalar(
+                            "train/num_gaussians", num_gaussians, iteration
+                        )
+                        if args.lambda_activation_l1 > 0:
                             writer.add_scalar(
-                                f"lr/{param_group['name']}",
-                                param_group["lr"],
+                                "train/l1_activation_loss",
+                                l1_activation_loss.item(),
                                 iteration,
                             )
-                    if grad_stats:
-                        writer.add_scalar(
-                            "grads/norm", grad_stats["grad_norm"], iteration
-                        )
-                        writer.add_scalar(
-                            "grads/mean_abs", grad_stats["mean_abs_grad"], iteration
-                        )
-                        writer.add_scalar(
-                            "grads/min", grad_stats["min_grad"], iteration
-                        )
-                        writer.add_scalar(
-                            "grads/max", grad_stats["max_grad"], iteration
-                        )
+                        if model.optimizer:
+                            for i, param_group in enumerate(
+                                model.optimizer.param_groups
+                            ):
+                                writer.add_scalar(
+                                    f"lr/{param_group['name']}",
+                                    param_group["lr"],
+                                    iteration,
+                                )
+                        if grad_stats:
+                            writer.add_scalar(
+                                "grads/norm", grad_stats["grad_norm"], iteration
+                            )
+                            writer.add_scalar(
+                                "grads/mean_abs", grad_stats["mean_abs_grad"], iteration
+                            )
+                            writer.add_scalar(
+                                "grads/min", grad_stats["min_grad"], iteration
+                            )
+                            writer.add_scalar(
+                                "grads/max", grad_stats["max_grad"], iteration
+                            )
 
-        if iteration % args.eval_freq == 0 and iteration > 0:
-            if len(val_loader) > 0:
-                logger.info(f"Starting evaluation at iteration {iteration}")
-                eval_start_time = time.time()
-                eval_metrics = evaluate(
-                    model=model,
-                    val_loader=val_loader,
-                    criterion=criterion,
-                    device=device,
-                    tx_position=tx_position,
-                    nt=nt,
-                    nr=nr,
-                    snr_eps=args.snr_eps,
-                )
-                eval_time = time.time() - eval_start_time
-                logger.info(
-                    f"Validation | Loss: {eval_metrics['val_mse_loss']:.4e} | SNR: {eval_metrics['val_snr_db']:.2f} dB | Time: {eval_time:.2f}s"
-                )
+                if iteration % args.eval_freq == 0 and iteration > 0:
+                    if len(val_loader) > 0:
+                        progress.update(task, description="[yellow]Evaluating...")
+                        eval_start_time = time.time()
+                        eval_metrics = evaluate(
+                            model=model,
+                            val_loader=val_loader,
+                            criterion=criterion,
+                            device=device,
+                            tx_position=tx_position,
+                            nt=nt,
+                            nr=nr,
+                            snr_eps=args.snr_eps,
+                        )
+                        eval_time = time.time() - eval_start_time
+                        progress.update(task, description="[cyan]Training...")
 
-                if writer is not None:
-                    writer.add_scalar(
-                        "validation/mse_loss", eval_metrics["val_mse_loss"], iteration
-                    )
-                    writer.add_scalar(
-                        "validation/snr_db", eval_metrics["val_snr_db"], iteration
-                    )
-            else:
-                logger.info(f"Skipping evaluation at iteration {iteration}")
+                        eval_metrics["iteration"] = iteration
+                        eval_metrics["time_sec"] = eval_time
+                        validation_results.append(eval_metrics)
+                        if len(validation_results) > max_val_disp:
+                            validation_results = validation_results[-max_val_disp:]
 
-        if (
-            iteration % args.checkpoint_freq == 0 and iteration > 0
-        ) or iteration == args.iterations - 1:
-            checkpoint_path = checkpoints_dir / f"checkpoint_{iteration:07d}.pt"
-            model.save(checkpoint_path, iteration=iteration)
-            logger.info(f"Checkpoint saved to {checkpoint_path}")
+                        logger.info(
+                            f"Validation @ {iteration} | Loss={eval_metrics['val_mse_loss']:.4e} | SNR={eval_metrics['val_snr_db']:.2f} dB | Time={eval_time:.2f}s"
+                        )
+                        val_table = Table(
+                            title=f"Validation Results (Last {len(validation_results)})",
+                            expand=False,
+                        )
+                        val_table.add_column("Iter", style="dim", justify="right")
+                        val_table.add_column(
+                            "MSE Loss", style="magenta", justify="right"
+                        )
+                        val_table.add_column("SNR (dB)", style="green", justify="right")
+                        val_table.add_column("Time (s)", justify="right")
+                        for res in validation_results:
+                            val_table.add_row(
+                                f"{res['iteration']}",
+                                f"{res['val_mse_loss']:.4e}",
+                                f"{res['val_snr_db']:.2f}",
+                                f"{res['time_sec']:.2f}",
+                            )
+                        console.print(val_table)
+                        if writer is not None:
+                            writer.add_scalar(
+                                "validation/mse_loss",
+                                eval_metrics["val_mse_loss"],
+                                iteration,
+                            )
+                            writer.add_scalar(
+                                "validation/snr_db",
+                                eval_metrics["val_snr_db"],
+                                iteration,
+                            )
+                    else:
+                        if iteration % (args.eval_freq * 5) == 0:
+                            logger.info(
+                                f"Skipping evaluation at iteration {iteration} (empty val loader)"
+                            )
+                if (
+                    iteration % args.checkpoint_freq == 0 and iteration > 0
+                ) or iteration == args.iterations - 1:
+                    checkpoint_path = checkpoints_dir / f"checkpoint_{iteration:07d}.pt"
+                    model.save(checkpoint_path, iteration=iteration)
+                    logger.info(f"Checkpoint saved to {checkpoint_path}")
 
-    progress_bar.close()
+    progress.stop()
     final_model_path = log_dir / "final_model.pt"
     model.save(final_model_path, iteration=args.iterations - 1)
     logger.info(f"Training completed after {args.iterations} iterations")
     logger.info(f"Final model saved to {final_model_path}")
 
+    console.rule("[bold blue]Training end[/bold blue]")
     if writer is not None:
         writer.close()
 

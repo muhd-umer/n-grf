@@ -8,6 +8,8 @@ from typing import Callable, Dict
 
 import numpy as np
 import torch
+from rich.console import Console
+from rich.logging import RichHandler
 
 
 def get_expon_lr_func(
@@ -51,25 +53,45 @@ def get_expon_lr_func(
     return helper
 
 
-def setup_logging(log_dir: Path) -> logging.Logger:
+def setup_logging(
+    log_dir: Path, use_rich: bool = False
+) -> tuple[logging.Logger, Console | None]:
     """Setup logging configuration."""
     log_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     log_file = log_dir / f"train_{timestamp}.log"
 
-    root_logger = logging.getLogger()
+    logger = logging.getLogger("TrainLogger")
+    logger.setLevel(logging.INFO)
 
-    if root_logger.hasHandlers():
-        root_logger.handlers.clear()
+    if logger.hasHandlers():
+        logger.handlers.clear()
 
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(message)s",
-        handlers=[logging.FileHandler(log_file), logging.StreamHandler()],
-    )
-    logger = logging.getLogger(__name__)
+    file_handler = logging.FileHandler(log_file)
+    file_formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
+    file_handler.setFormatter(file_formatter)
+    logger.addHandler(file_handler)
+
+    console = None
+    if use_rich:
+        console = Console(log_path=False, log_time=False)
+        console_handler = RichHandler(
+            console=console,
+            rich_tracebacks=True,
+            markup=True,
+            show_path=False,
+            show_level=False,
+        )
+        console_handler.setFormatter(logging.Formatter("%(message)s"))
+        logger.addHandler(console_handler)
+    else:
+        stream_handler = logging.StreamHandler()
+        stream_formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
+        stream_handler.setFormatter(stream_formatter)
+        logger.addHandler(stream_handler)
+
     logger.info(f"Logging initialized. Log file: {log_file}")
-    return logger
+    return logger, console
 
 
 def compute_grad_stats(
