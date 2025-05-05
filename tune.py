@@ -26,6 +26,7 @@ from utils.general_utils import set_random_seed
 from utils.loss import calculate_snr
 
 TUNING_ITERATIONS = 10_000
+CKPT_FREQ = 1000
 
 
 def tune_logging(
@@ -124,12 +125,13 @@ def objective(
     trial_cfg = base_cfg.copy()
     with open_dict(trial_cfg):
         trial_cfg.training.iterations = TUNING_ITERATIONS
+        trial_cfg.experiment.checkpoint_freq = CKPT_FREQ
         trial_cfg.experiment.tensorboard = False
         trial_cfg.experiment.log_grad_stats = False
 
         # initialization params
         trial_cfg.initialization.num_gaussians = trial.suggest_int(
-            "init.num_gaussians", 500, 32000
+            "init.num_gaussians", 100, 6000
         )
         trial_cfg.initialization.opacity_value = trial.suggest_float(
             "init.opacity_value", 0.08, 0.2
@@ -140,16 +142,16 @@ def objective(
 
         # model params
         trial_cfg.model.latent_dim = trial.suggest_categorical(
-            "model.latent_dim", [32, 64, 128]
+            "model.latent_dim", [16, 32, 64, 128]
         )
         trial_cfg.model.attribute_network.hidden_dim = trial.suggest_categorical(
-            "model.attr_net.hidden_dim", [64, 128, 256]
+            "model.attr_net.hidden_dim", [32, 64, 128, 256]
         )
         trial_cfg.model.attribute_network.num_layers = trial.suggest_int(
-            "model.attr_net.num_layers", 3, 8
+            "model.attr_net.num_layers", 3, 7
         )
         trial_cfg.model.attribute_network.pos_enc_freqs = trial.suggest_int(
-            "model.attr_net.pos_enc_freqs", 8, 128
+            "model.attr_net.pos_enc_freqs", 16, 96
         )
         trial_cfg.model.contribution_decoder.hidden_dim = trial.suggest_categorical(
             "model.decoder.hidden_dim", [32, 64, 128]
@@ -160,24 +162,24 @@ def objective(
 
         # training params
         trial_cfg.training.batch_size = trial.suggest_categorical(
-            "train.batch_size", [8, 16, 32, 64, 128]
+            "train.batch_size", [8, 16, 32, 64]
         )
         trial_cfg.training.stop_xyz_iter_ratio = trial.suggest_float(
-            "train.stop_xyz_ratio", 0.2, 0.8
+            "train.stop_xyz_ratio", 0.4, 0.8
         )
         trial_cfg.training.rx_noise_std = trial.suggest_float(
-            "train.rx_noise_std", 0.0, 0.05
+            "train.rx_noise_std", 0.0, 0.06
         )
         trial_cfg.training.lambda_activation_l1 = trial.suggest_float(
-            "train.lambda_l1", 0.001, 0.1, log=True
+            "train.lambda_l1", 0.025, 0.1, log=True
         )
 
         # optimizer
         trial_cfg.training.optimizer.eps = trial.suggest_float(
-            "train.opt.eps", 1e-8, 1e-4, log=True
+            "train.opt.eps", 1e-8, 1e-6, log=True
         )
         trial_cfg.training.optimizer.weight_decay = trial.suggest_float(
-            "train.opt.weight_decay", 1e-8, 1e-4, log=True
+            "train.opt.weight_decay", 1e-8, 1e-6, log=True
         )
 
         # Learning rates
@@ -185,10 +187,10 @@ def objective(
             "train.lr.pos_init", 5e-4, 5e-3
         )
         trial_cfg.training.learning_rate.position_final = trial.suggest_float(
-            "train.lr.pos_final", 5e-7, 5e-6
+            "train.lr.pos_final", 5e-6, 5e-5
         )
         trial_cfg.training.learning_rate.position_delay_mult = trial.suggest_float(
-            "train.lr.pos_delay", 0.01, 0.05
+            "train.lr.pos_delay", 0.008, 0.015
         )
         trial_cfg.training.learning_rate.rotation = trial.suggest_float(
             "train.lr.rotation", 0.0005, 0.005
