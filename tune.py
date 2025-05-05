@@ -5,7 +5,7 @@ import logging
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Tuple
 
 import numpy as np
 import optuna
@@ -13,6 +13,9 @@ import torch
 import torch.nn as nn
 from omegaconf import DictConfig, OmegaConf, open_dict
 from rich.console import Console
+from rich.logging import RichHandler
+from rich.panel import Panel
+from rich.syntax import Syntax
 from rich.table import Table
 from torch.utils.data import DataLoader
 
@@ -21,9 +24,45 @@ from models.gaussian_model import GaussianChannelFieldModel
 from render import render_cmr
 from utils.general_utils import set_random_seed
 from utils.loss import calculate_snr
-from utils.train_utils import setup_logging
 
 TUNING_ITERATIONS = 10_000
+
+
+def tune_logging(
+    log_dir: Path, use_rich: bool = True
+) -> Tuple[logging.Logger, Console | None]:
+    """Sets up logging with file handler and optional RichHandler."""
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_file = log_dir / "trial.log"
+
+    logger = logging.getLogger(f"TrialLogger_{log_dir.name}")
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+
+    if logger.hasHandlers():
+        logger.handlers.clear()
+
+    file_handler = logging.FileHandler(log_file)
+    file_formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
+    file_handler.setFormatter(file_formatter)
+    logger.addHandler(file_handler)
+
+    console = None
+    if use_rich:
+        console = Console(log_path=False, force_terminal=True)
+        console_handler = RichHandler(
+            console=console, rich_tracebacks=True, markup=True, show_path=False
+        )
+        console_handler.setFormatter(logging.Formatter("%(message)s"))
+        logger.addHandler(console_handler)
+    else:
+        stream_handler = logging.StreamHandler()
+        stream_formatter = logging.Formatter("[%(levelname)s] %(message)s")
+        stream_handler.setFormatter(stream_formatter)
+        logger.addHandler(stream_handler)
+
+    logger.info(f"Logging initialized. Log file: {log_file}")
+    return logger, console
 
 
 def evaluate_trial(
@@ -74,7 +113,12 @@ def evaluate_trial(
     return {"val_mse_loss": avg_loss, "val_snr_db": avg_snr}
 
 
-def objective(trial: optuna.trial.Trial, base_cfg: DictConfig, data_path: str) -> float:
+def objective(
+    trial: optuna.trial.Trial,
+    base_cfg: DictConfig,
+    data_path: str,
+    console: Console,
+) -> float:
     """Optuna objective function for hyperparameter tuning."""
 
     trial_cfg = base_cfg.copy()
@@ -170,17 +214,29 @@ def objective(trial: optuna.trial.Trial, base_cfg: DictConfig, data_path: str) -
     checkpoints_dir = trial_log_dir / "checkpoints"
     checkpoints_dir.mkdir(exist_ok=True)
 
+    logger, _ = tune_logging(trial_log_dir, use_rich=False)
+
+    console.rule(f"[bold blue]Starting Optuna Trial {trial_num}[/bold blue]")
+    console.print(f"Log directory: {trial_log_dir}")
+
     config_save_path = trial_log_dir / "trial_config.yaml"
     with open(config_save_path, "w") as f:
         OmegaConf.save(trial_cfg, f)
 
-    logger, _ = setup_logging(trial_log_dir, use_rich=False)
-    logger.info(f"Starting Optuna trial {trial_num} for Study '{study_name}'")
-    logger.info(f"Log directory: {trial_log_dir}")
-    logger.info("Hyperparameters for this trial:")
-
+    logger.info(f"Trial {trial_num} Hyperparameters:")
+    param_table = Table(
+        title="Hyperparameters", show_header=True, header_style="bold magenta"
+    )
+    param_table.add_column("Parameter", style="dim", width=30)
+    param_table.add_column("Value")
     for key, value in trial.params.items():
         logger.info(f"  {key}: {value}")
+        param_table.add_row(key, str(value))
+    console.print(param_table)
+
+    config_str = OmegaConf.to_yaml(trial_cfg)
+    syntax = Syntax(config_str, "yaml", background_color="default", line_numbers=True)
+    console.print(Panel(syntax, title="Trial Configuration", expand=False))
 
     set_random_seed(base_cfg.experiment.seed + trial_num)
     device = torch.device(
@@ -188,6 +244,8 @@ def objective(trial: optuna.trial.Trial, base_cfg: DictConfig, data_path: str) -
         if torch.cuda.is_available() and base_cfg.experiment.device == "cuda"
         else "cpu"
     )
+    console.print(f"Using device: {device}")
+    console.print("Loading data...")
     logger.info(f"Using device: {device}")
     logger.info("Loading data...")
 
@@ -199,29 +257,34 @@ def objective(trial: optuna.trial.Trial, base_cfg: DictConfig, data_path: str) -
         env_dims = metadata.get("env_dims")
         point_cloud = metadata.get("point_cloud")
 
-        logger.info(f"Dataset loaded: Nt={nt}, Nr={nr}")
-        logger.info(
-            f"Train batches: {len(train_loader)}, Val batches: {len(val_loader)}"
-        )
-        if point_cloud is not None:
-            logger.info(f"Point cloud shape: {point_cloud.shape}")
-            point_cloud = point_cloud.to(device)
         if env_dims is not None:
             env_dims = env_dims.to(device)
 
+        console.print(f"[green]Dataset loaded:[/green] Nt={nt}, Nr={nr}")
+        console.print(
+            f"Train batches: {len(train_loader)}, Val batches: {len(val_loader)}"
+        )
         if len(train_loader) == 0:
             logger.error("Training dataloader is empty! Aborting trial.")
+            console.print(
+                "[bold red]Training dataloader is empty! Aborting trial.[/bold red]"
+            )
             return -float("inf")
         if len(val_loader) == 0:
             logger.error(
                 "Validation dataloader is empty! Cannot optimize. Aborting trial."
             )
+            console.print(
+                "[bold red]Validation dataloader is empty! Cannot optimize. Aborting trial.[/bold red]"
+            )
             return -float("inf")
 
     except Exception as e:
         logger.exception(f"Failed to load data: {e}. Aborting trial.")
+        console.print(f"[bold red]Failed to load data: {e}. Aborting trial.[/bold red]")
         return -float("inf")
 
+    console.print("Initializing model...")
     logger.info("Initializing model...")
     try:
         model = GaussianChannelFieldModel(
@@ -239,20 +302,27 @@ def objective(trial: optuna.trial.Trial, base_cfg: DictConfig, data_path: str) -
             device=device,
         )
 
+        logger.info(f"Model base initialized.")
+
         init_pc_arg = None
         init_method = trial_cfg.initialization.method
         if init_method == "point_cloud":
             if point_cloud is not None:
                 logger.info("Using point cloud for Gaussian initialization")
+                console.print("Using point cloud for Gaussian initialization")
                 init_pc_arg = point_cloud
             else:
                 logger.warning(
                     "Point cloud init requested but no data found. Using random."
                 )
+                console.print(
+                    "[yellow]Point cloud init requested but no data found. Using random.[/yellow]"
+                )
                 init_method = "random"
 
         if init_method == "random":
             logger.info("Using random initialization for Gaussians")
+            console.print("Using random initialization for Gaussians")
             model.init_gaussians(
                 env_dims=env_dims if env_dims is not None else None,
                 point_cloud=None,
@@ -268,9 +338,15 @@ def objective(trial: optuna.trial.Trial, base_cfg: DictConfig, data_path: str) -
         model.training_setup(trial_cfg)
         model = model.to(device)
         logger.info(f"Model initialized with {model.get_xyz.shape[0]} Gaussians")
+        console.print(
+            f"[green]Model initialized with {model.get_xyz.shape[0]:,} Gaussians[/green]"
+        )
 
     except Exception as e:
         logger.exception(f"Failed to initialize model: {e}. Aborting trial.")
+        console.print(
+            f"[bold red]Failed to initialize model: {e}. Aborting trial.[/bold red]"
+        )
         return -float("inf")
 
     criterion = nn.MSELoss().to(device)
@@ -278,6 +354,9 @@ def objective(trial: optuna.trial.Trial, base_cfg: DictConfig, data_path: str) -
     best_trial_val_snr = -float("inf")
     train_iter = iter(train_loader)
 
+    console.print(
+        f"Starting training loop for {trial_cfg.training.iterations} iterations..."
+    )
     logger.info(
         f"Starting training loop for {trial_cfg.training.iterations} iterations..."
     )
@@ -349,10 +428,12 @@ def objective(trial: optuna.trial.Trial, base_cfg: DictConfig, data_path: str) -
                     mse_loss, cmr_gt_batch, eps=trial_cfg.training.snr_eps
                 ).item()
                 iter_time = time.time() - iter_start_time
-                logger.info(
+                log_msg = (
                     f"[{iteration}/{trial_cfg.training.iterations}] "
                     f"Loss={current_loss:.4e} | SNR={snr:.2f} dB | Time={iter_time:.3f}s"
                 )
+                console.print(log_msg)
+                logger.info(log_msg)
 
         if (
             iteration % trial_cfg.experiment.eval_freq == 0 and iteration > 0
@@ -370,14 +451,18 @@ def objective(trial: optuna.trial.Trial, base_cfg: DictConfig, data_path: str) -
             )
             eval_time = time.time() - eval_start_time
             current_val_snr = eval_metrics["val_snr_db"]
-            logger.info(
+            val_log_msg = (
                 f"Validation @ {iteration} | Loss={eval_metrics['val_mse_loss']:.4e} | "
                 f"SNR={current_val_snr:.2f} dB | Time={eval_time:.2f}s"
             )
+            console.print(f"[yellow]{val_log_msg}[/yellow]")
+            logger.info(val_log_msg)
 
             if not np.isnan(current_val_snr) and not np.isinf(current_val_snr):
                 best_trial_val_snr = max(best_trial_val_snr, current_val_snr)
-                logger.info(f"Trial best SNR: {best_trial_val_snr:.2f} dB")
+                console.print(
+                    f"  -> [Trial] Best SNR so far: [bold green]{best_trial_val_snr:.2f} dB[/bold green]"
+                )
 
                 trial.report(best_trial_val_snr, iteration)
 
@@ -387,9 +472,12 @@ def objective(trial: optuna.trial.Trial, base_cfg: DictConfig, data_path: str) -
             checkpoint_path = checkpoints_dir / f"checkpoint_{iteration:07d}.pt"
 
             model.save(checkpoint_path, iteration=iteration, cfg=trial_cfg)
-            logger.info(f"Checkpoint saved to {checkpoint_path}")
+            logger.info(f"Checkpoint saved: {checkpoint_path}")
 
-    logger.info(f"Trial {trial_num} finished")
+    console.print(
+        f"Trial {trial_num} finished. Best validation SNR: [bold green]{best_trial_val_snr:.4f} dB[/bold green]"
+    )
+    logger.info(f"Trial {trial_num} finished.")
     logger.info(f"Best validation SNR achieved: {best_trial_val_snr:.4f} dB")
 
     del model, train_loader, val_loader, metadata, criterion
@@ -459,7 +547,7 @@ if __name__ == "__main__":
     db_path = f"sqlite:///{tuning_root_dir}/optuna_study.db"
 
     console = Console()
-    console.rule(
+    console.print(
         f"[bold blue]Starting Optuna Tuning Study: {args.study_name}[/bold blue]"
     )
     console.print(f"Database: {db_path}")
@@ -485,7 +573,10 @@ if __name__ == "__main__":
         remaining_trials = args.num_trials - len(study.trials)
         console.print(f"Running {remaining_trials} new trials...")
 
-        objective_wrapper = lambda trial: objective(trial, base_cfg, args.data_path)
+        objective_wrapper = lambda trial: objective(
+            trial, base_cfg, args.data_path, console
+        )
+
         try:
             study.optimize(
                 objective_wrapper,
@@ -497,7 +588,6 @@ if __name__ == "__main__":
             console.print(
                 f"[bold red]An error occurred during optimization: {e}[/bold red]"
             )
-            logging.exception("Optimization terminated due to error:")
 
     console.rule("[bold blue]Tuning finished[/bold blue]")
     if study.best_trial:
