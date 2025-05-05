@@ -470,7 +470,9 @@ def train(cfg: DictConfig):
                                 "grads/max", grad_stats["max_grad"], iteration
                             )
 
-                if iteration % cfg.experiment.eval_freq == 0 and iteration > 0:
+                if (
+                    iteration % cfg.experiment.eval_freq == 0 and iteration > 0
+                ) or iteration == cfg.training.iterations - 1:
                     if len(val_loader) > 0:
                         progress.update(task, description="[yellow]Evaluating...")
                         eval_start_time = time.time()
