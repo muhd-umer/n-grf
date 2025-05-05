@@ -289,7 +289,7 @@ def train(cfg: DictConfig):
     logger.info("Using MSE Loss for training")
 
     validation_results: List[Dict] = []
-    max_val_disp = 5
+    max_val_disp = 4
 
     progress = Progress(
         SpinnerColumn(),
