@@ -183,36 +183,36 @@ def disp_samples(
         )
         console.print(panel)
 
-        chan_gt_norm = sample["chan_gt"]
-        chan_pred_norm = sample["chan_pred"]
+        cmr_gt_norm = sample["cmr_gt"]
+        cmr_pred_norm = sample["cmr_pred"]
 
         if unnormalize:
             scale = max_mag - min_mag
             if scale < norm_eps:
-                chan_gt_unnorm = torch.full_like(chan_gt_norm, (max_mag + min_mag) / 2)
-                chan_pred_unnorm = torch.full_like(
-                    chan_pred_norm, (max_mag + min_mag) / 2
+                cmr_gt_unnorm = torch.full_like(cmr_gt_norm, (max_mag + min_mag) / 2)
+                cmr_pred_unnorm = torch.full_like(
+                    cmr_pred_norm, (max_mag + min_mag) / 2
                 )
                 unnorm_label = "(Constant)"
             else:
-                chan_gt_unnorm = chan_gt_norm * scale + min_mag
-                chan_pred_unnorm = chan_pred_norm * scale + min_mag
+                cmr_gt_unnorm = cmr_gt_norm * scale + min_mag
+                cmr_pred_unnorm = cmr_pred_norm * scale + min_mag
                 unnorm_label = "(Un-normalized)"
 
-            gt_title = Text(f"True Response {unnorm_label}", style="cyan")
-            pred_title = Text(f"Predicted Response {unnorm_label}", style="cyan")
+            gt_title = Text(f"True CMR {unnorm_label}", style="cyan")
+            pred_title = Text(f"Predicted CMR {unnorm_label}", style="cyan")
             console.print(gt_title)
-            console.print(format_tensor(chan_gt_unnorm))
+            console.print(format_tensor(cmr_gt_unnorm))
             console.print(pred_title)
-            console.print(format_tensor(chan_pred_unnorm))
+            console.print(format_tensor(cmr_pred_unnorm))
 
         else:
-            gt_title = Text("True Response (Normalized)", style="cyan")
-            pred_title = Text("Predicted Response (Normalized)", style="cyan")
+            gt_title = Text("True CMR (Normalized)", style="cyan")
+            pred_title = Text("Predicted CMR (Normalized)", style="cyan")
             console.print(gt_title)
-            console.print(format_tensor(chan_gt_norm))
+            console.print(format_tensor(cmr_gt_norm))
             console.print(pred_title)
-            console.print(format_tensor(chan_pred_norm))
+            console.print(format_tensor(cmr_pred_norm))
 
         console.print("")
 
@@ -321,10 +321,10 @@ def evaluate(cfg: DictConfig):
             for _, batch in enumerate(val_loader):
                 rx_pos_batch = batch["rx_position"].to(device)
 
-                chan_gt_batch = batch["channel"].to(device)
+                cmr_gt_batch = batch["cmr"].to(device)
                 current_batch_size = rx_pos_batch.shape[0]
 
-                chan_pred_batch = render(
+                cmr_pred_batch = render(
                     rx_positions=rx_pos_batch,
                     model=model,
                     tx_position=tx_position,
@@ -334,14 +334,14 @@ def evaluate(cfg: DictConfig):
                 )
 
                 for j in range(current_batch_size):
-                    chan_pred = chan_pred_batch[j].unsqueeze(0)
-                    chan_gt = chan_gt_batch[j].unsqueeze(0)
+                    cmr_pred = cmr_pred_batch[j].unsqueeze(0)
+                    cmr_gt = cmr_gt_batch[j].unsqueeze(0)
 
-                    loss = criterion(chan_pred, chan_gt).item()
+                    loss = criterion(cmr_pred, cmr_gt).item()
 
                     snr_tensor = calculate_snr(
                         torch.tensor(loss, device=device),
-                        chan_gt,
+                        cmr_gt,
                         eps=snr_eps,
                     )
                     snr = snr_tensor.item()
@@ -355,8 +355,8 @@ def evaluate(cfg: DictConfig):
                             {
                                 "index": sample_idx_counter,
                                 "rx_pos": rx_pos_batch[j].cpu().numpy(),
-                                "chan_gt": chan_gt_batch[j].cpu(),
-                                "chan_pred": chan_pred_batch[j].cpu(),
+                                "cmr_gt": cmr_gt_batch[j].cpu(),
+                                "cmr_pred": cmr_pred_batch[j].cpu(),
                                 "loss": loss,
                                 "snr": snr,
                                 "min_mag": min_mag,

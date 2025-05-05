@@ -14,7 +14,7 @@ def collate_batch(batch: list) -> Dict[str, Any]:
     """Collate function for wireless dataset batches.
 
     Args:
-        batch (list): List of dataset items ({'rx_position': tensor, 'channel':
+        batch (list): List of dataset items ({'rx_position': tensor, 'cmr':
         tensor, 'index': int})
 
     Returns:

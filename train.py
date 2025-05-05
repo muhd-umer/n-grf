@@ -88,10 +88,10 @@ def evaluate(
         for batch in val_loader:
             rx_pos_batch = batch["rx_position"].to(device)
 
-            chan_gt_batch = batch["channel"].to(device)
+            cmr_gt_batch = batch["cmr"].to(device)
             batch_size = rx_pos_batch.shape[0]
 
-            chan_pred_batch = render(
+            cmr_pred_batch = render(
                 rx_positions=rx_pos_batch,
                 model=model,
                 tx_position=tx_position,
@@ -100,8 +100,8 @@ def evaluate(
                 eps=snr_eps,
             )
 
-            loss = criterion(chan_pred_batch, chan_gt_batch)
-            snr = calculate_snr(loss, chan_gt_batch, eps=snr_eps)
+            loss = criterion(cmr_pred_batch, cmr_gt_batch)
+            snr = calculate_snr(loss, cmr_gt_batch, eps=snr_eps)
             total_loss += loss.item() * batch_size
 
             if not torch.isinf(snr) and not torch.isnan(snr):
@@ -334,13 +334,13 @@ def train(cfg: DictConfig):
                 batch = next(train_iter)
 
             rx_pos_batch = batch["rx_position"].to(device)
-            chan_gt_batch = batch["channel"].to(device)
+            cmr_gt_batch = batch["cmr"].to(device)
 
             if cfg.training.rx_noise_std > 0:
                 noise = torch.randn_like(rx_pos_batch) * cfg.training.rx_noise_std
                 rx_pos_batch = rx_pos_batch + noise
 
-            chan_pred_batch = render(
+            cmr_pred_batch = render(
                 rx_positions=rx_pos_batch,
                 model=model,
                 tx_position=tx_position,
@@ -349,7 +349,7 @@ def train(cfg: DictConfig):
                 eps=cfg.training.snr_eps,
             )
 
-            mse_loss = criterion(chan_pred_batch, chan_gt_batch)
+            mse_loss = criterion(cmr_pred_batch, cmr_gt_batch)
             total_loss = mse_loss
             l1_activation_loss = torch.tensor(0.0, device=device)
 
@@ -398,7 +398,7 @@ def train(cfg: DictConfig):
                     ema_loss = 0.95 * ema_loss + 0.05 * current_loss
 
                 snr = calculate_snr(
-                    mse_loss, chan_gt_batch, eps=cfg.training.snr_eps
+                    mse_loss, cmr_gt_batch, eps=cfg.training.snr_eps
                 ).item()
                 num_gaussians = model.get_xyz.shape[0]
 

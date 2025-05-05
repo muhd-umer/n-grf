@@ -93,13 +93,13 @@ def render(
     )
     spatial_weights = spatial_weights_flt.view(batch_size, num_gaussians)
 
-    chan_contrib_flt = model.contribution_decoder(gauss_latents)
-    chan_contrib = chan_contrib_flt.view(num_gaussians, nt, nr)
-    chan_contrib_expanded = chan_contrib.unsqueeze(0)
+    cmr_contrib_flt = model.contribution_decoder(gauss_latents)
+    cmr_contrib = cmr_contrib_flt.view(num_gaussians, nt, nr)
+    cmr_contrib_expanded = cmr_contrib.unsqueeze(0)
 
     spatial_weights_expanded = spatial_weights.unsqueeze(-1).unsqueeze(-1)
-    weighted_contributions = spatial_weights_expanded * chan_contrib_expanded
+    weighted_cmr_contributions = spatial_weights_expanded * cmr_contrib_expanded
 
-    chan_pred = torch.sum(weighted_contributions, dim=1)
+    cmr_pred = torch.sum(weighted_cmr_contributions, dim=1)
 
-    return chan_pred.float()
+    return cmr_pred.float()

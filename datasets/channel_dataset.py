@@ -11,10 +11,10 @@ from torch.utils.data import Dataset, random_split
 
 
 class ChannelDataset(Dataset):
-    """A dataset class for MIMO/SISO channel magnitude data.
+    """A dataset class for MIMO/SISO channel data.
 
     Handles loading and processing of wireless channel data from .mat files,
-    extracting channel magnitude, and applying min-max normalization across
+    extracting channel magnitude (CMR), and applying min-max normalization across
     the entire dataset. Point cloud and env_dims are loaded if present.
 
     Args:
@@ -142,93 +142,110 @@ class ChannelDataset(Dataset):
             )
 
         if "channel" in data and "H" in data["channel"]:
-            H_raw = data["channel"]["H"]
-            if isinstance(H_raw, dict) and "real" in H_raw and "imag" in H_raw:
-                H_real = np.array(H_raw["real"])
-                H_imag = np.array(H_raw["imag"])
-                if H_real.dtype.kind not in "iufc" or H_imag.dtype.kind not in "iufc":
+            channel_raw_data = data["channel"]["H"]
+            if (
+                isinstance(channel_raw_data, dict)
+                and "real" in channel_raw_data
+                and "imag" in channel_raw_data
+            ):
+                channel_real = np.array(channel_raw_data["real"])
+                channel_imag = np.array(channel_raw_data["imag"])
+                if (
+                    channel_real.dtype.kind not in "iufc"
+                    or channel_imag.dtype.kind not in "iufc"
+                ):
                     raise TypeError("Real/Imag parts of H are not numeric.")
 
-                H_complex = H_real.astype(np.float32) + 1j * H_imag.astype(np.float32)
-                H_tensor = torch.from_numpy(H_complex).to(torch.complex64)
-            elif isinstance(H_raw, np.ndarray) and np.iscomplexobj(H_raw):
-                H_tensor = torch.from_numpy(H_raw).to(torch.complex64)
-            elif isinstance(H_raw, np.ndarray) and H_raw.dtype.kind in "iuf":
+                channel_complex = channel_real.astype(
+                    np.float32
+                ) + 1j * channel_imag.astype(np.float32)
+                channel_tensor = torch.from_numpy(channel_complex).to(torch.complex64)
+            elif isinstance(channel_raw_data, np.ndarray) and np.iscomplexobj(
+                channel_raw_data
+            ):
+                channel_tensor = torch.from_numpy(channel_raw_data).to(torch.complex64)
+            elif (
+                isinstance(channel_raw_data, np.ndarray)
+                and channel_raw_data.dtype.kind in "iuf"
+            ):
                 warnings.warn(
                     "Warning: Loaded H is real-valued. Assuming it represents magnitude."
                 )
-                H_tensor = torch.from_numpy(H_raw).float()
+                channel_tensor = torch.from_numpy(channel_raw_data).float()
             else:
                 raise TypeError(
-                    f"Unsupported format for H: {type(H_raw)}. Expected complex numpy array, real numpy array, or dict with 'real'/'imag'."
+                    f"Unsupported format for H: {type(channel_raw_data)}. Expected complex numpy array, real numpy array, or dict with 'real'/'imag'."
                 )
 
-            print(f"Raw H tensor shape from MAT: {H_tensor.shape}")
+            print(f"Raw channel tensor shape from MAT: {channel_tensor.shape}")
 
             expected_leading_dim = self.num_users
             target_shape = (expected_leading_dim, self.num_tx_ant, self.num_rx_ant)
 
-            if H_tensor.dim() == 4:
-                num_sc = H_tensor.shape[-1]
+            if channel_tensor.dim() == 4:
+                num_sc = channel_tensor.shape[-1]
 
                 sc_idx = num_sc // 2
                 print(
                     f"Multiple subcarriers ({num_sc}) detected. Selecting middle subcarrier index {sc_idx}."
                 )
-                H_selected = H_tensor[:expected_leading_dim, :, :, sc_idx]
+                channel_selected = channel_tensor[:expected_leading_dim, :, :, sc_idx]
 
-            elif H_tensor.dim() == 3:
-                H_selected = H_tensor[:expected_leading_dim, :, :]
+            elif channel_tensor.dim() == 3:
+                channel_selected = channel_tensor[:expected_leading_dim, :, :]
 
-            elif H_tensor.dim() == 1:
+            elif channel_tensor.dim() == 1:
                 if self.is_siso:
-                    H_selected = (
-                        H_tensor[:expected_leading_dim].unsqueeze(-1).unsqueeze(-1)
+                    channel_selected = (
+                        channel_tensor[:expected_leading_dim]
+                        .unsqueeze(-1)
+                        .unsqueeze(-1)
                     )
                 else:
                     raise ValueError(
-                        f"H tensor has dim 1, but config is MIMO (Nt={self.num_tx_ant}, Nr={self.num_rx_ant})."
+                        f"Channel tensor has dim 1, but config is MIMO (Nt={self.num_tx_ant}, Nr={self.num_rx_ant})."
                     )
 
-            elif H_tensor.dim() == 2:
-                if self.is_siso and H_tensor.shape[1] == 1:
-                    H_selected = H_tensor[:expected_leading_dim, :].unsqueeze(-1)
+            elif channel_tensor.dim() == 2:
+                if self.is_siso and channel_tensor.shape[1] == 1:
+                    channel_selected = channel_tensor[
+                        :expected_leading_dim, :
+                    ].unsqueeze(-1)
                 elif (
-                    H_tensor.shape[0] == expected_leading_dim
-                    and H_tensor.shape[1] == self.num_tx_ant * self.num_rx_ant
+                    channel_tensor.shape[0] == expected_leading_dim
+                    and channel_tensor.shape[1] == self.num_tx_ant * self.num_rx_ant
                 ):
                     warnings.warn(
-                        f"Warning: H tensor has shape {H_tensor.shape}. Assuming flattened MIMO and reshaping."
+                        f"Warning: Channel tensor has shape {channel_tensor.shape}. Assuming flattened MIMO and reshaping."
                     )
-                    H_selected = H_tensor[:expected_leading_dim, :].view(
+                    channel_selected = channel_tensor[:expected_leading_dim, :].view(
                         expected_leading_dim, self.num_tx_ant, self.num_rx_ant
                     )
                 else:
                     raise ValueError(
-                        f"Ambiguous H tensor shape {H_tensor.shape} for MIMO/SISO config."
+                        f"Ambiguous channel tensor shape {channel_tensor.shape} for MIMO/SISO config."
                     )
             else:
                 raise ValueError(
-                    f"Unexpected H tensor dimensions: {H_tensor.dim()}. Expected 1, 2, 3, or 4."
+                    f"Unexpected channel tensor dimensions: {channel_tensor.dim()}. Expected 1, 2, 3, or 4."
                 )
 
-            if H_selected.shape != target_shape:
+            if channel_selected.shape != target_shape:
                 raise ValueError(
-                    f"Processed H tensor shape {H_selected.shape} does not match target shape {target_shape}."
+                    f"Processed channel tensor shape {channel_selected.shape} does not match target shape {target_shape}."
                 )
 
-            print(f"Processed H tensor shape: {H_selected.shape}")
+            print(f"Processed channel tensor shape: {channel_selected.shape}")
 
-            if torch.is_complex(H_selected):
-                self.channel_raw = torch.abs(H_selected).float()
+            if torch.is_complex(channel_selected):
+                self.cmr_raw = torch.abs(channel_selected).float()
             else:
+                self.cmr_raw = channel_selected.float()
 
-                self.channel_raw = H_selected.float()
+            print(f"Raw magnitude (CMR) tensor shape: {self.cmr_raw.shape}")
 
-            print(f"Raw magnitude tensor shape: {self.channel_raw.shape}")
-
-            self.min_magnitude = torch.min(self.channel_raw)
-            self.max_magnitude = torch.max(self.channel_raw)
+            self.min_magnitude = torch.min(self.cmr_raw)
+            self.max_magnitude = torch.max(self.cmr_raw)
             print(
                 f"Magnitude range (min/max): {self.min_magnitude:.4e} / {self.max_magnitude:.4e}"
             )
@@ -238,17 +255,19 @@ class ChannelDataset(Dataset):
                 warnings.warn(
                     f"Warning: Magnitude range is very small ({magnitude_range:.2e}). Setting normalized magnitude to 0.5."
                 )
-                self.channel_normalized = torch.full_like(self.channel_raw, 0.5)
+                self.cmr_normalized = torch.full_like(self.cmr_raw, 0.5)
             else:
-                self.channel_normalized = (self.channel_raw - self.min_magnitude) / (
+                self.cmr_normalized = (self.cmr_raw - self.min_magnitude) / (
                     magnitude_range + self.norm_eps
                 )
 
-                self.channel_normalized = torch.clamp(self.channel_normalized, 0.0, 1.0)
+                self.cmr_normalized = torch.clamp(self.cmr_normalized, 0.0, 1.0)
 
-            print(f"Normalized magnitude tensor shape: {self.channel_normalized.shape}")
             print(
-                f"Normalized magnitude range (min/max): {torch.min(self.channel_normalized):.4f} / {torch.max(self.channel_normalized):.4f}"
+                f"Normalized magnitude (CMR) tensor shape: {self.cmr_normalized.shape}"
+            )
+            print(
+                f"Normalized magnitude range (min/max): {torch.min(self.cmr_normalized):.4f} / {torch.max(self.cmr_normalized):.4f}"
             )
 
         else:
@@ -322,10 +341,10 @@ class ChannelDataset(Dataset):
         return len(self.active_indices)
 
     def __getitem__(self, idx):
-        """Retrieves a single sample (normalized magnitude) for the active split."""
+        """Retrieves a single sample (normalized CMR) for the active split."""
         original_idx = self.active_indices[idx]
         return {
             "rx_position": self.rx_positions[original_idx],
-            "channel": self.channel_normalized[original_idx],
+            "cmr": self.cmr_normalized[original_idx],
             "index": original_idx,
         }
