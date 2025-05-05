@@ -242,7 +242,7 @@ class ChannelDataset(Dataset):
             else:
                 self.cmr_raw = channel_selected.float()
 
-            print(f"Raw magnitude (CMR) tensor shape: {self.cmr_raw.shape}")
+            print(f"Raw magnitude tensor shape: {self.cmr_raw.shape}")
 
             self.min_magnitude = torch.min(self.cmr_raw)
             self.max_magnitude = torch.max(self.cmr_raw)
@@ -263,9 +263,7 @@ class ChannelDataset(Dataset):
 
                 self.cmr_normalized = torch.clamp(self.cmr_normalized, 0.0, 1.0)
 
-            print(
-                f"Normalized magnitude (CMR) tensor shape: {self.cmr_normalized.shape}"
-            )
+            print(f"Normalized magnitude tensor shape: {self.cmr_normalized.shape}")
             print(
                 f"Normalized magnitude range (min/max): {torch.min(self.cmr_normalized):.4f} / {torch.max(self.cmr_normalized):.4f}"
             )
