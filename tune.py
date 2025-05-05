@@ -1,0 +1,522 @@
+# tune.py
+
+import argparse
+import logging
+import time
+from datetime import datetime
+from pathlib import Path
+from typing import Dict
+
+import numpy as np
+import optuna
+import torch
+import torch.nn as nn
+from omegaconf import DictConfig, OmegaConf, open_dict
+from rich.console import Console
+from rich.table import Table
+from torch.utils.data import DataLoader
+
+from datasets.dataloader import get_dataloaders
+from models.gaussian_model import GaussianChannelFieldModel
+from render import render_cmr
+from utils.general_utils import set_random_seed
+from utils.loss import calculate_snr
+from utils.train_utils import setup_logging
+
+TUNING_ITERATIONS = 10_000
+
+
+def evaluate_trial(
+    model: GaussianChannelFieldModel,
+    val_loader: DataLoader,
+    criterion: nn.Module,
+    device: torch.device,
+    tx_position: torch.Tensor,
+    nt: int,
+    nr: int,
+    cfg: DictConfig,
+) -> Dict[str, float]:
+    """Evaluates the model on the validation set for a tuning trial."""
+    model.eval()
+    total_loss = 0.0
+    total_snr = 0.0
+    count = 0
+
+    snr_eps = cfg.training.snr_eps
+
+    with torch.no_grad():
+        for batch in val_loader:
+            rx_pos_batch = batch["rx_position"].to(device)
+            cmr_gt_batch = batch["cmr"].to(device)
+            batch_size = rx_pos_batch.shape[0]
+
+            cmr_pred_batch = render_cmr(
+                rx_positions=rx_pos_batch,
+                model=model,
+                tx_position=tx_position,
+                nt=nt,
+                nr=nr,
+                eps=snr_eps,
+            )
+
+            loss = criterion(cmr_pred_batch, cmr_gt_batch)
+            snr = calculate_snr(loss, cmr_gt_batch, eps=snr_eps)
+            total_loss += loss.item() * batch_size
+
+            if not torch.isinf(snr) and not torch.isnan(snr):
+                total_snr += snr.item() * batch_size
+
+            count += batch_size
+
+    avg_loss = total_loss / count if count > 0 else 0.0
+    avg_snr = total_snr / count if count > 0 else float("-inf")
+
+    return {"val_mse_loss": avg_loss, "val_snr_db": avg_snr}
+
+
+def objective(trial: optuna.trial.Trial, base_cfg: DictConfig, data_path: str) -> float:
+    """Optuna objective function for hyperparameter tuning."""
+
+    trial_cfg = base_cfg.copy()
+    with open_dict(trial_cfg):
+        trial_cfg.training.iterations = TUNING_ITERATIONS
+        trial_cfg.experiment.tensorboard = False
+        trial_cfg.experiment.log_grad_stats = False
+
+        # initialization params
+        trial_cfg.initialization.num_gaussians = trial.suggest_int(
+            "init.num_gaussians", 500, 32000
+        )
+        trial_cfg.initialization.opacity_value = trial.suggest_float(
+            "init.opacity_value", 0.08, 0.2
+        )
+        trial_cfg.initialization.scale_value = trial.suggest_float(
+            "init.scale_value", 0.01, 0.04
+        )
+
+        # model params
+        trial_cfg.model.latent_dim = trial.suggest_categorical(
+            "model.latent_dim", [32, 64, 128]
+        )
+        trial_cfg.model.attribute_network.hidden_dim = trial.suggest_categorical(
+            "model.attr_net.hidden_dim", [64, 128, 256]
+        )
+        trial_cfg.model.attribute_network.num_layers = trial.suggest_int(
+            "model.attr_net.num_layers", 3, 8
+        )
+        trial_cfg.model.attribute_network.pos_enc_freqs = trial.suggest_int(
+            "model.attr_net.pos_enc_freqs", 8, 128
+        )
+        trial_cfg.model.contribution_decoder.hidden_dim = trial.suggest_categorical(
+            "model.decoder.hidden_dim", [32, 64, 128]
+        )
+        trial_cfg.model.contribution_decoder.num_layers = trial.suggest_categorical(
+            "model.decoder.num_layers", [2, 3, 4]
+        )
+
+        # training params
+        trial_cfg.training.batch_size = trial.suggest_categorical(
+            "train.batch_size", [8, 16, 32, 64, 128]
+        )
+        trial_cfg.training.stop_xyz_iter_ratio = trial.suggest_float(
+            "train.stop_xyz_ratio", 0.2, 0.8
+        )
+        trial_cfg.training.rx_noise_std = trial.suggest_float(
+            "train.rx_noise_std", 0.0, 0.05
+        )
+        trial_cfg.training.lambda_activation_l1 = trial.suggest_float(
+            "train.lambda_l1", 0.001, 0.1, log=True
+        )
+
+        # optimizer
+        trial_cfg.training.optimizer.eps = trial.suggest_float(
+            "train.opt.eps", 1e-8, 1e-4, log=True
+        )
+        trial_cfg.training.optimizer.weight_decay = trial.suggest_float(
+            "train.opt.weight_decay", 1e-8, 1e-4, log=True
+        )
+
+        # Learning rates
+        trial_cfg.training.learning_rate.position_init = trial.suggest_float(
+            "train.lr.pos_init", 5e-4, 5e-3
+        )
+        trial_cfg.training.learning_rate.position_final = trial.suggest_float(
+            "train.lr.pos_final", 5e-7, 5e-6
+        )
+        trial_cfg.training.learning_rate.position_delay_mult = trial.suggest_float(
+            "train.lr.pos_delay", 0.01, 0.05
+        )
+        trial_cfg.training.learning_rate.rotation = trial.suggest_float(
+            "train.lr.rotation", 0.0005, 0.005
+        )
+        trial_cfg.training.learning_rate.scaling = trial.suggest_float(
+            "train.lr.scaling", 0.0008, 0.008
+        )
+        trial_cfg.training.learning_rate.attribute_net = trial.suggest_float(
+            "train.lr.attr_net", 0.00015, 0.0015
+        )
+        trial_cfg.training.learning_rate.decoder = trial.suggest_float(
+            "train.lr.decoder", 0.00015, 0.0015
+        )
+
+        trial_cfg.data.path = data_path
+
+    trial_num = trial.number
+    study_name = trial.study.study_name
+    trial_log_dir = (
+        Path(base_cfg.experiment.log_dir) / study_name / f"trial_{trial_num:04d}"
+    )
+    trial_log_dir.mkdir(parents=True, exist_ok=True)
+    checkpoints_dir = trial_log_dir / "checkpoints"
+    checkpoints_dir.mkdir(exist_ok=True)
+
+    config_save_path = trial_log_dir / "trial_config.yaml"
+    with open(config_save_path, "w") as f:
+        OmegaConf.save(trial_cfg, f)
+
+    logger, _ = setup_logging(trial_log_dir, use_rich=False)
+    logger.info(f"Starting Optuna trial {trial_num} for Study '{study_name}'")
+    logger.info(f"Log directory: {trial_log_dir}")
+    logger.info("Hyperparameters for this trial:")
+
+    for key, value in trial.params.items():
+        logger.info(f"  {key}: {value}")
+
+    set_random_seed(base_cfg.experiment.seed + trial_num)
+    device = torch.device(
+        base_cfg.experiment.device
+        if torch.cuda.is_available() and base_cfg.experiment.device == "cuda"
+        else "cpu"
+    )
+    logger.info(f"Using device: {device}")
+    logger.info("Loading data...")
+
+    try:
+        train_loader, val_loader, metadata = get_dataloaders(cfg=trial_cfg)
+        nt = metadata["num_tx_ant"]
+        nr = metadata["num_rx_ant"]
+        tx_position = metadata["tx_position"].to(device)
+        env_dims = metadata.get("env_dims")
+        point_cloud = metadata.get("point_cloud")
+
+        logger.info(f"Dataset loaded: Nt={nt}, Nr={nr}")
+        logger.info(
+            f"Train batches: {len(train_loader)}, Val batches: {len(val_loader)}"
+        )
+        if point_cloud is not None:
+            logger.info(f"Point cloud shape: {point_cloud.shape}")
+            point_cloud = point_cloud.to(device)
+        if env_dims is not None:
+            env_dims = env_dims.to(device)
+
+        if len(train_loader) == 0:
+            logger.error("Training dataloader is empty! Aborting trial.")
+            return -float("inf")
+        if len(val_loader) == 0:
+            logger.error(
+                "Validation dataloader is empty! Cannot optimize. Aborting trial."
+            )
+            return -float("inf")
+
+    except Exception as e:
+        logger.exception(f"Failed to load data: {e}. Aborting trial.")
+        return -float("inf")
+
+    logger.info("Initializing model...")
+    try:
+        model = GaussianChannelFieldModel(
+            num_tx_ant=nt,
+            num_rx_ant=nr,
+            latent_dim=trial_cfg.model.latent_dim,
+            attribute_hidden_dim=trial_cfg.model.attribute_network.hidden_dim,
+            attribute_num_layers=trial_cfg.model.attribute_network.num_layers,
+            attribute_pos_enc_freqs=trial_cfg.model.attribute_network.pos_enc_freqs,
+            decoder_hidden_dim=trial_cfg.model.contribution_decoder.hidden_dim,
+            decoder_num_layers=trial_cfg.model.contribution_decoder.num_layers,
+            initial_gaussians=trial_cfg.initialization.num_gaussians,
+            init_opacity_value=trial_cfg.initialization.opacity_value,
+            init_scale_value=trial_cfg.initialization.scale_value,
+            device=device,
+        )
+
+        init_pc_arg = None
+        init_method = trial_cfg.initialization.method
+        if init_method == "point_cloud":
+            if point_cloud is not None:
+                logger.info("Using point cloud for Gaussian initialization")
+                init_pc_arg = point_cloud
+            else:
+                logger.warning(
+                    "Point cloud init requested but no data found. Using random."
+                )
+                init_method = "random"
+
+        if init_method == "random":
+            logger.info("Using random initialization for Gaussians")
+            model.init_gaussians(
+                env_dims=env_dims if env_dims is not None else None,
+                point_cloud=None,
+                num_points=trial_cfg.initialization.num_gaussians,
+            )
+        elif init_method == "point_cloud":
+            model.init_gaussians(
+                env_dims=None,
+                point_cloud=init_pc_arg,
+                num_points=trial_cfg.initialization.num_gaussians,
+            )
+
+        model.training_setup(trial_cfg)
+        model = model.to(device)
+        logger.info(f"Model initialized with {model.get_xyz.shape[0]} Gaussians")
+
+    except Exception as e:
+        logger.exception(f"Failed to initialize model: {e}. Aborting trial.")
+        return -float("inf")
+
+    criterion = nn.MSELoss().to(device)
+
+    best_trial_val_snr = -float("inf")
+    train_iter = iter(train_loader)
+
+    logger.info(
+        f"Starting training loop for {trial_cfg.training.iterations} iterations..."
+    )
+    for iteration in range(trial_cfg.training.iterations):
+        iter_start_time = time.time()
+        model.train()
+        model.update_learning_rate(iteration, trial_cfg)
+
+        try:
+            batch = next(train_iter)
+        except StopIteration:
+            train_iter = iter(train_loader)
+            batch = next(train_iter)
+
+        rx_pos_batch = batch["rx_position"].to(device)
+        cmr_gt_batch = batch["cmr"].to(device)
+
+        if trial_cfg.training.rx_noise_std > 0:
+            noise = torch.randn_like(rx_pos_batch) * trial_cfg.training.rx_noise_std
+            rx_pos_batch = rx_pos_batch + noise
+
+        cmr_pred_batch = render_cmr(
+            rx_positions=rx_pos_batch,
+            model=model,
+            tx_position=tx_position,
+            nt=nt,
+            nr=nr,
+            eps=trial_cfg.training.snr_eps,
+        )
+
+        mse_loss = criterion(cmr_pred_batch, cmr_gt_batch)
+        total_loss = mse_loss
+        l1_activation_loss = torch.tensor(0.0, device=device)
+
+        if trial_cfg.training.lambda_activation_l1 > 0 and model.get_xyz.shape[0] > 0:
+            base_activations_logits = model.get_base_activation_logits(tx_position)
+            l1_activation_loss = torch.mean(torch.abs(base_activations_logits))
+            total_loss = (
+                total_loss
+                + trial_cfg.training.lambda_activation_l1 * l1_activation_loss
+            )
+
+        model.optimizer.zero_grad()
+        total_loss.backward()
+
+        found_nan_grad = False
+        for name, param in model.named_parameters():
+            if param.grad is not None and (
+                torch.isnan(param.grad).any() or torch.isinf(param.grad).any()
+            ):
+                logger.warning(
+                    f"NaN/Inf gradient detected at iter {iteration} for '{name}'. Skipping step."
+                )
+                found_nan_grad = True
+                break
+
+        if not found_nan_grad:
+            model.optimizer.step()
+        else:
+            model.optimizer.zero_grad()
+
+        if (
+            iteration % trial_cfg.experiment.log_freq == 0
+            or iteration == trial_cfg.training.iterations - 1
+        ):
+            with torch.no_grad():
+                current_loss = mse_loss.item()
+                snr = calculate_snr(
+                    mse_loss, cmr_gt_batch, eps=trial_cfg.training.snr_eps
+                ).item()
+                iter_time = time.time() - iter_start_time
+                logger.info(
+                    f"[{iteration}/{trial_cfg.training.iterations}] "
+                    f"Loss={current_loss:.4e} | SNR={snr:.2f} dB | Time={iter_time:.3f}s"
+                )
+
+        if (
+            iteration % trial_cfg.experiment.eval_freq == 0 and iteration > 0
+        ) or iteration == trial_cfg.training.iterations - 1:
+            eval_start_time = time.time()
+            eval_metrics = evaluate_trial(
+                model=model,
+                val_loader=val_loader,
+                criterion=criterion,
+                device=device,
+                tx_position=tx_position,
+                nt=nt,
+                nr=nr,
+                cfg=trial_cfg,
+            )
+            eval_time = time.time() - eval_start_time
+            current_val_snr = eval_metrics["val_snr_db"]
+            logger.info(
+                f"Validation @ {iteration} | Loss={eval_metrics['val_mse_loss']:.4e} | "
+                f"SNR={current_val_snr:.2f} dB | Time={eval_time:.2f}s"
+            )
+
+            if not np.isnan(current_val_snr) and not np.isinf(current_val_snr):
+                best_trial_val_snr = max(best_trial_val_snr, current_val_snr)
+                logger.info(f"Trial best SNR: {best_trial_val_snr:.2f} dB")
+
+                trial.report(best_trial_val_snr, iteration)
+
+        if (
+            iteration % trial_cfg.experiment.checkpoint_freq == 0 and iteration > 0
+        ) or iteration == trial_cfg.training.iterations - 1:
+            checkpoint_path = checkpoints_dir / f"checkpoint_{iteration:07d}.pt"
+
+            model.save(checkpoint_path, iteration=iteration, cfg=trial_cfg)
+            logger.info(f"Checkpoint saved to {checkpoint_path}")
+
+    logger.info(f"Trial {trial_num} finished")
+    logger.info(f"Best validation SNR achieved: {best_trial_val_snr:.4f} dB")
+
+    del model, train_loader, val_loader, metadata, criterion
+    if device == torch.device("cuda"):
+        torch.cuda.empty_cache()
+
+    return best_trial_val_snr
+
+
+def log_best_trial(study: optuna.study.Study, trial: optuna.trial.FrozenTrial):
+    """Callback to log the best trial results to a summary file."""
+    summary_log_path = Path(study.user_attrs["log_dir"]) / "tuning_summary.log"
+    best_trial = study.best_trial
+
+    with open(summary_log_path, "a") as f:
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        f.write(f"{now}\n")
+        f.write(f"Trial {trial.number} finished with value: {trial.value:.4f}\n")
+        if best_trial:
+            f.write(f"Current Best Trial: {best_trial.number}\n")
+            f.write(f"  Best Value (SNR dB): {best_trial.value:.4f}\n")
+            f.write("  Best Parameters:\n")
+            for key, value in best_trial.params.items():
+                f.write(f"    {key}: {value}\n")
+        f.write("-" * 20 + "\n")
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Hyperparameter tuning for GCF")
+    parser.add_argument(
+        "--data_path", type=str, required=True, help="Path to dataset file (.mat)"
+    )
+    parser.add_argument(
+        "--config",
+        type=str,
+        default="configs/default.yaml",
+        help="Path to the base configuration file (non-tuned parameters)",
+    )
+    parser.add_argument(
+        "--num_trials", type=int, default=50, help="Number of Optuna trials to run"
+    )
+    parser.add_argument(
+        "--study_name",
+        type=str,
+        default=f"gcf_tuning_{datetime.now().strftime('%Y%m%d_%H%M')}",
+        help="Name for the Optuna study",
+    )
+    parser.add_argument(
+        "--log_dir",
+        type=str,
+        default="logs",
+        help="Root directory for tuning logs",
+    )
+
+    args = parser.parse_args()
+
+    base_cfg = OmegaConf.load(args.config)
+
+    default_cfg = OmegaConf.load("configs/default.yaml")
+    base_cfg = OmegaConf.merge(default_cfg, base_cfg)
+
+    base_cfg.experiment.log_dir = args.log_dir
+
+    tuning_root_dir = Path(base_cfg.experiment.log_dir) / args.study_name
+    tuning_root_dir.mkdir(parents=True, exist_ok=True)
+    summary_log_path = tuning_root_dir / "tuning_summary.log"
+    db_path = f"sqlite:///{tuning_root_dir}/optuna_study.db"
+
+    console = Console()
+    console.rule(
+        f"[bold blue]Starting Optuna Tuning Study: {args.study_name}[/bold blue]"
+    )
+    console.print(f"Database: {db_path}")
+    console.print(f"Number of trials: {args.num_trials}")
+    console.print(f"Tuning Log Directory: {tuning_root_dir}")
+    console.print(f"Base Config File: {args.config}")
+    console.print(f"Data Path: {args.data_path}")
+
+    study = optuna.create_study(
+        study_name=args.study_name,
+        storage=db_path,
+        direction="maximize",
+        load_if_exists=True,
+    )
+    study.set_user_attr("log_dir", str(tuning_root_dir))
+
+    console.print(f"Existing trials in study: {len(study.trials)}")
+    if len(study.trials) >= args.num_trials:
+        console.print(
+            "[yellow]Study already has the target number of trials or more. Exiting.[/yellow]"
+        )
+    else:
+        remaining_trials = args.num_trials - len(study.trials)
+        console.print(f"Running {remaining_trials} new trials...")
+
+        objective_wrapper = lambda trial: objective(trial, base_cfg, args.data_path)
+        try:
+            study.optimize(
+                objective_wrapper,
+                n_trials=remaining_trials,
+                callbacks=[log_best_trial],
+                catch=(Exception,),
+            )
+        except Exception as e:
+            console.print(
+                f"[bold red]An error occurred during optimization: {e}[/bold red]"
+            )
+            logging.exception("Optimization terminated due to error:")
+
+    console.rule("[bold blue]Tuning finished[/bold blue]")
+    if study.best_trial:
+        console.print(f"Best Trial Number: {study.best_trial.number}")
+        console.print(f"Best value (SNR dB): {study.best_trial.value:.4f}")
+        best_params_table = Table(title="Best Hyperparameters")
+        best_params_table.add_column("Parameter", style="cyan")
+        best_params_table.add_column("Value", style="green")
+        for key, value in study.best_params.items():
+            best_params_table.add_row(key, str(value))
+        console.print(best_params_table)
+
+        best_params_path = tuning_root_dir / "best_params.yaml"
+        best_params_dict = study.best_params
+
+        with open(best_params_path, "w") as f:
+            import yaml
+
+            yaml.dump(best_params_dict, f, default_flow_style=False)
+        console.print(f"Best parameters saved to: {best_params_path}")
+    else:
+        console.print("[yellow]No completed trials found in the study.[/yellow]")
