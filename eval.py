@@ -221,7 +221,7 @@ def disp_samples(
 
         table.add_row("Rx Position", str(sample["rx_pos"]))
         table.add_row("MSE Loss (Mag)", f"{sample['loss']:.6e}")
-        table.add_row("SNR (Mag, dB)", f"{sample['snr']:.6f}")
+        table.add_row("SNR", f"{sample['snr']:.6f}")
 
         panel_content = table
         panel = Panel(

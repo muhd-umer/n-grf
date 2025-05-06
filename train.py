@@ -451,8 +451,8 @@ def train(cfg: DictConfig):
                 if iteration % cfg.experiment.log_freq == 0:
                     log_msg_file = (
                         f"[{iteration}/{cfg.training.iterations}] <<< "
-                        f"Loss(Mag)={current_loss:.4e} | EMA={ema_loss:.4e} | "
-                        f"SNR(Mag)={snr:.2f} dB | Gauss={num_gaussians} | Time={iter_time:.3f}s >>>"
+                        f"Loss={current_loss:.4e} | EMA={ema_loss:.4e} | "
+                        f"SNR={snr:.2f} dB | Gauss={num_gaussians} | Time={iter_time:.3f}s >>>"
                     )
                     logger.info(log_msg_file)
 
@@ -543,7 +543,7 @@ def train(cfg: DictConfig):
                             validation_results = validation_results[-max_val_disp:]
 
                         logger.info(
-                            f"Validation @ {iteration} | Loss(Mag)={eval_metrics['val_mse_loss']:.4e} | SNR(Mag)={eval_metrics['val_snr_db']:.2f} dB | Time={eval_time:.2f}s"
+                            f"Validation @ {iteration} | Loss={eval_metrics['val_mse_loss']:.4e} | SNR={eval_metrics['val_snr_db']:.2f} dB | Time={eval_time:.2f}s"
                         )
                         current_val_snr = eval_metrics["val_snr_db"]
 
@@ -563,11 +563,9 @@ def train(cfg: DictConfig):
                         )
                         val_table.add_column("Iter", style="dim", justify="right")
                         val_table.add_column(
-                            "MSE Loss (Mag)", style="magenta", justify="right"
+                            "MSE Loss", style="magenta", justify="right"
                         )
-                        val_table.add_column(
-                            "SNR (Mag, dB)", style="green", justify="right"
-                        )
+                        val_table.add_column("SNR", style="green", justify="right")
                         val_table.add_column("Time (s)", justify="right")
                         for res in validation_results:
                             val_table.add_row(
