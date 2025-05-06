@@ -27,7 +27,7 @@ from torch.utils.tensorboard import SummaryWriter
 
 from datasets.dataloader import get_dataloaders
 from models.gaussian_model import GaussianChannelFieldModel
-from render import render_cmr
+from render import render_channel
 from utils.general_utils import set_random_seed
 from utils.loss import calculate_snr
 from utils.train_utils import compute_grad_stats, setup_logging
@@ -46,6 +46,12 @@ def load_config() -> DictConfig:
         default="configs/default.yaml",
         help="Path to the configuration file",
     )
+    parser.add_argument(
+        "--resume",
+        type=str,
+        default=None,
+        help="Path to checkpoint file to resume training from",
+    )
 
     args, unknown_args = parser.parse_known_args()
     default_cfg = OmegaConf.load("configs/default.yaml")
@@ -58,6 +64,8 @@ def load_config() -> DictConfig:
     cli_cfg = OmegaConf.from_cli(unknown_args)
     cfg = OmegaConf.merge(default_cfg, user_cfg, cli_cfg)
     cfg.data.path = args.data_path
+    if args.resume:
+        cfg.resume = args.resume
 
     if cfg.data.path is None:
         raise ValueError(
@@ -88,10 +96,10 @@ def evaluate(
         for batch in val_loader:
             rx_pos_batch = batch["rx_position"].to(device)
 
-            cmr_gt_batch = batch["cmr"].to(device)
+            channel_gt_batch = batch["channel"].to(device)
             batch_size = rx_pos_batch.shape[0]
 
-            cmr_pred_batch = render_cmr(
+            channel_pred_batch = render_channel(
                 rx_positions=rx_pos_batch,
                 model=model,
                 tx_position=tx_position,
@@ -100,10 +108,13 @@ def evaluate(
                 eps=snr_eps,
             )
 
-            loss = criterion(cmr_pred_batch, cmr_gt_batch)
-            snr = calculate_snr(loss, cmr_gt_batch, eps=snr_eps)
-            total_loss += loss.item() * batch_size
+            pred_mag = torch.abs(channel_pred_batch)
+            gt_mag = torch.abs(channel_gt_batch)
+            loss = criterion(pred_mag, gt_mag)
 
+            snr = calculate_snr(loss, gt_mag, eps=cfg.evaluation.snr_eps)
+
+            total_loss += loss.item() * batch_size
             if not torch.isinf(snr) and not torch.isnan(snr):
                 total_snr += snr.item() * batch_size
 
@@ -165,8 +176,11 @@ def train(cfg: DictConfig):
         tx_position = metadata["tx_position"].to(device)
         env_dims = metadata.get("env_dims")
         point_cloud = metadata.get("point_cloud")
-        min_mag = metadata.get("min_magnitude", 0.0)
-        max_mag = metadata.get("max_magnitude", 1.0)
+
+        min_real = metadata.get("min_real", 0.0)
+        max_real = metadata.get("max_real", 1.0)
+        min_imag = metadata.get("min_imag", 0.0)
+        max_imag = metadata.get("max_imag", 1.0)
 
         metadata_table = Table(title="Dataset Metadata", show_header=False, box=None)
         metadata_table.add_column("Property", style="cyan")
@@ -176,7 +190,8 @@ def train(cfg: DictConfig):
         metadata_table.add_row("Nr", str(nr))
         metadata_table.add_row("Frequency", f"{metadata['frequency']/1e9:.2f} GHz")
         metadata_table.add_row("Is SISO", str(metadata["is_siso"]))
-        metadata_table.add_row("Norm Min/Max", f"{min_mag:.4e} / {max_mag:.4e}")
+        metadata_table.add_row("Norm Real Min/Max", f"{min_real:.4e} / {max_real:.4e}")
+        metadata_table.add_row("Norm Imag Min/Max", f"{min_imag:.4e} / {max_imag:.4e}")
         console.print(metadata_table)
 
         logger.info(f"Transmitter position: {tx_position.cpu().numpy()}")
@@ -228,13 +243,13 @@ def train(cfg: DictConfig):
     )
 
     start_iteration = 0
-
     resume_path_str = cfg.get("resume", None)
     resume_path = Path(resume_path_str) if resume_path_str else None
 
     if resume_path and resume_path.exists():
         logger.info(f"Resuming from checkpoint: {resume_path}")
         try:
+
             model, start_iteration = GaussianChannelFieldModel.load(
                 resume_path,
                 device,
@@ -243,8 +258,24 @@ def train(cfg: DictConfig):
             start_iteration += 1
             logger.info(f"Resumed from iteration {start_iteration -1}")
         except Exception as e:
-            logger.error(f"Failed to load checkpoint: {e}. Starting from scratch")
+            logger.error(f"Failed to load checkpoint: {e}. Starting from scratch.")
             resume_path = None
+
+            model = GaussianChannelFieldModel(
+                num_tx_ant=nt,
+                num_rx_ant=nr,
+                latent_dim=cfg.model.latent_dim,
+                attribute_hidden_dim=cfg.model.attribute_network.hidden_dim,
+                attribute_num_layers=cfg.model.attribute_network.num_layers,
+                attribute_pos_enc_freqs=cfg.model.attribute_network.pos_enc_freqs,
+                decoder_hidden_dim=cfg.model.contribution_decoder.hidden_dim,
+                decoder_num_layers=cfg.model.contribution_decoder.num_layers,
+                initial_gaussians=cfg.initialization.num_gaussians,
+                init_opacity_value=cfg.initialization.opacity_value,
+                init_scale_value=cfg.initialization.scale_value,
+                device=device,
+            )
+            start_iteration = 0
     else:
         if resume_path:
             logger.warning(
@@ -277,6 +308,10 @@ def train(cfg: DictConfig):
                 point_cloud=init_pc_arg,
                 num_points=cfg.initialization.num_gaussians,
             )
+        else:
+            logger.error(f"Unknown initialization method: {cfg.initialization.method}")
+            return
+
         model.training_setup(cfg)
 
     model = model.to(device)
@@ -286,7 +321,7 @@ def train(cfg: DictConfig):
     )
 
     criterion = nn.MSELoss().to(device)
-    logger.info("Using MSE Loss for training")
+    logger.info("Using MSE Loss on magnitudes for training")
 
     validation_results: List[Dict] = []
     max_val_disp = 4
@@ -337,13 +372,14 @@ def train(cfg: DictConfig):
                 batch = next(train_iter)
 
             rx_pos_batch = batch["rx_position"].to(device)
-            cmr_gt_batch = batch["cmr"].to(device)
+
+            channel_gt_batch = batch["channel"].to(device)
 
             if cfg.training.rx_noise_std > 0:
                 noise = torch.randn_like(rx_pos_batch) * cfg.training.rx_noise_std
                 rx_pos_batch = rx_pos_batch + noise
 
-            cmr_pred_batch = render_cmr(
+            channel_pred_batch = render_channel(
                 rx_positions=rx_pos_batch,
                 model=model,
                 tx_position=tx_position,
@@ -352,11 +388,15 @@ def train(cfg: DictConfig):
                 eps=cfg.training.snr_eps,
             )
 
-            mse_loss = criterion(cmr_pred_batch, cmr_gt_batch)
+            pred_mag = torch.abs(channel_pred_batch)
+            gt_mag = torch.abs(channel_gt_batch)
+            mse_loss = criterion(pred_mag, gt_mag)
+
             total_loss = mse_loss
             l1_activation_loss = torch.tensor(0.0, device=device)
 
             if cfg.training.lambda_activation_l1 > 0 and model.get_xyz.shape[0] > 0:
+
                 base_activations_logits = model.get_base_activation_logits(tx_position)
                 l1_activation_loss = torch.mean(torch.abs(base_activations_logits))
                 total_loss = (
@@ -379,12 +419,15 @@ def train(cfg: DictConfig):
 
             grad_stats = {}
             if not found_nan_grad:
-                grad_stats = compute_grad_stats(model)
+
+                if cfg.experiment.log_grad_stats:
+                    grad_stats = compute_grad_stats(model)
                 model.optimizer.step()
             else:
+
                 model.optimizer.zero_grad()
                 logger.warning(
-                    f"NaN/Inf gradient detected at iter {iteration}. Skipping optimizer step."
+                    f"NaN/Inf gradient detected at iter {iteration}. Skipping optimizer step and zeroing grads."
                 )
 
             iter_time = time.time() - iter_start_time
@@ -400,19 +443,19 @@ def train(cfg: DictConfig):
                 else:
                     ema_loss = 0.95 * ema_loss + 0.05 * current_loss
 
-                snr = calculate_snr(
-                    mse_loss, cmr_gt_batch, eps=cfg.training.snr_eps
-                ).item()
+                snr = calculate_snr(mse_loss, gt_mag, eps=cfg.training.snr_eps).item()
                 num_gaussians = model.get_xyz.shape[0]
 
                 progress.update(task, advance=1, loss=current_loss, snr=snr)
+
                 if iteration % cfg.experiment.log_freq == 0:
                     log_msg_file = (
                         f"[{iteration}/{cfg.training.iterations}] <<< "
-                        f"Loss={current_loss:.4e} | EMA={ema_loss:.4e} | "
-                        f"SNR={snr:.2f} dB | Time={iter_time:.3f}s >>>"
+                        f"Loss(Mag)={current_loss:.4e} | EMA={ema_loss:.4e} | "
+                        f"SNR(Mag)={snr:.2f} dB | Gauss={num_gaussians} | Time={iter_time:.3f}s >>>"
                     )
                     logger.info(log_msg_file)
+
                     if cfg.experiment.log_grad_stats and grad_stats:
                         grad_table = Table(
                             title=f"Gradient stats",
@@ -435,9 +478,9 @@ def train(cfg: DictConfig):
                         console.print(Padding(grad_table, (0, 0, 0, 2)))
 
                     if writer is not None:
-                        writer.add_scalar("train/mse_loss", current_loss, iteration)
-                        writer.add_scalar("train/ema_loss", ema_loss, iteration)
-                        writer.add_scalar("train/snr_db", snr, iteration)
+                        writer.add_scalar("train/mse_loss_mag", current_loss, iteration)
+                        writer.add_scalar("train/ema_loss_mag", ema_loss, iteration)
+                        writer.add_scalar("train/snr_db_mag", snr, iteration)
                         writer.add_scalar(
                             "train/iteration_time_sec", iter_time, iteration
                         )
@@ -495,13 +538,15 @@ def train(cfg: DictConfig):
                         eval_metrics["iteration"] = iteration
                         eval_metrics["time_sec"] = eval_time
                         validation_results.append(eval_metrics)
+
                         if len(validation_results) > max_val_disp:
                             validation_results = validation_results[-max_val_disp:]
 
                         logger.info(
-                            f"Validation @ {iteration} | Loss={eval_metrics['val_mse_loss']:.4e} | SNR={eval_metrics['val_snr_db']:.2f} dB | Time={eval_time:.2f}s"
+                            f"Validation @ {iteration} | Loss(Mag)={eval_metrics['val_mse_loss']:.4e} | SNR(Mag)={eval_metrics['val_snr_db']:.2f} dB | Time={eval_time:.2f}s"
                         )
                         current_val_snr = eval_metrics["val_snr_db"]
+
                         if current_val_snr > best_val_snr:
                             best_val_snr = current_val_snr
                             best_val_loss = eval_metrics["val_mse_loss"]
@@ -518,9 +563,11 @@ def train(cfg: DictConfig):
                         )
                         val_table.add_column("Iter", style="dim", justify="right")
                         val_table.add_column(
-                            "MSE Loss", style="magenta", justify="right"
+                            "MSE Loss (Mag)", style="magenta", justify="right"
                         )
-                        val_table.add_column("SNR (dB)", style="green", justify="right")
+                        val_table.add_column(
+                            "SNR (Mag, dB)", style="green", justify="right"
+                        )
                         val_table.add_column("Time (s)", justify="right")
                         for res in validation_results:
                             val_table.add_row(
@@ -542,34 +589,38 @@ def train(cfg: DictConfig):
 
                         if writer is not None:
                             writer.add_scalar(
-                                "validation/mse_loss",
+                                "validation/mse_loss_mag",
                                 eval_metrics["val_mse_loss"],
                                 iteration,
                             )
                             writer.add_scalar(
-                                "validation/snr_db",
+                                "validation/snr_db_mag",
                                 eval_metrics["val_snr_db"],
                                 iteration,
                             )
                     else:
+
                         if iteration % (cfg.experiment.eval_freq * 5) == 0:
                             logger.info(
                                 f"Skipping evaluation at iteration {iteration} (empty val loader)"
                             )
+
                 if (
                     iteration % cfg.experiment.checkpoint_freq == 0 and iteration > 0
                 ) or iteration == cfg.training.iterations - 1:
                     checkpoint_path = checkpoints_dir / f"checkpoint_{iteration:07d}.pt"
-
                     model.save(checkpoint_path, iteration=iteration, cfg=cfg)
                     logger.info(f"Checkpoint saved to {checkpoint_path}")
 
     progress.stop()
     final_model_path = log_dir / "final_model.pt"
-
     model.save(final_model_path, iteration=cfg.training.iterations - 1, cfg=cfg)
     logger.info(f"Training completed after {cfg.training.iterations} iterations")
     logger.info(f"Final model saved to {final_model_path}")
+    if best_iteration != -1:
+        logger.info(
+            f"Best model (SNR={best_val_snr:.2f} dB @ iter {best_iteration}) saved to {log_dir / 'best_model.pt'}"
+        )
 
     console.rule("[bold blue]Training end[/bold blue]")
     if writer is not None:

@@ -22,7 +22,7 @@ from .networks import AttributeNetwork, ContributionDecoderNetwork
 
 
 class GaussianChannelFieldModel(nn.Module):
-    """Gaussian channel field (GCF) model."""
+    """Gaussian channel field (GCF) model for complex channel prediction."""
 
     def __init__(
         self,
@@ -58,9 +58,10 @@ class GaussianChannelFieldModel(nn.Module):
             pos_encoding_freqs=attribute_pos_enc_freqs,
         ).to(device)
 
+        decoder_output_dim = 2 * num_tx_ant * num_rx_ant
         self.contribution_decoder = ContributionDecoderNetwork(
             latent_dim=latent_dim,
-            output_dim=num_tx_ant * num_rx_ant,
+            output_dim=decoder_output_dim,
             hidden_dim=decoder_hidden_dim,
             num_layers=decoder_num_layers,
         ).to(device)
@@ -91,7 +92,6 @@ class GaussianChannelFieldModel(nn.Module):
     @property
     def get_scaling(self):
         """Returns activated and clamped Gaussian scales."""
-
         return self.scaling_activation(self._scaling).clamp(min=1e-8)
 
     @property
@@ -104,7 +104,6 @@ class GaussianChannelFieldModel(nn.Module):
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Computes latent features and *activated* base activations dynamically."""
         if self._xyz.shape[0] == 0:
-
             return torch.empty(0, self.latent_dim, device=self.device), torch.empty(
                 0, 1, device=self.device
             )
@@ -123,7 +122,6 @@ class GaussianChannelFieldModel(nn.Module):
         latent_features, base_activations_logits = self.attribute_network(
             self._xyz, tx_position_exp
         )
-
         base_activations_activated = self.opacity_activation(base_activations_logits)
 
         return (
@@ -156,33 +154,25 @@ class GaussianChannelFieldModel(nn.Module):
         rotation_q = self.get_rotation
 
         if scaling.shape[0] == 0:
-
             empty_cov = torch.empty(0, 3, 3, device=self.device)
             return (empty_cov, empty_cov) if return_inverse else empty_cov
 
         R = build_rotation(rotation_q)
-
         S_sq_diag = torch.diag_embed(scaling * scaling)
-
         covariance = R @ S_sq_diag @ R.transpose(1, 2)
 
         if return_inverse:
-
             inv_covariance = build_covariance_inverse(R, scaling, eps)
-
             if torch.isnan(inv_covariance).any() or torch.isinf(inv_covariance).any():
                 warnings.warn(
                     "Warning: NaN or Inf detected in inverse covariance. Replacing offending matrices with identity."
                 )
-
                 bad_indices = torch.isnan(inv_covariance).any(dim=(1, 2)) | torch.isinf(
                     inv_covariance
                 ).any(dim=(1, 2))
-
                 identity = torch.eye(
                     3, device=self.device, dtype=inv_covariance.dtype
                 ).expand(bad_indices.sum(), -1, -1)
-
                 inv_covariance[bad_indices] = identity
             return covariance, inv_covariance
         else:
@@ -227,12 +217,10 @@ class GaussianChannelFieldModel(nn.Module):
                     )
                     num_to_init = num_available_points
                     indices = torch.arange(num_available_points)
-
                 else:
                     print(
                         f"Randomly sampling {num_to_init} points from the point cloud."
                     )
-
                     indices_np = np.random.choice(
                         num_available_points, num_to_init, replace=False
                     )
@@ -243,8 +231,7 @@ class GaussianChannelFieldModel(nn.Module):
                     raise ValueError(
                         f"Point cloud must have shape (N, 3), got {point_cloud.shape}"
                     )
-
-        if point_cloud is None:
+        else:
             if env_dims is not None and env_dims.shape == (3, 2):
                 print(
                     f"Initializing {num_to_init} random Gaussians within environment dimensions."
@@ -280,8 +267,7 @@ class GaussianChannelFieldModel(nn.Module):
         print(f"GCF Model initialized with {self.get_xyz.shape[0]} Gaussians.")
 
     def get_params(self, lr_dict: Dict[str, float]) -> list:
-        """Returns parameter groups for the optimizer with specified learning
-        rates."""
+        """Returns parameter groups for the optimizer with specified learning rates."""
         param_groups = [
             {"params": [self._xyz], "lr": lr_dict.get("xyz", 0.0), "name": "xyz"},
             {
@@ -305,12 +291,10 @@ class GaussianChannelFieldModel(nn.Module):
                 "name": "decoder",
             },
         ]
-
         return param_groups
 
     def training_setup(self, cfg: DictConfig):
         """Setup optimizer and learning rate schedulers based on config."""
-
         lr_map = {
             "xyz": cfg.training.learning_rate.position_init,
             "rotation": cfg.training.learning_rate.rotation,
@@ -374,6 +358,7 @@ class GaussianChannelFieldModel(nn.Module):
                 "Warning: Saving model without config. Loading might be incomplete."
             )
         else:
+
             temp_cfg = cfg.copy()
             with open_dict(temp_cfg):
                 if "model" not in temp_cfg:
@@ -417,6 +402,16 @@ class GaussianChannelFieldModel(nn.Module):
         checkpoint_cfg = OmegaConf.merge(base_cfg, OmegaConf.create(config_dict))
 
         try:
+
+            if (
+                "model" not in checkpoint_cfg
+                or "num_tx_ant" not in checkpoint_cfg.model
+                or "num_rx_ant" not in checkpoint_cfg.model
+            ):
+                raise ValueError(
+                    "Checkpoint config missing model.num_tx_ant or model.num_rx_ant"
+                )
+
             model = cls(
                 num_tx_ant=checkpoint_cfg.model.num_tx_ant,
                 num_rx_ant=checkpoint_cfg.model.num_rx_ant,
@@ -450,10 +445,12 @@ class GaussianChannelFieldModel(nn.Module):
         iteration = state_dict.get("iteration", 0)
 
         if resume_cfg is not None:
+
             model.training_setup(resume_cfg)
             if model.optimizer and state_dict.get("optimizer_state_dict"):
                 try:
                     model.optimizer.load_state_dict(state_dict["optimizer_state_dict"])
+
                     for state in model.optimizer.state.values():
                         for k, v in state.items():
                             if isinstance(v, torch.Tensor):

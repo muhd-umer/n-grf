@@ -51,10 +51,14 @@ class SimpleMLP(nn.Module):
 
 
 class ContributionDecoderNetwork(SimpleMLP):
-    """Decodes latent features into channel contributions."""
+    """Decodes latent features into normalized real/imag channel contributions."""
 
     def __init__(
-        self, latent_dim: int, output_dim: int, hidden_dim: int, num_layers: int
+        self,
+        latent_dim: int,
+        output_dim: int,
+        hidden_dim: int,
+        num_layers: int,
     ):
         super().__init__(
             input_dim=latent_dim,

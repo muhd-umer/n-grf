@@ -22,7 +22,7 @@ from rich.text import Text
 
 from datasets.dataloader import get_dataloaders
 from models.gaussian_model import GaussianChannelFieldModel
-from render import render_cmr
+from render import render_channel
 from utils.general_utils import set_random_seed
 from utils.loss import calculate_snr
 
@@ -68,6 +68,13 @@ def load_cfg() -> DictConfig:
         "--checkpoint", type=str, required=True, help="Path to model checkpoint (.pt)"
     )
 
+    parser.add_argument(
+        "--config",
+        type=str,
+        default="configs/default.yaml",
+        help="Path to base configuration file (primarily for evaluation settings)",
+    )
+
     args, unknown_args = parser.parse_known_args()
 
     checkpoint_path = Path(args.checkpoint)
@@ -75,17 +82,18 @@ def load_cfg() -> DictConfig:
         raise FileNotFoundError(f"Checkpoint not found at {checkpoint_path}")
 
     model_state = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
-    if "config_dict" not in model_state:
+    if "config_dict" not in model_state or model_state["config_dict"] is None:
         raise ValueError(
             f"Checkpoint {checkpoint_path} does not contain 'config_dict'. Was it trained with the new config system?"
         )
-
     train_cfg_dict = model_state["config_dict"]
-    base_cfg = OmegaConf.load("configs/default.yaml")
-    train_cfg = OmegaConf.merge(base_cfg, OmegaConf.create(train_cfg_dict))
 
+    base_cfg = OmegaConf.load(args.config)
+
+    train_cfg = OmegaConf.create(train_cfg_dict)
     cli_cfg = OmegaConf.from_cli(unknown_args)
-    cfg = OmegaConf.merge(train_cfg, cli_cfg)
+    cfg = OmegaConf.merge(base_cfg, train_cfg, cli_cfg)
+
     cfg.checkpoint_path = args.checkpoint
     cfg.data.path = args.data_path
 
@@ -97,18 +105,55 @@ def load_cfg() -> DictConfig:
     return cfg
 
 
-def format_tensor(tensor: torch.Tensor) -> str:
-    """Formats a magnitude tensor (real numbers) for logging."""
-    if torch.is_complex(tensor):
-        warnings.warn("Warning: format_tensor received a complex tensor")
-        tensor = torch.abs(tensor)
+def format_complex_tensor(tensor: torch.Tensor) -> str:
+    """Formats a complex tensor for logging."""
+    if not torch.is_complex(tensor):
+        warnings.warn("Warning: format_complex_tensor received a non-complex tensor")
+
+        return np.array2string(
+            tensor.cpu().numpy(),
+            formatter={"float_kind": lambda x: f"{x:.4f}"},
+            separator=", ",
+        )
 
     formatted = np.array2string(
         tensor.cpu().numpy(),
-        formatter={"float_kind": lambda x: f"{x:.6f}"},
+        formatter={"complex_kind": lambda x: f"{x.real:.4f}{x.imag:+.4f}j"},
         separator=", ",
     )
     return formatted
+
+
+def unnormalize_complex(
+    normalized_tensor: torch.Tensor,
+    min_real: float,
+    max_real: float,
+    min_imag: float,
+    max_imag: float,
+    eps: float,
+) -> torch.Tensor:
+    """Un-normalizes a complex tensor using independent real/imag min-max."""
+    if not torch.is_complex(normalized_tensor):
+        warnings.warn("Trying to unnormalize a non-complex tensor.")
+        return normalized_tensor
+
+    norm_real = normalized_tensor.real
+    norm_imag = normalized_tensor.imag
+
+    real_range = max_real - min_real
+    imag_range = max_imag - min_imag
+
+    if real_range < eps:
+        unnorm_real = torch.full_like(norm_real, (max_real + min_real) / 2)
+    else:
+        unnorm_real = norm_real * real_range + min_real
+
+    if imag_range < eps:
+        unnorm_imag = torch.full_like(norm_imag, (max_imag + min_imag) / 2)
+    else:
+        unnorm_imag = norm_imag * imag_range + min_imag
+
+    return torch.complex(unnorm_real, unnorm_imag)
 
 
 def disp_stats(console: Console, stats: Dict) -> None:
@@ -123,7 +168,7 @@ def disp_stats(console: Console, stats: Dict) -> None:
     table.add_column("Count", justify="right")
 
     table.add_row(
-        "MSE Loss (Normalized)",
+        "MSE Loss (Magnitude)",
         f"{stats['loss']['mean']:.6e}",
         f"{stats['loss']['std']:.6e}",
         f"{stats['loss']['min']:.6e}",
@@ -131,7 +176,7 @@ def disp_stats(console: Console, stats: Dict) -> None:
         f"{stats['loss']['count']}",
     )
     table.add_row(
-        "SNR (dB)",
+        "SNR (Magnitude, dB)",
         f"{stats['snr']['mean']:.6f}",
         f"{stats['snr']['std']:.6f}",
         f"{stats['snr']['min']:.6f}",
@@ -158,8 +203,11 @@ def disp_samples(
         return
 
     unnormalize = cfg.evaluation.unnormalize_samples
-    min_mag = sample_details[0].get("min_mag", 0.0)
-    max_mag = sample_details[0].get("max_mag", 1.0)
+
+    min_real = sample_details[0].get("min_real", 0.0)
+    max_real = sample_details[0].get("max_real", 1.0)
+    min_imag = sample_details[0].get("min_imag", 0.0)
+    max_imag = sample_details[0].get("max_imag", 1.0)
     norm_eps = cfg.data.norm_eps
 
     console.print(
@@ -172,8 +220,8 @@ def disp_samples(
         table.add_column("Value")
 
         table.add_row("Rx Position", str(sample["rx_pos"]))
-        table.add_row("MSE Loss (Norm)", f"{sample['loss']:.6e}")
-        table.add_row("SNR (dB)", f"{sample['snr']:.6f}")
+        table.add_row("MSE Loss (Mag)", f"{sample['loss']:.6e}")
+        table.add_row("SNR (Mag, dB)", f"{sample['snr']:.6f}")
 
         panel_content = table
         panel = Panel(
@@ -183,36 +231,32 @@ def disp_samples(
         )
         console.print(panel)
 
-        cmr_gt_norm = sample["cmr_gt"]
-        cmr_pred_norm = sample["cmr_pred"]
+        channel_gt_norm = sample["channel_gt"]
+        channel_pred_norm = sample["channel_pred"]
 
         if unnormalize:
-            scale = max_mag - min_mag
-            if scale < norm_eps:
-                cmr_gt_unnorm = torch.full_like(cmr_gt_norm, (max_mag + min_mag) / 2)
-                cmr_pred_unnorm = torch.full_like(
-                    cmr_pred_norm, (max_mag + min_mag) / 2
-                )
-                unnorm_label = "(Constant)"
-            else:
-                cmr_gt_unnorm = cmr_gt_norm * scale + min_mag
-                cmr_pred_unnorm = cmr_pred_norm * scale + min_mag
-                unnorm_label = "(Un-normalized)"
+            channel_gt_unnorm = unnormalize_complex(
+                channel_gt_norm, min_real, max_real, min_imag, max_imag, norm_eps
+            )
+            channel_pred_unnorm = unnormalize_complex(
+                channel_pred_norm, min_real, max_real, min_imag, max_imag, norm_eps
+            )
+            unnorm_label = "(Un-normalized)"
 
-            gt_title = Text(f"True CMR {unnorm_label}", style="cyan")
-            pred_title = Text(f"Predicted CMR {unnorm_label}", style="cyan")
+            gt_title = Text(f"True Channel {unnorm_label}", style="cyan")
+            pred_title = Text(f"Predicted Channel {unnorm_label}", style="cyan")
             console.print(gt_title)
-            console.print(format_tensor(cmr_gt_unnorm))
+            console.print(format_complex_tensor(channel_gt_unnorm))
             console.print(pred_title)
-            console.print(format_tensor(cmr_pred_unnorm))
+            console.print(format_complex_tensor(channel_pred_unnorm))
 
         else:
-            gt_title = Text("True CMR (Normalized)", style="cyan")
-            pred_title = Text("Predicted CMR (Normalized)", style="cyan")
+            gt_title = Text("True Channel (Normalized)", style="cyan")
+            pred_title = Text("Predicted Channel (Normalized)", style="cyan")
             console.print(gt_title)
-            console.print(format_tensor(cmr_gt_norm))
+            console.print(format_complex_tensor(channel_gt_norm))
             console.print(pred_title)
-            console.print(format_tensor(cmr_pred_norm))
+            console.print(format_complex_tensor(channel_pred_norm))
 
         console.print("")
 
@@ -241,8 +285,11 @@ def evaluate(cfg: DictConfig):
     logger.info(f"Loading checkpoint: {checkpoint_path}")
 
     try:
+
         model, load_iter = GaussianChannelFieldModel.load(
-            checkpoint_path, device=device, resume_cfg=None
+            checkpoint_path,
+            device=device,
+            resume_cfg=None,
         )
         model.eval()
         logger.info(
@@ -255,6 +302,7 @@ def evaluate(cfg: DictConfig):
 
     logger.info(f"Loading data from: {cfg.data.path}")
     try:
+
         _, val_loader, metadata = get_dataloaders(cfg=cfg)
 
         if len(val_loader) == 0:
@@ -266,21 +314,23 @@ def evaluate(cfg: DictConfig):
         nt = metadata["num_tx_ant"]
         nr = metadata["num_rx_ant"]
 
-        if nt == 0 or nr == 0:
+        if nt != model.num_tx_ant or nr != model.num_rx_ant:
             logger.error(
-                f"Nt ({nt}) or Nr ({nr}) is zero in metadata. Check dataset or config."
+                f"Mismatch between dataset metadata (Nt={nt}, Nr={nr}) and loaded model (Nt={model.num_tx_ant}, Nr={model.num_rx_ant})."
             )
-            nt = cfg.model.num_tx_ant
-            nr = cfg.model.num_rx_ant
-            if nt == 0 or nr == 0:
-                logger.error("Nt/Nr also zero in config. Cannot proceed.")
-                return
-            else:
-                logger.warning("Using Nt/Nr from config as metadata was zero.")
+
+            logger.warning(
+                f"Using Nt={model.num_tx_ant}, Nr={model.num_rx_ant} from loaded model."
+            )
+            nt = model.num_tx_ant
+            nr = model.num_rx_ant
 
         tx_position = metadata["tx_position"].to(device)
-        min_mag = metadata.get("min_magnitude", 0.0)
-        max_mag = metadata.get("max_magnitude", 1.0)
+
+        min_real = metadata.get("min_real", 0.0)
+        max_real = metadata.get("max_real", 1.0)
+        min_imag = metadata.get("min_imag", 0.0)
+        max_imag = metadata.get("max_imag", 1.0)
 
         metadata_table = Table(title="Dataset Metadata")
         metadata_table.add_column("Property", style="cyan")
@@ -291,9 +341,8 @@ def evaluate(cfg: DictConfig):
         metadata_table.add_row("Frequency", f"{metadata['frequency']/1e9:.2f} GHz")
         metadata_table.add_row("Is SISO", str(metadata["is_siso"]))
         metadata_table.add_row("Tx Position", str(tx_position.cpu().numpy()))
-        metadata_table.add_row("Min Magnitude (Raw)", f"{min_mag:.4e}")
-        metadata_table.add_row("Max Magnitude (Raw)", f"{max_mag:.4e}")
-
+        metadata_table.add_row("Norm Real Min/Max", f"{min_real:.4e} / {max_real:.4e}")
+        metadata_table.add_row("Norm Imag Min/Max", f"{min_imag:.4e} / {max_imag:.4e}")
         metadata_table.add_row("Test Set Size", f"{len(val_loader.dataset)}")
         console.print(metadata_table)
 
@@ -321,10 +370,10 @@ def evaluate(cfg: DictConfig):
             for _, batch in enumerate(val_loader):
                 rx_pos_batch = batch["rx_position"].to(device)
 
-                cmr_gt_batch = batch["cmr"].to(device)
+                channel_gt_batch = batch["channel"].to(device)
                 current_batch_size = rx_pos_batch.shape[0]
 
-                cmr_pred_batch = render_cmr(
+                channel_pred_batch = render_channel(
                     rx_positions=rx_pos_batch,
                     model=model,
                     tx_position=tx_position,
@@ -334,33 +383,35 @@ def evaluate(cfg: DictConfig):
                 )
 
                 for j in range(current_batch_size):
-                    cmr_pred = cmr_pred_batch[j].unsqueeze(0)
-                    cmr_gt = cmr_gt_batch[j].unsqueeze(0)
+                    channel_pred = channel_pred_batch[j].unsqueeze(0)
+                    channel_gt = channel_gt_batch[j].unsqueeze(0)
 
-                    loss = criterion(cmr_pred, cmr_gt).item()
+                    pred_mag = torch.abs(channel_pred)
+                    gt_mag = torch.abs(channel_gt)
+                    loss_tensor = criterion(pred_mag, gt_mag)
+                    loss = loss_tensor.item()
 
-                    snr_tensor = calculate_snr(
-                        torch.tensor(loss, device=device),
-                        cmr_gt,
-                        eps=snr_eps,
-                    )
+                    snr_tensor = calculate_snr(loss_tensor, gt_mag, eps=snr_eps)
                     snr = snr_tensor.item()
 
                     if not np.isnan(loss) and not np.isinf(loss):
                         all_losses.append(loss)
                     if not np.isnan(snr) and not np.isinf(snr):
                         all_snrs.append(snr)
+
                     if len(sample_details) < cfg.evaluation.num_samples:
                         sample_details.append(
                             {
                                 "index": sample_idx_counter,
                                 "rx_pos": rx_pos_batch[j].cpu().numpy(),
-                                "cmr_gt": cmr_gt_batch[j].cpu(),
-                                "cmr_pred": cmr_pred_batch[j].cpu(),
+                                "channel_gt": channel_gt_batch[j].cpu(),
+                                "channel_pred": channel_pred_batch[j].cpu(),
                                 "loss": loss,
                                 "snr": snr,
-                                "min_mag": min_mag,
-                                "max_mag": max_mag,
+                                "min_real": min_real,
+                                "max_real": max_real,
+                                "min_imag": min_imag,
+                                "max_imag": max_imag,
                             }
                         )
                     sample_idx_counter += 1
@@ -417,8 +468,8 @@ def evaluate(cfg: DictConfig):
     overall_table = Table(box=None, show_header=False)
     overall_table.add_column("Metric", style="cyan", width=25)
     overall_table.add_column("Value", style="green")
-    overall_table.add_row("Average MSE Loss (Norm)", f"{stats['loss']['mean']:.6e}")
-    overall_table.add_row("Average SNR (dB)", f"{stats['snr']['mean']:.6f}")
+    overall_table.add_row("Average MSE Loss", f"{stats['loss']['mean']:.6e}")
+    overall_table.add_row("Average SNR", f"{stats['snr']['mean']:.6f}")
     console.print(Panel(overall_table, title="[bold]Metrics[/bold]"))
 
     disp_stats(console, stats)

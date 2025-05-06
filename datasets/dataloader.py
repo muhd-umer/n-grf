@@ -14,7 +14,7 @@ def collate_batch(batch: list) -> Dict[str, Any]:
     """Collate function for wireless dataset batches.
 
     Args:
-        batch (list): List of dataset items ({'rx_position': tensor, 'cmr':
+        batch (list): List of dataset items ({'rx_position': tensor, 'channel':
         tensor, 'index': int})
 
     Returns:
@@ -29,6 +29,7 @@ def collate_batch(batch: list) -> Dict[str, Any]:
         elif isinstance(batch[0][key], (int, float, str)):
             collated[key] = [item[key] for item in batch]
         else:
+
             collated[key] = [item[key] for item in batch]
 
     return collated
@@ -42,7 +43,7 @@ def get_wireless_dataloader(
     drop_last: bool,
     data_path: Optional[str] = None,
 ) -> DataLoader:
-    """Create a DataLoader for the wireless magnitude dataset using config.
+    """Create a DataLoader for the wireless complex channel dataset using config.
 
     Args:
         cfg (DictConfig): Configuration object.
@@ -144,8 +145,10 @@ def get_dataloaders(
             "tx_position": torch.zeros(3),
             "env_dims": None,
             "point_cloud": None,
-            "min_magnitude": 0.0,
-            "max_magnitude": 1.0,
+            "min_real": 0.0,
+            "max_real": 1.0,
+            "min_imag": 0.0,
+            "max_imag": 1.0,
             "norm_eps": cfg.data.norm_eps,
         }
 

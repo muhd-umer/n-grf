@@ -1,4 +1,4 @@
-# datasets/wireless_dataset.py
+# datasets/channel_dataset.py
 
 import warnings
 from pathlib import Path
@@ -11,11 +11,12 @@ from torch.utils.data import Dataset, random_split
 
 
 class ChannelDataset(Dataset):
-    """A dataset class for MIMO/SISO channel data.
+    """A dataset class for complex MIMO/SISO channel data.
 
     Handles loading and processing of wireless channel data from .mat files,
-    extracting channel magnitude (CMR), and applying min-max normalization across
-    the entire dataset. Point cloud and env_dims are loaded if present.
+    extracting complex channel (H), and applying independent min-max normalization
+    to the real and imaginary parts across the entire dataset.
+    Point cloud and env_dims are loaded if present.
 
     Args:
         data_path (str): Path to the .mat dataset file
@@ -169,14 +170,18 @@ class ChannelDataset(Dataset):
                 and channel_raw_data.dtype.kind in "iuf"
             ):
                 warnings.warn(
-                    "Warning: Loaded H is real-valued. Assuming it represents magnitude."
+                    "Warning: Loaded H is real-valued. Converting to complex with zero imaginary part."
                 )
-                channel_tensor = torch.from_numpy(channel_raw_data).float()
+                channel_tensor = torch.from_numpy(channel_raw_data).to(torch.complex64)
             else:
                 raise TypeError(
                     f"Unsupported format for H: {type(channel_raw_data)}. Expected complex numpy array, real numpy array, or dict with 'real'/'imag'."
                 )
 
+            if not torch.is_complex(channel_tensor):
+                raise TypeError(
+                    f"Channel tensor must be complex, but got dtype {channel_tensor.dtype}"
+                )
             print(f"Raw channel tensor shape from MAT: {channel_tensor.shape}")
 
             expected_leading_dim = self.num_users
@@ -237,35 +242,59 @@ class ChannelDataset(Dataset):
 
             print(f"Processed channel tensor shape: {channel_selected.shape}")
 
-            if torch.is_complex(channel_selected):
-                self.cmr_raw = torch.abs(channel_selected).float()
-            else:
-                self.cmr_raw = channel_selected.float()
+            self.channel_raw = channel_selected.to(torch.complex64)
+            print(f"Raw complex channel tensor shape: {self.channel_raw.shape}")
 
-            print(f"Raw magnitude tensor shape: {self.cmr_raw.shape}")
+            real_part = self.channel_raw.real
+            imag_part = self.channel_raw.imag
 
-            self.min_magnitude = torch.min(self.cmr_raw)
-            self.max_magnitude = torch.max(self.cmr_raw)
+            self.min_real = torch.min(real_part)
+            self.max_real = torch.max(real_part)
+            self.min_imag = torch.min(imag_part)
+            self.max_imag = torch.max(imag_part)
+
             print(
-                f"Magnitude range (min/max): {self.min_magnitude:.4e} / {self.max_magnitude:.4e}"
+                f"Real part range (min/max): {self.min_real:.4e} / {self.max_real:.4e}"
+            )
+            print(
+                f"Imag part range (min/max): {self.min_imag:.4e} / {self.max_imag:.4e}"
             )
 
-            magnitude_range = self.max_magnitude - self.min_magnitude
-            if magnitude_range < self.norm_eps:
+            real_range = self.max_real - self.min_real
+            imag_range = self.max_imag - self.min_imag
+
+            if real_range < self.norm_eps:
                 warnings.warn(
-                    f"Warning: Magnitude range is very small ({magnitude_range:.2e}). Setting normalized magnitude to 0.5."
+                    f"Warning: Real part range is very small ({real_range:.2e}). Setting normalized real part to 0.5."
                 )
-                self.cmr_normalized = torch.full_like(self.cmr_raw, 0.5)
+                normalized_real = torch.full_like(real_part, 0.5)
             else:
-                self.cmr_normalized = (self.cmr_raw - self.min_magnitude) / (
-                    magnitude_range + self.norm_eps
+                normalized_real = (real_part - self.min_real) / (
+                    real_range + self.norm_eps
                 )
+                normalized_real = torch.clamp(normalized_real, 0.0, 1.0)
 
-                self.cmr_normalized = torch.clamp(self.cmr_normalized, 0.0, 1.0)
+            if imag_range < self.norm_eps:
+                warnings.warn(
+                    f"Warning: Imaginary part range is very small ({imag_range:.2e}). Setting normalized imag part to 0.5."
+                )
+                normalized_imag = torch.full_like(imag_part, 0.5)
+            else:
+                normalized_imag = (imag_part - self.min_imag) / (
+                    imag_range + self.norm_eps
+                )
+                normalized_imag = torch.clamp(normalized_imag, 0.0, 1.0)
 
-            print(f"Normalized magnitude tensor shape: {self.cmr_normalized.shape}")
+            self.channel_normalized = torch.complex(normalized_real, normalized_imag)
+
             print(
-                f"Normalized magnitude range (min/max): {torch.min(self.cmr_normalized):.4f} / {torch.max(self.cmr_normalized):.4f}"
+                f"Normalized complex channel tensor shape: {self.channel_normalized.shape}"
+            )
+            print(
+                f"Normalized real range (min/max): {torch.min(self.channel_normalized.real):.4f} / {torch.max(self.channel_normalized.real):.4f}"
+            )
+            print(
+                f"Normalized imag range (min/max): {torch.min(self.channel_normalized.imag):.4f} / {torch.max(self.channel_normalized.imag):.4f}"
             )
 
         else:
@@ -322,15 +351,25 @@ class ChannelDataset(Dataset):
             "tx_position": self.tx_position,
             "env_dims": self.env_dims,
             "point_cloud": self.point_cloud_data,
-            "min_magnitude": (
-                self.min_magnitude.item()
-                if isinstance(self.min_magnitude, torch.Tensor)
-                else self.min_magnitude
+            "min_real": (
+                self.min_real.item()
+                if isinstance(self.min_real, torch.Tensor)
+                else self.min_real
             ),
-            "max_magnitude": (
-                self.max_magnitude.item()
-                if isinstance(self.max_magnitude, torch.Tensor)
-                else self.max_magnitude
+            "max_real": (
+                self.max_real.item()
+                if isinstance(self.max_real, torch.Tensor)
+                else self.max_real
+            ),
+            "min_imag": (
+                self.min_imag.item()
+                if isinstance(self.min_imag, torch.Tensor)
+                else self.min_imag
+            ),
+            "max_imag": (
+                self.max_imag.item()
+                if isinstance(self.max_imag, torch.Tensor)
+                else self.max_imag
             ),
             "norm_eps": self.norm_eps,
         }
@@ -339,10 +378,10 @@ class ChannelDataset(Dataset):
         return len(self.active_indices)
 
     def __getitem__(self, idx):
-        """Retrieves a single sample (normalized CMR) for the active split."""
+        """Retrieves a single sample (normalized complex channel) for the active split."""
         original_idx = self.active_indices[idx]
         return {
             "rx_position": self.rx_positions[original_idx],
-            "cmr": self.cmr_normalized[original_idx],
+            "channel": self.channel_normalized[original_idx],
             "index": original_idx,
         }
