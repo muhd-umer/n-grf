@@ -23,7 +23,7 @@ from render import render_channel
 from utils.general_utils import set_random_seed
 from utils.loss import calculate_snr
 
-TUNING_ITERATIONS = 10_000
+TUNING_ITERATIONS = 15_000
 CKPT_FREQ = 1000
 
 

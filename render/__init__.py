@@ -110,9 +110,9 @@ def render_channel(
     channel_contrib_complex_expanded = channel_contrib_complex.unsqueeze(0)
     spatial_weights_expanded = spatial_weights.unsqueeze(-1).unsqueeze(-1)
 
-    weighted_channel_contributions = (
+    weighted_channel_contribs = (
         spatial_weights_expanded * channel_contrib_complex_expanded
     )
-    channel_pred = torch.sum(weighted_channel_contributions, dim=1)
+    channel_pred = torch.sum(weighted_channel_contribs, dim=1)
 
     return channel_pred.to(torch.complex64)
