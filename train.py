@@ -249,7 +249,6 @@ def train(cfg: DictConfig):
     if resume_path and resume_path.exists():
         logger.info(f"Resuming from checkpoint: {resume_path}")
         try:
-
             model, start_iteration = GaussianChannelFieldModel.load(
                 resume_path,
                 device,
@@ -424,7 +423,6 @@ def train(cfg: DictConfig):
                     grad_stats = compute_grad_stats(model)
                 model.optimizer.step()
             else:
-
                 model.optimizer.zero_grad()
                 logger.warning(
                     f"NaN/Inf gradient detected at iter {iteration}. Skipping optimizer step and zeroing grads."
@@ -597,7 +595,6 @@ def train(cfg: DictConfig):
                                 iteration,
                             )
                     else:
-
                         if iteration % (cfg.experiment.eval_freq * 5) == 0:
                             logger.info(
                                 f"Skipping evaluation at iteration {iteration} (empty val loader)"
