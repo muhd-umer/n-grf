@@ -135,7 +135,7 @@ def objective(
         trial_cfg.experiment.log_grad_stats = False
 
         trial_cfg.initialization.num_gaussians = trial.suggest_int(
-            "init.num_gaussians", 100, 4000, step=100
+            "init.num_gaussians", 100, 2000, step=100
         )
         trial_cfg.initialization.opacity_value = trial.suggest_float(
             "init.opacity_value", 0.05, 0.2
@@ -173,7 +173,7 @@ def objective(
             "train.rx_noise_std", 0.0, 0.04
         )
         trial_cfg.training.lambda_activation_l1 = trial.suggest_float(
-            "train.lambda_l1", 1e-4, 0.1, log=True
+            "train.lambda_l1", 1e-3, 0.1, log=True
         )
 
         trial_cfg.training.optimizer.eps = trial.suggest_float(
