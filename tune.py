@@ -48,7 +48,6 @@ def tune_logging(
 
     console = None
     if use_rich:
-
         console = Console(log_path=False, force_terminal=True, record=True)
         console_handler = RichHandler(
             console=console, rich_tracebacks=True, markup=True, show_path=False
@@ -56,7 +55,6 @@ def tune_logging(
         console_handler.setFormatter(logging.Formatter("%(message)s"))
         logger.addHandler(console_handler)
     else:
-
         stream_handler = logging.StreamHandler()
         stream_formatter = logging.Formatter("[%(levelname)s] %(message)s")
         stream_handler.setFormatter(stream_formatter)
