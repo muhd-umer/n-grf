@@ -32,8 +32,10 @@ class GaussianChannelFieldModel(nn.Module):
         attribute_hidden_dim: int = 64,
         attribute_num_layers: int = 3,
         attribute_pos_enc_freqs: int = 10,
+        attribute_dropout_p: float = 0.0,
         decoder_hidden_dim: int = 64,
         decoder_num_layers: int = 4,
+        decoder_dropout_p: float = 0.1,
         initial_gaussians: int = 30000,
         init_opacity_value: float = 0.1,
         init_scale_value: float = 0.02,
@@ -56,6 +58,7 @@ class GaussianChannelFieldModel(nn.Module):
             mlp_hidden_dim=attribute_hidden_dim,
             mlp_num_layers=attribute_num_layers,
             pos_encoding_freqs=attribute_pos_enc_freqs,
+            dropout_p=attribute_dropout_p,
         ).to(device)
 
         decoder_output_dim = 2 * num_tx_ant * num_rx_ant
@@ -64,6 +67,7 @@ class GaussianChannelFieldModel(nn.Module):
             output_dim=decoder_output_dim,
             hidden_dim=decoder_hidden_dim,
             num_layers=decoder_num_layers,
+            dropout_p=decoder_dropout_p,
         ).to(device)
 
         self.initial_gaussians = initial_gaussians
@@ -363,8 +367,14 @@ class GaussianChannelFieldModel(nn.Module):
             with open_dict(temp_cfg):
                 if "model" not in temp_cfg:
                     temp_cfg.model = OmegaConf.create()
+                if "attribute_network" not in temp_cfg.model:
+                    temp_cfg.model.attribute_network = OmegaConf.create()
+                if "contribution_decoder" not in temp_cfg.model:
+                    temp_cfg.model.contribution_decoder = OmegaConf.create()
+
                 temp_cfg.model.num_tx_ant = self.num_tx_ant
                 temp_cfg.model.num_rx_ant = self.num_rx_ant
+
             config_dict_to_save = OmegaConf.to_container(temp_cfg, resolve=True)
 
         state_dict = {
@@ -419,8 +429,10 @@ class GaussianChannelFieldModel(nn.Module):
                 attribute_hidden_dim=checkpoint_cfg.model.attribute_network.hidden_dim,
                 attribute_num_layers=checkpoint_cfg.model.attribute_network.num_layers,
                 attribute_pos_enc_freqs=checkpoint_cfg.model.attribute_network.pos_enc_freqs,
+                attribute_dropout_p=checkpoint_cfg.model.attribute_network.dropout_p,
                 decoder_hidden_dim=checkpoint_cfg.model.contribution_decoder.hidden_dim,
                 decoder_num_layers=checkpoint_cfg.model.contribution_decoder.num_layers,
+                decoder_dropout_p=checkpoint_cfg.model.contribution_decoder.dropout_p,
                 init_opacity_value=checkpoint_cfg.initialization.opacity_value,
                 init_scale_value=checkpoint_cfg.initialization.scale_value,
                 device=device,

@@ -59,6 +59,7 @@ class ContributionDecoderNetwork(SimpleMLP):
         output_dim: int,
         hidden_dim: int,
         num_layers: int,
+        dropout_p: float = 0.1,
     ):
         super().__init__(
             input_dim=latent_dim,
@@ -66,7 +67,7 @@ class ContributionDecoderNetwork(SimpleMLP):
             hidden_dim=hidden_dim,
             num_layers=num_layers,
             use_leaky_relu=True,
-            dropout_p=0.1,
+            dropout_p=dropout_p,
             final_activation=nn.Sigmoid(),
         )
 
@@ -83,6 +84,7 @@ class AttributeNetwork(nn.Module):
         mlp_hidden_dim: int,
         mlp_num_layers: int,
         pos_encoding_freqs: int = 10,
+        dropout_p: float = 0.0,
     ):
         super().__init__()
         self.latent_dim = latent_dim
@@ -106,7 +108,7 @@ class AttributeNetwork(nn.Module):
             hidden_dim=mlp_hidden_dim,
             num_layers=mlp_num_layers,
             use_leaky_relu=True,
-            dropout_p=0.0,
+            dropout_p=dropout_p,
             final_activation=None,
         )
 

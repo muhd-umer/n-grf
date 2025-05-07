@@ -156,11 +156,17 @@ def objective(
         trial_cfg.model.attribute_network.pos_enc_freqs = trial.suggest_int(
             "model.attr_net.pos_enc_freqs", 24, 96, step=4
         )
+        trial_cfg.model.attribute_network.dropout_p = trial.suggest_float(
+            "model.attr_net.dropout_p", 0.0, 0.3
+        )
         trial_cfg.model.contribution_decoder.hidden_dim = trial.suggest_categorical(
             "model.decoder.hidden_dim", [32, 64, 96, 128]
         )
         trial_cfg.model.contribution_decoder.num_layers = trial.suggest_categorical(
             "model.decoder.num_layers", [2, 3, 4, 5]
+        )
+        trial_cfg.model.contribution_decoder.dropout_p = trial.suggest_float(
+            "model.decoder.dropout_p", 0.0, 0.3
         )
 
         trial_cfg.training.batch_size = trial.suggest_categorical(
@@ -297,8 +303,10 @@ def objective(
             attribute_hidden_dim=trial_cfg.model.attribute_network.hidden_dim,
             attribute_num_layers=trial_cfg.model.attribute_network.num_layers,
             attribute_pos_enc_freqs=trial_cfg.model.attribute_network.pos_enc_freqs,
+            attribute_dropout_p=trial_cfg.model.attribute_network.dropout_p,
             decoder_hidden_dim=trial_cfg.model.contribution_decoder.hidden_dim,
             decoder_num_layers=trial_cfg.model.contribution_decoder.num_layers,
+            decoder_dropout_p=trial_cfg.model.contribution_decoder.dropout_p,
             initial_gaussians=trial_cfg.initialization.num_gaussians,
             init_opacity_value=trial_cfg.initialization.opacity_value,
             init_scale_value=trial_cfg.initialization.scale_value,

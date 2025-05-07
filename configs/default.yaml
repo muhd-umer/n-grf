@@ -18,9 +18,11 @@ model:
     hidden_dim: 64
     num_layers: 5
     pos_enc_freqs: 64
+    dropout_p: 0.0
   contribution_decoder:
     hidden_dim: 64
     num_layers: 2
+    dropout_p: 0.1
 
 training:
   iterations: 20000
