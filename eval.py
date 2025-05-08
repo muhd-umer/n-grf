@@ -21,7 +21,7 @@ from rich.table import Table
 from rich.text import Text
 
 from datasets.dataloader import get_dataloaders
-from models.gaussian_model import GaussianChannelFieldModel
+from models.gaussian_model import GaussianRadioFieldModel
 from render import render_channel
 from utils.general_utils import set_random_seed
 from utils.loss import calculate_snr
@@ -57,9 +57,7 @@ def eval_logger(log_dir: Path, checkpoint_name: str) -> Tuple[logging.Logger, Co
 
 def load_cfg() -> DictConfig:
     """Loads configuration for evaluation using OmegaConf."""
-    parser = argparse.ArgumentParser(
-        description="Evaluate Gaussian channel field model"
-    )
+    parser = argparse.ArgumentParser(description="Evaluate Gaussian radio field model")
 
     parser.add_argument(
         "--data_path", type=str, required=True, help="Path to dataset file (.mat)"
@@ -286,7 +284,7 @@ def evaluate(cfg: DictConfig):
 
     try:
 
-        model, load_iter = GaussianChannelFieldModel.load(
+        model, load_iter = GaussianRadioFieldModel.load(
             checkpoint_path,
             device=device,
             resume_cfg=None,

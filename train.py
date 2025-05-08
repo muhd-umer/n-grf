@@ -26,7 +26,7 @@ from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 
 from datasets.dataloader import get_dataloaders
-from models.gaussian_model import GaussianChannelFieldModel
+from models.gaussian_model import GaussianRadioFieldModel
 from render import render_channel
 from utils.general_utils import set_random_seed
 from utils.loss import calculate_snr
@@ -35,7 +35,7 @@ from utils.train_utils import compute_grad_stats, setup_logging
 
 def load_config() -> DictConfig:
     """Loads configuration using OmegaConf."""
-    parser = argparse.ArgumentParser(description="Train Gaussian channel field model")
+    parser = argparse.ArgumentParser(description="Train Gaussian radio field model")
 
     parser.add_argument(
         "--data_path", type=str, required=True, help="Path to dataset file (.mat)"
@@ -76,7 +76,7 @@ def load_config() -> DictConfig:
 
 
 def evaluate(
-    model: GaussianChannelFieldModel,
+    model: GaussianRadioFieldModel,
     val_loader: DataLoader,
     criterion: nn.Module,
     device: torch.device,
@@ -227,7 +227,7 @@ def train(cfg: DictConfig):
         return
 
     logger.info("Initializing model...")
-    model = GaussianChannelFieldModel(
+    model = GaussianRadioFieldModel(
         num_tx_ant=nt,
         num_rx_ant=nr,
         latent_dim=cfg.model.latent_dim,
@@ -249,7 +249,7 @@ def train(cfg: DictConfig):
     if resume_path and resume_path.exists():
         logger.info(f"Resuming from checkpoint: {resume_path}")
         try:
-            model, start_iteration = GaussianChannelFieldModel.load(
+            model, start_iteration = GaussianRadioFieldModel.load(
                 resume_path,
                 device,
                 resume_cfg=cfg,
@@ -260,7 +260,7 @@ def train(cfg: DictConfig):
             logger.error(f"Failed to load checkpoint: {e}. Starting from scratch.")
             resume_path = None
 
-            model = GaussianChannelFieldModel(
+            model = GaussianRadioFieldModel(
                 num_tx_ant=nt,
                 num_rx_ant=nr,
                 latent_dim=cfg.model.latent_dim,

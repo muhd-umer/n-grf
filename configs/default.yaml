@@ -44,7 +44,7 @@ training:
   snr_eps: 1.0e-10
 
 experiment:
-  name: "gcf_run"
+  name: "grf_run"
   seed: 42
   device: "cuda"
   log_dir: "logs"

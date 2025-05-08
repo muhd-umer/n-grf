@@ -18,7 +18,7 @@ from rich.table import Table
 from torch.utils.data import DataLoader
 
 from datasets.dataloader import get_dataloaders
-from models.gaussian_model import GaussianChannelFieldModel
+from models.gaussian_model import GaussianRadioFieldModel
 from render import render_channel
 from utils.general_utils import set_random_seed
 from utils.loss import calculate_snr
@@ -65,7 +65,7 @@ def tune_logging(
 
 
 def evaluate_trial(
-    model: GaussianChannelFieldModel,
+    model: GaussianRadioFieldModel,
     val_loader: DataLoader,
     criterion: nn.Module,
     device: torch.device,
@@ -294,7 +294,7 @@ def objective(
     console.print("Initializing model...")
     logger.info("Initializing model...")
     try:
-        model = GaussianChannelFieldModel(
+        model = GaussianRadioFieldModel(
             num_tx_ant=nt,
             num_rx_ant=nr,
             latent_dim=trial_cfg.model.latent_dim,
@@ -541,7 +541,7 @@ def log_best_trial(study: optuna.study.Study, trial: optuna.trial.FrozenTrial):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Hyperparameter tuning for GCF")
+    parser = argparse.ArgumentParser(description="Hyperparameter tuning for GRF")
     parser.add_argument(
         "--data_path", type=str, required=True, help="Path to dataset file (.mat)"
     )
@@ -557,7 +557,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--study_name",
         type=str,
-        default=f"gcf_tuning_{datetime.now().strftime('%Y%m%d_%H%M')}",
+        default=f"grf_tuning_{datetime.now().strftime('%Y%m%d_%H%M')}",
         help="Name for the Optuna study",
     )
     parser.add_argument(

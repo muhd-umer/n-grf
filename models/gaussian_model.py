@@ -21,8 +21,8 @@ from utils import (
 from .networks import AttributeNetwork, ContributionDecoderNetwork
 
 
-class GaussianChannelFieldModel(nn.Module):
-    """Gaussian channel field (GCF) model for complex channel prediction."""
+class GaussianRadioFieldModel(nn.Module):
+    """Gaussian radio field (GRF) model."""
 
     def __init__(
         self,
@@ -268,7 +268,7 @@ class GaussianChannelFieldModel(nn.Module):
         rots[:, 0] = 1.0
         self._rotation = nn.Parameter(rots.requires_grad_(True))
 
-        print(f"GCF Model initialized with {self.get_xyz.shape[0]} Gaussians.")
+        print(f"GRF model initialized with {self.get_xyz.shape[0]} Gaussians.")
 
     def get_params(self, lr_dict: Dict[str, float]) -> list:
         """Returns parameter groups for the optimizer with specified learning rates."""
@@ -482,7 +482,7 @@ class GaussianChannelFieldModel(nn.Module):
                 "Not resuming training (resume_cfg=None), optimizer state not loaded."
             )
 
-        print(f"GCF Model loaded from {filepath} (iteration {iteration}).")
+        print(f"GRF model loaded from {filepath} (iteration {iteration}).")
         print(f"Loaded model has {model.get_xyz.shape[0]} Gaussians.")
 
         return model, iteration
