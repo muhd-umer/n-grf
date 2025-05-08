@@ -78,7 +78,7 @@ AP = txsite("cartesian", ...
     "TransmitterPower", 10);
 
 %% user setup
-approx_target_users = 2316;
+approx_target_users = 1316;
 
 % seed
 S = RandStream("mt19937ar", "Seed", 17);
@@ -96,14 +96,14 @@ end
 
 %% RT simulation
 method = "sbr"; % "image" | "sbr"
-max_refs = 2;
+max_refs = 1;
 
 pm = propagationModel("raytracing", ...
     "Method", method, ...
     "CoordinateSystem", "cartesian", ...
     "MaxNumDiffractions", 1, ...
     "MaxNumReflections", max_refs, ...
-    "UseGPU", "on");
+    "UseGPU", "auto");
 
 rays = raytrace(AP, Users, pm, "Map", mapFileName, "Type", "pathloss");
 
