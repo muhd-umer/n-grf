@@ -66,13 +66,6 @@ def load_cfg() -> DictConfig:
         "--checkpoint", type=str, required=True, help="Path to model checkpoint (.pt)"
     )
 
-    parser.add_argument(
-        "--config",
-        type=str,
-        default="configs/default.yaml",
-        help="Path to base configuration file (primarily for evaluation settings)",
-    )
-
     args, unknown_args = parser.parse_known_args()
 
     checkpoint_path = Path(args.checkpoint)
@@ -86,11 +79,9 @@ def load_cfg() -> DictConfig:
         )
     train_cfg_dict = model_state["config_dict"]
 
-    base_cfg = OmegaConf.load(args.config)
-
     train_cfg = OmegaConf.create(train_cfg_dict)
     cli_cfg = OmegaConf.from_cli(unknown_args)
-    cfg = OmegaConf.merge(base_cfg, train_cfg, cli_cfg)
+    cfg = OmegaConf.merge(train_cfg, cli_cfg)
 
     cfg.checkpoint_path = args.checkpoint
     cfg.data.path = args.data_path

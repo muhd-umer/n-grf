@@ -408,11 +408,9 @@ class GaussianRadioFieldModel(nn.Module):
                 f"Checkpoint {filepath} does not contain 'config_dict'. Cannot load model architecture."
             )
         config_dict = state_dict["config_dict"]
-        base_cfg = OmegaConf.load("configs/default.yaml")
-        checkpoint_cfg = OmegaConf.merge(base_cfg, OmegaConf.create(config_dict))
+        checkpoint_cfg = OmegaConf.create(config_dict)
 
         try:
-
             if (
                 "model" not in checkpoint_cfg
                 or "num_tx_ant" not in checkpoint_cfg.model

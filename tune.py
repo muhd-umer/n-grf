@@ -133,13 +133,13 @@ def objective(
         trial_cfg.experiment.log_grad_stats = False
 
         trial_cfg.initialization.num_gaussians = trial.suggest_int(
-            "init.num_gaussians", 100, 2000, step=100
+            "init.num_gaussians", 200, 3000, step=100
         )
         trial_cfg.initialization.opacity_value = trial.suggest_float(
-            "init.opacity_value", 0.05, 0.2
+            "init.opacity_value", 0.005, 0.2
         )
         trial_cfg.initialization.scale_value = trial.suggest_float(
-            "init.scale_value", 0.005, 0.03
+            "init.scale_value", 0.008, 0.2
         )
 
         trial_cfg.model.latent_dim = trial.suggest_categorical(
@@ -548,7 +548,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--config",
         type=str,
-        default="configs/default.yaml",
+        required=True,
         help="Path to the base configuration file (non-tuned parameters)",
     )
     parser.add_argument(
@@ -567,10 +567,6 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     base_cfg = OmegaConf.load(args.config)
-
-    default_cfg = OmegaConf.load("configs/default.yaml")
-    base_cfg = OmegaConf.merge(default_cfg, base_cfg)
-
     base_cfg.experiment.log_dir = args.log_dir
 
     tuning_root_dir = Path(base_cfg.experiment.log_dir) / args.study_name

@@ -43,7 +43,7 @@ def load_config() -> DictConfig:
     parser.add_argument(
         "--config",
         type=str,
-        default="configs/default.yaml",
+        required=True,
         help="Path to the configuration file",
     )
     parser.add_argument(
@@ -54,7 +54,7 @@ def load_config() -> DictConfig:
     )
 
     args, unknown_args = parser.parse_known_args()
-    default_cfg = OmegaConf.load("configs/default.yaml")
+    default_cfg = OmegaConf.load(args.config)
     user_cfg = (
         OmegaConf.load(args.config)
         if Path(args.config).exists()
