@@ -99,20 +99,16 @@ def render_channel(
     )
     spatial_weights = spatial_weights_flt.view(batch_size, num_gaussians)
 
-    channel_contrib_real_imag_flat = model.contribution_decoder(gauss_latents)
-    channel_contrib_real_imag = channel_contrib_real_imag_flat.view(
-        num_gaussians, 2, nt, nr
+    channel_contrib_ri_flat = model.contribution_decoder(gauss_latents)
+    channel_contrib_ri = channel_contrib_ri_flat.view(num_gaussians, 2, nt, nr)
+    channel_contrib_cplx = torch.complex(
+        channel_contrib_ri[:, 0, :, :],
+        channel_contrib_ri[:, 1, :, :],
     )
-    channel_contrib_complex = torch.complex(
-        channel_contrib_real_imag[:, 0, :, :],
-        channel_contrib_real_imag[:, 1, :, :],
-    )
-    channel_contrib_complex_expanded = channel_contrib_complex.unsqueeze(0)
+    channel_contrib_cplx_expanded = channel_contrib_cplx.unsqueeze(0)
     spatial_weights_expanded = spatial_weights.unsqueeze(-1).unsqueeze(-1)
 
-    weighted_channel_contribs = (
-        spatial_weights_expanded * channel_contrib_complex_expanded
-    )
+    weighted_channel_contribs = spatial_weights_expanded * channel_contrib_cplx_expanded
     channel_pred = torch.sum(weighted_channel_contribs, dim=1)
 
     return channel_pred.to(torch.complex64)
