@@ -5,7 +5,7 @@ import logging
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Callable, Dict, Tuple
 
 import numpy as np
 import optuna
@@ -19,7 +19,9 @@ from torch.utils.data import DataLoader
 
 from datasets.dataloader import get_dataloaders
 from models.gaussian_model import GaussianRadioFieldModel
-from render import render_channel
+from render._torch_impl import render_channel as torch_render_channel
+from render._wrapper import CUDA_AVAILABLE as _WRAPPER_CUDA_COMPILED_AND_AVAILABLE
+from render._wrapper import render_channel as cuda_render_channel
 from utils.general_utils import set_random_seed
 from utils.loss import calculate_snr
 
@@ -73,6 +75,7 @@ def evaluate_trial(
     nt: int,
     nr: int,
     cfg: DictConfig,
+    render_channel_fn: Callable,
 ) -> Dict[str, float]:
     """Evaluates the model on the validation set for a tuning trial."""
     model.eval()
@@ -89,7 +92,7 @@ def evaluate_trial(
             channel_gt_batch = batch["channel"].to(device)
             batch_size = rx_pos_batch.shape[0]
 
-            channel_pred_batch = render_channel(
+            channel_pred_batch = render_channel_fn(
                 rx_positions=rx_pos_batch,
                 model=model,
                 tx_position=tx_position,
@@ -247,6 +250,42 @@ def objective(
     console.print(f"Using device: {device}")
     logger.info(f"Using device: {device}")
 
+    actual_cuda_usage_message = ""
+    if trial_cfg.experiment.use_custom_cuda:
+        if not _WRAPPER_CUDA_COMPILED_AND_AVAILABLE:
+            logger.warning(
+                f"Trial {trial_num}: Custom CUDA kernels requested, but not compiled/available. Falling back to PyTorch."
+            )
+            console.print(
+                f"[yellow]Trial {trial_num}: Custom CUDA kernels requested, but not compiled/available. Falling back to PyTorch.[/yellow]"
+            )
+            render_channel_fn = torch_render_channel
+            actual_cuda_usage_message = (
+                "PyTorch (_torch_impl, fallback from uncompiled custom CUDA)"
+            )
+        elif device.type != "cuda":
+            logger.warning(
+                f"Trial {trial_num}: Custom CUDA kernels requested, but device is CPU. Falling back to PyTorch."
+            )
+            console.print(
+                f"[yellow]Trial {trial_num}: Custom CUDA kernels requested, but device is CPU. Falling back to PyTorch.[/yellow]"
+            )
+            render_channel_fn = torch_render_channel
+            actual_cuda_usage_message = (
+                "PyTorch (_torch_impl, fallback due to CPU device)"
+            )
+        else:
+            render_channel_fn = cuda_render_channel
+            actual_cuda_usage_message = "Custom CUDA (_wrapper)"
+    else:
+        render_channel_fn = torch_render_channel
+        actual_cuda_usage_message = "PyTorch (_torch_impl, user-disabled custom CUDA)"
+
+    logger.info(f"Trial {trial_num} using render_channel: {actual_cuda_usage_message}")
+    console.print(
+        f"Trial {trial_num} using render_channel: [bold]{actual_cuda_usage_message}[/bold]"
+    )
+
     console.print("Loading data...")
     logger.info("Loading data...")
     try:
@@ -388,7 +427,7 @@ def objective(
             noise = torch.randn_like(rx_pos_batch) * trial_cfg.training.rx_noise_std
             rx_pos_batch = rx_pos_batch + noise
 
-        channel_pred_batch = render_channel(
+        channel_pred_batch = render_channel_fn(
             rx_positions=rx_pos_batch,
             model=model,
             tx_position=tx_position,
@@ -462,6 +501,7 @@ def objective(
                 nt=nt,
                 nr=nr,
                 cfg=trial_cfg,
+                render_channel_fn=render_channel_fn,
             )
             eval_time = time.time() - eval_start_time
             current_val_snr = eval_metrics["val_snr_db_mag"]
@@ -563,11 +603,22 @@ if __name__ == "__main__":
     parser.add_argument(
         "--log_dir", type=str, default="logs", help="Root directory for tuning logs"
     )
+    parser.add_argument(
+        "--disable_cuda",
+        action="store_true",
+        help="Disable custom CUDA kernels and use PyTorch implementation for rendering.",
+    )
 
     args = parser.parse_args()
 
     base_cfg = OmegaConf.load(args.config)
     base_cfg.experiment.log_dir = args.log_dir
+
+    if not OmegaConf.select(base_cfg, "experiment"):
+        with open_dict(base_cfg):
+            base_cfg.experiment = OmegaConf.create()
+    with open_dict(base_cfg.experiment):
+        base_cfg.experiment.use_custom_cuda = not args.disable_cuda
 
     tuning_root_dir = Path(base_cfg.experiment.log_dir) / args.study_name
     tuning_root_dir.mkdir(parents=True, exist_ok=True)
@@ -583,6 +634,9 @@ if __name__ == "__main__":
     console.print(f"Tuning Log Directory: {tuning_root_dir}")
     console.print(f"Base Config File: {args.config}")
     console.print(f"Data Path: {args.data_path}")
+    console.print(
+        f"Custom CUDA Kernels: {'Enabled' if base_cfg.experiment.use_custom_cuda else 'Disabled (PyTorch fallback)'}"
+    )
 
     study = optuna.create_study(
         study_name=args.study_name,

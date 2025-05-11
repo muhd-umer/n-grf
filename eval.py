@@ -6,12 +6,12 @@ import time
 import warnings
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Callable, Dict, List, Tuple
 
 import numpy as np
 import torch
 import torch.nn as nn
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig, OmegaConf, open_dict
 from rich.console import Console
 from rich.logging import RichHandler
 from rich.panel import Panel
@@ -22,7 +22,9 @@ from rich.text import Text
 
 from datasets.dataloader import get_dataloaders
 from models.gaussian_model import GaussianRadioFieldModel
-from render import render_channel
+from render._torch_impl import render_channel as torch_render_channel
+from render._wrapper import CUDA_AVAILABLE as _WRAPPER_CUDA_COMPILED_AND_AVAILABLE
+from render._wrapper import render_channel as cuda_render_channel
 from utils.general_utils import set_random_seed
 from utils.loss import calculate_snr
 
@@ -65,6 +67,11 @@ def load_cfg() -> DictConfig:
     parser.add_argument(
         "--checkpoint", type=str, required=True, help="Path to model checkpoint (.pt)"
     )
+    parser.add_argument(
+        "--disable_cuda",
+        action="store_true",
+        help="Disable custom CUDA kernels and use PyTorch implementation for rendering.",
+    )
 
     args, unknown_args = parser.parse_known_args()
 
@@ -74,13 +81,19 @@ def load_cfg() -> DictConfig:
 
     model_state = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
     if "config_dict" not in model_state or model_state["config_dict"] is None:
-        raise ValueError(
-            f"Checkpoint {checkpoint_path} does not contain 'config_dict'. Was it trained with the new config system?"
+
+        print(f"Warning: Checkpoint {checkpoint_path} does not contain 'config_dict'.")
+        print(
+            "Attempting to use a default config structure. Please provide CLI overrides if needed."
         )
-    train_cfg_dict = model_state["config_dict"]
+
+        train_cfg_dict = {}
+    else:
+        train_cfg_dict = model_state["config_dict"]
 
     train_cfg = OmegaConf.create(train_cfg_dict)
     cli_cfg = OmegaConf.from_cli(unknown_args)
+
     cfg = OmegaConf.merge(train_cfg, cli_cfg)
 
     cfg.checkpoint_path = args.checkpoint
@@ -90,6 +103,14 @@ def load_cfg() -> DictConfig:
         raise ValueError(
             "data.path must be provided either in config or via --data_path"
         )
+
+    if not OmegaConf.select(cfg, "experiment"):
+        with open_dict(cfg):
+            cfg.experiment = OmegaConf.create()
+    with open_dict(cfg.experiment):
+        cfg.experiment.use_custom_cuda = not args.disable_cuda
+        if not hasattr(cfg.experiment, "device"):
+            cfg.experiment.device = "cuda"
 
     return cfg
 
@@ -132,12 +153,12 @@ def unnormalize_complex(
     real_range = max_real - min_real
     imag_range = max_imag - min_imag
 
-    if real_range < eps:
+    if abs(real_range) < eps:
         unnorm_real = torch.full_like(norm_real, (max_real + min_real) / 2)
     else:
         unnorm_real = norm_real * real_range + min_real
 
-    if imag_range < eps:
+    if abs(imag_range) < eps:
         unnorm_imag = torch.full_like(norm_imag, (max_imag + min_imag) / 2)
     else:
         unnorm_imag = norm_imag * imag_range + min_imag
@@ -260,11 +281,49 @@ def evaluate(cfg: DictConfig):
         else "cpu"
     )
     checkpoint_path = Path(cfg.checkpoint_path)
-    log_dir = Path(cfg.experiment.log_dir) / "eval"
+
+    log_dir_base = cfg.experiment.get("log_dir", "logs_eval")
+    log_dir = Path(log_dir_base) / "eval_runs" / checkpoint_path.stem
     checkpoint_name = checkpoint_path.stem
     logger, console = eval_logger(log_dir, checkpoint_name)
 
     console.rule("[bold blue]Evaluating[/bold blue]")
+
+    actual_cuda_usage_message = ""
+    if cfg.experiment.use_custom_cuda:
+        if not _WRAPPER_CUDA_COMPILED_AND_AVAILABLE:
+            logger.warning(
+                "Custom CUDA kernels requested, but they are not compiled/available in _wrapper. Falling back to PyTorch implementation."
+            )
+            console.print(
+                "[yellow]Warning: Custom CUDA kernels requested, but not compiled/available. Falling back to PyTorch.[/yellow]"
+            )
+            render_channel_fn = torch_render_channel
+            actual_cuda_usage_message = (
+                "PyTorch (_torch_impl, fallback from uncompiled custom CUDA)"
+            )
+        elif device.type != "cuda":
+            logger.warning(
+                "Custom CUDA kernels requested, but selected device is CPU. Falling back to PyTorch implementation."
+            )
+            console.print(
+                "[yellow]Warning: Custom CUDA kernels requested, but device is CPU. Falling back to PyTorch.[/yellow]"
+            )
+            render_channel_fn = torch_render_channel
+            actual_cuda_usage_message = (
+                "PyTorch (_torch_impl, fallback due to CPU device)"
+            )
+        else:
+            render_channel_fn = cuda_render_channel
+            actual_cuda_usage_message = "Custom CUDA (_wrapper)"
+    else:
+        render_channel_fn = torch_render_channel
+        actual_cuda_usage_message = "PyTorch (_torch_impl, user-disabled custom CUDA)"
+
+    logger.info(f"Using render_channel implementation: {actual_cuda_usage_message}")
+    console.print(
+        f"Using render_channel implementation: [bold]{actual_cuda_usage_message}[/bold]"
+    )
 
     config_str = OmegaConf.to_yaml(cfg)
     syntax = Syntax(config_str, "yaml", background_color="default", line_numbers=True)
@@ -362,7 +421,7 @@ def evaluate(cfg: DictConfig):
                 channel_gt_batch = batch["channel"].to(device)
                 current_batch_size = rx_pos_batch.shape[0]
 
-                channel_pred_batch = render_channel(
+                channel_pred_batch = render_channel_fn(
                     rx_positions=rx_pos_batch,
                     model=model,
                     tx_position=tx_position,

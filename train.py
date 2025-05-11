@@ -4,12 +4,12 @@ import argparse
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List
+from typing import Callable, Dict, List
 
 import numpy as np
 import torch
 import torch.nn as nn
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig, OmegaConf, open_dict
 from rich.padding import Padding
 from rich.panel import Panel
 from rich.progress import (
@@ -27,7 +27,9 @@ from torch.utils.tensorboard import SummaryWriter
 
 from datasets.dataloader import get_dataloaders
 from models.gaussian_model import GaussianRadioFieldModel
-from render import render_channel
+from render._torch_impl import render_channel as torch_render_channel
+from render._wrapper import CUDA_AVAILABLE as _WRAPPER_CUDA_COMPILED_AND_AVAILABLE
+from render._wrapper import render_channel as cuda_render_channel
 from utils.general_utils import set_random_seed
 from utils.loss import calculate_snr
 from utils.train_utils import compute_grad_stats, setup_logging
@@ -52,6 +54,11 @@ def load_config() -> DictConfig:
         default=None,
         help="Path to checkpoint file to resume training from",
     )
+    parser.add_argument(
+        "--disable_cuda",
+        action="store_true",
+        help="Disable custom CUDA kernels and use PyTorch implementation for rendering.",
+    )
 
     args, unknown_args = parser.parse_known_args()
     default_cfg = OmegaConf.load(args.config)
@@ -72,6 +79,12 @@ def load_config() -> DictConfig:
             "data.path must be provided either in config or via --data_path"
         )
 
+    if not OmegaConf.select(cfg, "experiment"):
+        with open_dict(cfg):
+            cfg.experiment = OmegaConf.create()
+    with open_dict(cfg.experiment):
+        cfg.experiment.use_custom_cuda = not args.disable_cuda
+
     return cfg
 
 
@@ -84,6 +97,7 @@ def evaluate(
     nt: int,
     nr: int,
     cfg: DictConfig,
+    render_channel_fn: Callable,
 ) -> Dict[str, float]:
     """Evaluates the model on the validation set."""
     model.eval()
@@ -99,7 +113,7 @@ def evaluate(
             channel_gt_batch = batch["channel"].to(device)
             batch_size = rx_pos_batch.shape[0]
 
-            channel_pred_batch = render_channel(
+            channel_pred_batch = render_channel_fn(
                 rx_positions=rx_pos_batch,
                 model=model,
                 tx_position=tx_position,
@@ -112,7 +126,8 @@ def evaluate(
             gt_mag = torch.abs(channel_gt_batch)
             loss = criterion(pred_mag, gt_mag)
 
-            snr = calculate_snr(loss, gt_mag, eps=cfg.evaluation.snr_eps)
+            eval_snr_eps = cfg.get("evaluation.snr_eps", cfg.training.snr_eps)
+            snr = calculate_snr(loss, gt_mag, eps=eval_snr_eps)
 
             total_loss += loss.item() * batch_size
             if not torch.isinf(snr) and not torch.isnan(snr):
@@ -161,6 +176,42 @@ def train(cfg: DictConfig):
             title="Setup",
             expand=False,
         )
+    )
+
+    actual_cuda_usage_message = ""
+    if cfg.experiment.use_custom_cuda:
+        if not _WRAPPER_CUDA_COMPILED_AND_AVAILABLE:
+            logger.warning(
+                "Custom CUDA kernels requested, but they are not compiled/available in _wrapper. Falling back to PyTorch implementation."
+            )
+            console.print(
+                "[yellow]Warning: Custom CUDA kernels requested, but not compiled/available. Falling back to PyTorch.[/yellow]"
+            )
+            render_channel_fn = torch_render_channel
+            actual_cuda_usage_message = (
+                "PyTorch (_torch_impl, fallback from uncompiled custom CUDA)"
+            )
+        elif device.type != "cuda":
+            logger.warning(
+                "Custom CUDA kernels requested, but selected device is CPU. Falling back to PyTorch implementation."
+            )
+            console.print(
+                "[yellow]Warning: Custom CUDA kernels requested, but device is CPU. Falling back to PyTorch.[/yellow]"
+            )
+            render_channel_fn = torch_render_channel
+            actual_cuda_usage_message = (
+                "PyTorch (_torch_impl, fallback due to CPU device)"
+            )
+        else:
+            render_channel_fn = cuda_render_channel
+            actual_cuda_usage_message = "Custom CUDA (_wrapper)"
+    else:
+        render_channel_fn = torch_render_channel
+        actual_cuda_usage_message = "PyTorch (_torch_impl, user-disabled custom CUDA)"
+
+    logger.info(f"Using render_channel implementation: {actual_cuda_usage_message}")
+    console.print(
+        f"Using render_channel implementation: [bold]{actual_cuda_usage_message}[/bold]"
     )
 
     config_str = OmegaConf.to_yaml(cfg)
@@ -292,7 +343,8 @@ def train(cfg: DictConfig):
                 logger.warning(
                     "Point cloud initialization requested but no point cloud data found. Falling back to random initialization."
                 )
-                cfg.initialization.method = "random"
+                with open_dict(cfg.initialization):
+                    cfg.initialization.method = "random"
 
         if cfg.initialization.method == "random":
             logger.info("Using random initialization for Gaussians")
@@ -309,6 +361,8 @@ def train(cfg: DictConfig):
             )
         else:
             logger.error(f"Unknown initialization method: {cfg.initialization.method}")
+            if writer:
+                writer.close()
             return
 
         model.training_setup(cfg)
@@ -362,6 +416,13 @@ def train(cfg: DictConfig):
             iter_start_time = time.time()
             model.train()
 
+            if iteration >= stop_xyz_iter:
+                if model._xyz.requires_grad:
+                    logger.info(
+                        f"Iteration {iteration}: Disabling gradient updates for _xyz."
+                    )
+                    model._xyz.requires_grad_(False)
+
             model.update_learning_rate(iteration, cfg)
 
             try:
@@ -378,7 +439,7 @@ def train(cfg: DictConfig):
                 noise = torch.randn_like(rx_pos_batch) * cfg.training.rx_noise_std
                 rx_pos_batch = rx_pos_batch + noise
 
-            channel_pred_batch = render_channel(
+            channel_pred_batch = render_channel_fn(
                 rx_positions=rx_pos_batch,
                 model=model,
                 tx_position=tx_position,
@@ -425,7 +486,7 @@ def train(cfg: DictConfig):
             else:
                 model.optimizer.zero_grad()
                 logger.warning(
-                    f"NaN/Inf gradient detected at iter {iteration}. Skipping optimizer step and zeroing grads."
+                    f"NaN/Inf gradient detected at iter {iteration}. Optimizer step skipped and grads zeroed."
                 )
 
             iter_time = time.time() - iter_start_time
@@ -529,6 +590,7 @@ def train(cfg: DictConfig):
                             nt=nt,
                             nr=nr,
                             cfg=cfg,
+                            render_channel_fn=render_channel_fn,
                         )
                         eval_time = time.time() - eval_start_time
                         progress.update(task, description="[cyan]Training...")
@@ -545,7 +607,11 @@ def train(cfg: DictConfig):
                         )
                         current_val_snr = eval_metrics["val_snr_db"]
 
-                        if current_val_snr > best_val_snr:
+                        if (
+                            not np.isnan(current_val_snr)
+                            and not np.isinf(current_val_snr)
+                            and current_val_snr > best_val_snr
+                        ):
                             best_val_snr = current_val_snr
                             best_val_loss = eval_metrics["val_mse_loss"]
                             best_iteration = iteration
@@ -600,6 +666,15 @@ def train(cfg: DictConfig):
                                 f"Skipping evaluation at iteration {iteration} (empty val loader)"
                             )
 
+                            if cfg.experiment.save_latest_if_no_val:
+                                latest_model_path = log_dir / "latest_model.pt"
+                                model.save(
+                                    latest_model_path, iteration=iteration, cfg=cfg
+                                )
+                                logger.info(
+                                    f"Saved latest model (no validation) to {latest_model_path}"
+                                )
+
                 if (
                     iteration % cfg.experiment.checkpoint_freq == 0 and iteration > 0
                 ) or iteration == cfg.training.iterations - 1:
@@ -615,6 +690,10 @@ def train(cfg: DictConfig):
     if best_iteration != -1:
         logger.info(
             f"Best model (SNR={best_val_snr:.2f} dB @ iter {best_iteration}) saved to {log_dir / 'best_model.pt'}"
+        )
+    elif len(val_loader) == 0 and cfg.experiment.save_latest_if_no_val:
+        logger.info(
+            f"Latest model (no validation) saved to {log_dir / 'latest_model.pt'}"
         )
 
     console.rule("[bold blue]Training end[/bold blue]")
