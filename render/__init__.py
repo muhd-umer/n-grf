@@ -15,7 +15,7 @@ try:
         CUDA_AVAILABLE = True
     else:
         warnings.warn(
-            "GRF WARNING: CUDA wrapper loaded, but CUDA is not available. Falling back to PyTorch."
+            "nGRF WARNING: CUDA wrapper loaded, but CUDA is not available. Falling back to PyTorch."
         )
         from ._torch_impl import render_channel as torch_render_channel
 
@@ -23,7 +23,7 @@ try:
 
 except ImportError:
     warnings.warn(
-        "GRF WARNING: CUDA wrapper not found. Falling back to PyTorch rendering implementation."
+        "nGRF WARNING: CUDA wrapper not found. Falling back to PyTorch rendering implementation."
     )
     from ._torch_impl import render_channel as torch_render_channel
 
