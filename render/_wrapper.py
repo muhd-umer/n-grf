@@ -353,19 +353,9 @@ def render_channel(
     eps: float = 1e-10,
 ) -> torch.Tensor:
     if not CUDA_AVAILABLE:
-
-        warnings.warn(
-            "CUDA not available, render_channel in _wrapper might not function as expected without a PyTorch fallback here."
+        raise RuntimeError(
+            "CUDA nGRF rendering is not available. This function should only be called when CUDA is available."
         )
-
-        try:
-            from ._torch_impl import render_channel as torch_render_channel
-
-            return torch_render_channel(rx_positions, model, tx_position, nt, nr, eps)
-        except ImportError:
-            raise RuntimeError(
-                "CUDA nGRF rendering is not available and PyTorch fallback could not be imported within _wrapper.render_channel."
-            )
 
     batch_size = rx_positions.shape[0]
     device = rx_positions.device
