@@ -25,15 +25,17 @@ template <typename T>
 __device__ __forceinline__ void matmul3x3(const T* __restrict__ A,
                                           const T* __restrict__ B,
                                           T* __restrict__ C) {
-    for (int r = 0; r < 3; ++r) {
-        for (int c = 0; c < 3; ++c) {
-            T sum = T(0.0);
-            for (int k = 0; k < 3; ++k) {
-                sum += A[r * 3 + k] * B[k * 3 + c];
-            }
-            C[r * 3 + c] = sum;
-        }
-    }
+    C[0] = A[0] * B[0] + A[1] * B[3] + A[2] * B[6];
+    C[1] = A[0] * B[1] + A[1] * B[4] + A[2] * B[7];
+    C[2] = A[0] * B[2] + A[1] * B[5] + A[2] * B[8];
+
+    C[3] = A[3] * B[0] + A[4] * B[3] + A[5] * B[6];
+    C[4] = A[3] * B[1] + A[4] * B[4] + A[5] * B[7];
+    C[5] = A[3] * B[2] + A[4] * B[5] + A[5] * B[8];
+
+    C[6] = A[6] * B[0] + A[7] * B[3] + A[8] * B[6];
+    C[7] = A[6] * B[1] + A[7] * B[4] + A[8] * B[7];
+    C[8] = A[6] * B[2] + A[7] * B[5] + A[8] * B[8];
 }
 
 #endif

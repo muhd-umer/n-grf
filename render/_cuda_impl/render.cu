@@ -5,6 +5,7 @@
 #include <torch/extension.h>
 
 #include <cmath>
+#include <type_traits>
 
 #include "checks.cuh"
 #include "matrix.cuh"
@@ -299,8 +300,9 @@ __global__ void weighted_complex_sum_fwd_kernel(
     for (int n = 0; n < N_gauss; ++n) {
         T_real w_bn = weights[b * N_gauss + n];
         T_complex c_nij = contributions_complex[(n * Nt + t) * Nr + r];
-        sum_val.x += w_bn * c_nij.x;
-        sum_val.y += w_bn * c_nij.y;
+
+        sum_val.x = fma(w_bn, c_nij.x, sum_val.x);
+        sum_val.y = fma(w_bn, c_nij.y, sum_val.y);
     }
     H_pred_complex[(b * Nt + t) * Nr + r] = sum_val;
 }
@@ -341,7 +343,7 @@ void weighted_complex_sum_fwd_cuda(torch::Tensor weights,
         contributions_complex.scalar_type() == torch::kComplexFloat) {
         weighted_complex_sum_fwd_kernel<float, float2><<<blocks, threads>>>(
             weights.data_ptr<float>(),
-            reinterpret_cast<float2*>(
+            reinterpret_cast<const float2*>(
                 contributions_complex.data_ptr<c10::complex<float>>()),
             B, N_gauss, Nt, Nr,
             reinterpret_cast<float2*>(
@@ -350,7 +352,7 @@ void weighted_complex_sum_fwd_cuda(torch::Tensor weights,
                contributions_complex.scalar_type() == torch::kComplexDouble) {
         weighted_complex_sum_fwd_kernel<double, double2><<<blocks, threads>>>(
             weights.data_ptr<double>(),
-            reinterpret_cast<double2*>(
+            reinterpret_cast<const double2*>(
                 contributions_complex.data_ptr<c10::complex<double>>()),
             B, N_gauss, Nt, Nr,
             reinterpret_cast<double2*>(

@@ -5,6 +5,7 @@
 #include <torch/extension.h>
 
 #include <cmath>
+#include <type_traits>
 
 #include "checks.cuh"
 #include "matrix.cuh"
@@ -23,6 +24,13 @@ __device__ double atomicAdd(double* address, double val) {
     return __longlong_as_double(old);
 }
 #endif
+
+template <typename T>
+struct RobustEpsilon {
+    static constexpr T value = std::is_same<T, float>::value
+                                   ? NGRF_ROBUST_EPSILON_FLOAT
+                                   : NGRF_ROBUST_EPSILON_DOUBLE;
+};
 
 template <typename T>
 __global__ void normalize_quaternion_bwd_kernel(
@@ -229,7 +237,7 @@ __global__ void build_inverse_covariance_bwd_kernel(
     for (int k = 0; k < 3; ++k) {
         T s_clamped_k_cubed = s_clamped_i[k] * s_clamped_i[k] * s_clamped_i[k];
         T ds_inv_sq_ds_clamped_k =
-            T(-2.0) / max(s_clamped_k_cubed, T(NGRF_ROBUST_EPSILON_FLOAT));
+            T(-2.0) / max(s_clamped_k_cubed, RobustEpsilon<T>::value);
         T grad_s_clamped_k = grad_D_diag[k] * ds_inv_sq_ds_clamped_k;
         grad_s_act_i[k] =
             grad_s_clamped_k * (s_act_i[k] >= eps_clamp ? T(1.0) : T(0.0));
@@ -397,7 +405,9 @@ __global__ void weighted_complex_sum_bwd_kernel_weights(
                 T_complex grad_H_bij =
                     grad_H_pred_complex[(b * Nt + t) * Nr + r];
                 T_complex c_nij = contributions_complex[(n * Nt + t) * Nr + r];
-                grad_w_bn += grad_H_bij.x * c_nij.x + grad_H_bij.y * c_nij.y;
+
+                grad_w_bn = fma(grad_H_bij.x, c_nij.x, grad_w_bn);
+                grad_w_bn = fma(grad_H_bij.y, c_nij.y, grad_w_bn);
             }
         }
         grad_weights[b * N_gauss + n] = grad_w_bn;
@@ -420,8 +430,9 @@ __global__ void weighted_complex_sum_bwd_kernel_contributions(
     for (int b = 0; b < B; ++b) {
         T_real w_bn = weights[b * N_gauss + n];
         T_complex grad_H_bij = grad_H_pred_complex[(b * Nt + t) * Nr + r];
-        grad_c_nij.x += w_bn * grad_H_bij.x;
-        grad_c_nij.y += w_bn * grad_H_bij.y;
+
+        grad_c_nij.x = fma(w_bn, grad_H_bij.x, grad_c_nij.x);
+        grad_c_nij.y = fma(w_bn, grad_H_bij.y, grad_c_nij.y);
     }
     grad_contributions_complex[(n * Nt + t) * Nr + r] = grad_c_nij;
 }

@@ -1,5 +1,3 @@
-# render/setup.py
-
 import os
 
 from setuptools import find_packages, setup
@@ -14,8 +12,7 @@ cuda_sources = [
 ]
 
 c_flags = ["-O3", "-std=c++17"]
-nvcc_flags = ["-O3", "-std=c++17"]
-
+nvcc_flags = ["-O3", "-std=c++17", "-use_fast_math"]
 
 setup(
     name="render",
