@@ -142,7 +142,7 @@ def objective(
             "init.opacity_value", 0.005, 0.2
         )
         trial_cfg.initialization.scale_value = trial.suggest_float(
-            "init.scale_value", 0.008, 0.2
+            "init.scale_value", 0.008, 0.4
         )
 
         trial_cfg.model.latent_dim = trial.suggest_categorical(
