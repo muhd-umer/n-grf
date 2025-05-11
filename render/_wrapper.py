@@ -5,6 +5,8 @@ import warnings
 import torch
 from torch.autograd import Function
 
+from models.gaussian_model import GaussianRadioFieldModel
+
 try:
     from . import _C as cuda_ngrf
 
@@ -419,4 +421,5 @@ def render_channel(
 
     channel_pred = WeightedComplexSum.apply(spatial_weights, channel_contrib_cplx)
 
+    return channel_pred.to(torch.complex64)
     return channel_pred.to(torch.complex64)
