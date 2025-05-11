@@ -2,7 +2,7 @@
 
 import torch
 
-from models.gaussian_model import GaussianRadioFieldModel
+from models.ngrf_model import nGRF
 
 
 @torch.jit.script
@@ -42,7 +42,7 @@ def compute_spatial_weight(
 
 def render_channel(
     rx_positions: torch.Tensor,
-    model: GaussianRadioFieldModel,
+    model: nGRF,
     tx_position: torch.Tensor,
     nt: int,
     nr: int,
@@ -53,7 +53,7 @@ def render_channel(
 
     Args:
         rx_positions: Batch of receiver positions (B, 3)
-        model: The GaussianRadioFieldModel instance
+        model: The nGRF model instance
         tx_position: The fixed transmitter position (3,)
         nt: Number of Tx antennas
         nr: Number of Rx antennas

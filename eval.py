@@ -21,7 +21,7 @@ from rich.table import Table
 from rich.text import Text
 
 from datasets.dataloader import get_dataloaders
-from models.gaussian_model import GaussianRadioFieldModel
+from models.ngrf_model import nGRF
 from render._torch_impl import render_channel as torch_render_channel
 from render._wrapper import CUDA_AVAILABLE as _WRAPPER_CUDA_COMPILED_AND_AVAILABLE
 from render._wrapper import render_channel as cuda_render_channel
@@ -59,7 +59,7 @@ def eval_logger(log_dir: Path, checkpoint_name: str) -> Tuple[logging.Logger, Co
 
 def load_cfg() -> DictConfig:
     """Loads configuration for evaluation using OmegaConf."""
-    parser = argparse.ArgumentParser(description="Evaluate Gaussian radio field model")
+    parser = argparse.ArgumentParser(description="Evaluate nGRF")
 
     parser.add_argument(
         "--data_path", type=str, required=True, help="Path to dataset file (.mat)"
@@ -334,7 +334,7 @@ def evaluate(cfg: DictConfig):
 
     try:
 
-        model, load_iter = GaussianRadioFieldModel.load(
+        model, load_iter = nGRF.load(
             checkpoint_path,
             device=device,
             resume_cfg=None,

@@ -26,7 +26,7 @@ from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 
 from datasets.dataloader import get_dataloaders
-from models.gaussian_model import GaussianRadioFieldModel
+from models.ngrf_model import nGRF
 from render._torch_impl import render_channel as torch_render_channel
 from render._wrapper import CUDA_AVAILABLE as _WRAPPER_CUDA_COMPILED_AND_AVAILABLE
 from render._wrapper import render_channel as cuda_render_channel
@@ -89,7 +89,7 @@ def load_config() -> DictConfig:
 
 
 def evaluate(
-    model: GaussianRadioFieldModel,
+    model: nGRF,
     val_loader: DataLoader,
     criterion: nn.Module,
     device: torch.device,
@@ -278,7 +278,7 @@ def train(cfg: DictConfig):
         return
 
     logger.info("Initializing model...")
-    model = GaussianRadioFieldModel(
+    model = nGRF(
         num_tx_ant=nt,
         num_rx_ant=nr,
         latent_dim=cfg.model.latent_dim,
@@ -300,7 +300,7 @@ def train(cfg: DictConfig):
     if resume_path and resume_path.exists():
         logger.info(f"Resuming from checkpoint: {resume_path}")
         try:
-            model, start_iteration = GaussianRadioFieldModel.load(
+            model, start_iteration = nGRF.load(
                 resume_path,
                 device,
                 resume_cfg=cfg,
@@ -311,7 +311,7 @@ def train(cfg: DictConfig):
             logger.error(f"Failed to load checkpoint: {e}. Starting from scratch.")
             resume_path = None
 
-            model = GaussianRadioFieldModel(
+            model = nGRF(
                 num_tx_ant=nt,
                 num_rx_ant=nr,
                 latent_dim=cfg.model.latent_dim,

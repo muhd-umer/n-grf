@@ -36,7 +36,7 @@ except ImportError:
         raise unittest.SkipTest("CUDA render_channel not available")
 
 
-from models.gaussian_model import GaussianRadioFieldModel
+from models.ngrf_model import nGRF
 from render._torch_impl import render_channel as torch_render_channel
 
 
@@ -69,7 +69,7 @@ class TestForward(unittest.TestCase):
         self.tx_position = torch.randn(3) * 2.0
 
     def _create_model_instance(self):
-        model = GaussianRadioFieldModel(
+        model = nGRF(
             num_tx_ant=self.Nt,
             num_rx_ant=self.Nr,
             latent_dim=self.latent_dim,

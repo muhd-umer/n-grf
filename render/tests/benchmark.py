@@ -38,13 +38,13 @@ except ImportError:
         raise unittest.SkipTest("CUDA render_channel not available for benchmark")
 
 
-from models.gaussian_model import GaussianRadioFieldModel
+from models.ngrf_model import nGRF
 from render._torch_impl import render_channel as torch_render_channel
 
 
 def generate_model_and_inputs(N_gauss, B, Nt, Nr, latent_dim, eps, dtype, device):
     """Generates a model instance and random inputs for render_channel."""
-    model = GaussianRadioFieldModel(
+    model = nGRF(
         num_tx_ant=Nt,
         num_rx_ant=Nr,
         latent_dim=latent_dim,

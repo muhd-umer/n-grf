@@ -21,8 +21,8 @@ from utils import (
 from .networks import AttributeNetwork, ContributionDecoderNetwork
 
 
-class GaussianRadioFieldModel(nn.Module):
-    """Gaussian radio field (GRF) model."""
+class nGRF(nn.Module):
+    """Neural Gaussian radio field (nGRF) model."""
 
     def __init__(
         self,

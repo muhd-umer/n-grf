@@ -18,7 +18,7 @@ from rich.table import Table
 from torch.utils.data import DataLoader
 
 from datasets.dataloader import get_dataloaders
-from models.gaussian_model import GaussianRadioFieldModel
+from models.ngrf_model import nGRF
 from render._torch_impl import render_channel as torch_render_channel
 from render._wrapper import CUDA_AVAILABLE as _WRAPPER_CUDA_COMPILED_AND_AVAILABLE
 from render._wrapper import render_channel as cuda_render_channel
@@ -67,7 +67,7 @@ def tune_logging(
 
 
 def evaluate_trial(
-    model: GaussianRadioFieldModel,
+    model: nGRF,
     val_loader: DataLoader,
     criterion: nn.Module,
     device: torch.device,
@@ -333,7 +333,7 @@ def objective(
     console.print("Initializing model...")
     logger.info("Initializing model...")
     try:
-        model = GaussianRadioFieldModel(
+        model = nGRF(
             num_tx_ant=nt,
             num_rx_ant=nr,
             latent_dim=trial_cfg.model.latent_dim,

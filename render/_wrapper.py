@@ -5,7 +5,7 @@ import warnings
 import torch
 from torch.autograd import Function
 
-from models.gaussian_model import GaussianRadioFieldModel
+from models.ngrf_model import nGRF
 
 try:
     from . import _C as cuda_ngrf
@@ -348,7 +348,7 @@ class WeightedComplexSum(Function):
 
 def render_channel(
     rx_positions: torch.Tensor,
-    model: "GaussianRadioFieldModel",
+    model: "nGRF",
     tx_position: torch.Tensor,
     nt: int,
     nr: int,

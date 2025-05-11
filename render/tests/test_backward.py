@@ -68,7 +68,7 @@ except ImportError:
         raise unittest.SkipTest("CUDA render_channel not available")
 
 
-from models.gaussian_model import GaussianRadioFieldModel
+from models.ngrf_model import nGRF
 
 
 class TestBackward(unittest.TestCase):
@@ -218,7 +218,7 @@ class TestBackward(unittest.TestCase):
         if self.device.type == "cpu":
             self.skipTest("End-to-end render_channel gradcheck requires a CUDA device.")
 
-        model = GaussianRadioFieldModel(
+        model = nGRF(
             num_tx_ant=self.Nt_e2e,
             num_rx_ant=self.Nr_e2e,
             latent_dim=self.latent_dim_e2e,
