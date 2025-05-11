@@ -46,7 +46,7 @@ wheels = [
 ]
 
 [[package]]
-name = "ard-r2f"
+name = "n-grf"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
