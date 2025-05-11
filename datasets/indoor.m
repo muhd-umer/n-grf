@@ -71,10 +71,10 @@ AP = txsite("cartesian", ...
     "Antenna", txArray, ...
     "AntennaPosition", [-1.5; 0.0; 2.1], ... % Positioned near ceiling
     "TransmitterFrequency", fc, ...
-    "TransmitterPower", 0.05);
+    "TransmitterPower", 0.025);
 
 %% user setup
-approx_target_users = 626;
+approx_target_users = 452;
 
 % seed
 S = RandStream("mt19937ar", "Seed", 17);
