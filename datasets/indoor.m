@@ -59,7 +59,7 @@ if use_siso
     num_rx_ant = 1;
 else
     % multiple-input multiple-output
-    txArray = phased.URA("Size", [4 4], "ElementSpacing", lambda / 2);
+    txArray = phased.URA("Size", [4 2], "ElementSpacing", lambda / 2);
     rxArray = phased.ULA("NumElements", 2, "ElementSpacing", lambda / 2);
 
     num_tx_ant = prod(txArray.Size);
