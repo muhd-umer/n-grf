@@ -3,7 +3,7 @@ close all force; clear; clc;
 plot_rays = false;
 visualize = false;
 
-mapFileName = "models/conference.stl"; % or bedroom.stl, office.stl
+mapFileName = "models/conference.stl"; % conference.stl, bedroom.stl, office.stl
 [stl_data, ~] = stlread(mapFileName);
 
 if visualize
@@ -48,7 +48,7 @@ cfg.ChannelBandwidth = 'CBW80';
 % extra config
 use_single_sc = true;
 sc_idx = [];
-use_siso = true;
+use_siso = false;
 
 if use_siso
     % single-input single-output
@@ -69,9 +69,9 @@ end
 %% AP setup
 AP = txsite("cartesian", ...
     "Antenna", txArray, ...
-    "AntennaPosition", [-1.5; 0.0; 2.1], ... % Positioned near ceiling
+    "AntennaPosition", [-1.5; 0.0; 1.7], ... % conference::[-1.5; 0.0; 1.7], bedroom::[-1.5; 0.0; 2.7], office::[0.15; 0.2; 2.8]
     "TransmitterFrequency", fc, ...
-    "TransmitterPower", 0.025);
+    "TransmitterPower", 0.05);
 
 %% user setup
 approx_target_users = 452;
