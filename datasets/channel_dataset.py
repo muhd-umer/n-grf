@@ -24,6 +24,7 @@ class ChannelDataset(Dataset):
         train_ratio (float, optional): Ratio of data for training (default: 0.8)
         seed (int, optional): Random seed for train/test split
         norm_eps (float, optional): Epsilon for normalization denominator stability
+        normalize (bool, optional): If True, normalize channel data (default: True)
     """
 
     def __init__(
@@ -33,12 +34,14 @@ class ChannelDataset(Dataset):
         train_ratio: float = 0.8,
         seed: Optional[int] = None,
         norm_eps: float = 1e-8,
+        normalize: bool = True,
     ):
         super().__init__()
 
         self.data_path = Path(data_path)
         self.seed = seed if seed is not None else 42
         self.norm_eps = norm_eps
+        self.normalize = normalize
         generator = torch.Generator().manual_seed(self.seed)
         np.random.seed(self.seed)
 
@@ -253,49 +256,61 @@ class ChannelDataset(Dataset):
             self.min_imag = torch.min(imag_part)
             self.max_imag = torch.max(imag_part)
 
-            print(
-                f"Real part range (min/max): {self.min_real:.4e} / {self.max_real:.4e}"
-            )
-            print(
-                f"Imag part range (min/max): {self.min_imag:.4e} / {self.max_imag:.4e}"
-            )
-
-            real_range = self.max_real - self.min_real
-            imag_range = self.max_imag - self.min_imag
-
-            if real_range < self.norm_eps:
-                warnings.warn(
-                    f"Warning: Real part range is very small ({real_range:.2e}). Setting normalized real part to 0.5."
+            if self.normalize:
+                print(
+                    f"Real part range (min/max): {self.min_real:.4e} / {self.max_real:.4e}"
                 )
-                normalized_real = torch.full_like(real_part, 0.5)
+                print(
+                    f"Imag part range (min/max): {self.min_imag:.4e} / {self.max_imag:.4e}"
+                )
+
+                real_range = self.max_real - self.min_real
+                imag_range = self.max_imag - self.min_imag
+
+                if real_range < self.norm_eps:
+                    warnings.warn(
+                        f"Warning: Real part range is very small ({real_range:.2e}). Setting normalized real part to 0.5."
+                    )
+                    normalized_real = torch.full_like(real_part, 0.5)
+                else:
+                    normalized_real = (real_part - self.min_real) / (
+                        real_range + self.norm_eps
+                    )
+                    normalized_real = torch.clamp(normalized_real, 0.0, 1.0)
+
+                if imag_range < self.norm_eps:
+                    warnings.warn(
+                        f"Warning: Imaginary part range is very small ({imag_range:.2e}). Setting normalized imag part to 0.5."
+                    )
+                    normalized_imag = torch.full_like(imag_part, 0.5)
+                else:
+                    normalized_imag = (imag_part - self.min_imag) / (
+                        imag_range + self.norm_eps
+                    )
+                    normalized_imag = torch.clamp(normalized_imag, 0.0, 1.0)
+
+                self.channel_normalized = torch.complex(
+                    normalized_real, normalized_imag
+                )
+
+                print(
+                    f"Normalized complex channel tensor shape: {self.channel_normalized.shape}"
+                )
+                print(
+                    f"Normalized real range (min/max): {torch.min(self.channel_normalized.real):.4f} / {torch.max(self.channel_normalized.real):.4f}"
+                )
+                print(
+                    f"Normalized imag range (min/max): {torch.min(self.channel_normalized.imag):.4f} / {torch.max(self.channel_normalized.imag):.4f}"
+                )
             else:
-                normalized_real = (real_part - self.min_real) / (
-                    real_range + self.norm_eps
+                print("Normalization disabled. Using raw channel values.")
+                print(
+                    f"Real part range (min/max): {self.min_real:.4e} / {self.max_real:.4e}"
                 )
-                normalized_real = torch.clamp(normalized_real, 0.0, 1.0)
-
-            if imag_range < self.norm_eps:
-                warnings.warn(
-                    f"Warning: Imaginary part range is very small ({imag_range:.2e}). Setting normalized imag part to 0.5."
+                print(
+                    f"Imag part range (min/max): {self.min_imag:.4e} / {self.max_imag:.4e}"
                 )
-                normalized_imag = torch.full_like(imag_part, 0.5)
-            else:
-                normalized_imag = (imag_part - self.min_imag) / (
-                    imag_range + self.norm_eps
-                )
-                normalized_imag = torch.clamp(normalized_imag, 0.0, 1.0)
-
-            self.channel_normalized = torch.complex(normalized_real, normalized_imag)
-
-            print(
-                f"Normalized complex channel tensor shape: {self.channel_normalized.shape}"
-            )
-            print(
-                f"Normalized real range (min/max): {torch.min(self.channel_normalized.real):.4f} / {torch.max(self.channel_normalized.real):.4f}"
-            )
-            print(
-                f"Normalized imag range (min/max): {torch.min(self.channel_normalized.imag):.4f} / {torch.max(self.channel_normalized.imag):.4f}"
-            )
+                self.channel_normalized = self.channel_raw
 
         else:
             raise ValueError("Channel matrix ('H') not found in dataset.")
@@ -372,6 +387,7 @@ class ChannelDataset(Dataset):
                 else self.max_imag
             ),
             "norm_eps": self.norm_eps,
+            "normalize": self.normalize,
         }
 
     def __len__(self):
@@ -382,6 +398,10 @@ class ChannelDataset(Dataset):
         original_idx = self.active_indices[idx]
         return {
             "rx_position": self.rx_positions[original_idx],
-            "channel": self.channel_normalized[original_idx],
+            "channel": (
+                self.channel_normalized[original_idx]
+                if self.normalize
+                else self.channel_raw[original_idx]
+            ),
             "index": original_idx,
         }

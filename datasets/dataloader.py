@@ -35,7 +35,7 @@ def collate_batch(batch: list) -> Dict[str, Any]:
     return collated
 
 
-def get_wireless_dataloader(
+def _get_channel_loader(
     cfg: DictConfig,
     train: bool,
     shuffle: bool,
@@ -66,6 +66,7 @@ def get_wireless_dataloader(
         train_ratio=cfg.data.train_ratio,
         seed=cfg.experiment.seed,
         norm_eps=cfg.data.norm_eps,
+        normalize=cfg.data.normalize,
     )
     if len(dataset) == 0:
         warnings.warn(
@@ -97,14 +98,14 @@ def get_dataloaders(
     Returns:
         A tuple of (training loader, validation loader, dataset metadata)
     """
-    train_loader = get_wireless_dataloader(
+    train_loader = _get_channel_loader(
         cfg=cfg,
         train=True,
         shuffle=True,
         batch_size=cfg.training.batch_size,
         drop_last=True,
     )
-    val_loader = get_wireless_dataloader(
+    val_loader = _get_channel_loader(
         cfg=cfg,
         train=False,
         shuffle=False,
@@ -150,6 +151,7 @@ def get_dataloaders(
             "min_imag": 0.0,
             "max_imag": 1.0,
             "norm_eps": cfg.data.norm_eps,
+            "normalize": cfg.data.normalize,
         }
 
         if "model" in cfg and "num_tx_ant" in cfg.model and "num_rx_ant" in cfg.model:
@@ -165,5 +167,8 @@ def get_dataloaders(
     if "num_rx_ant" not in metadata or metadata["num_rx_ant"] == 0:
         if "model" in cfg and "num_rx_ant" in cfg.model:
             metadata["num_rx_ant"] = cfg.model.num_rx_ant
+
+    if "normalize" not in metadata:
+        metadata["normalize"] = cfg.data.normalize
 
     return train_loader, val_loader, metadata
