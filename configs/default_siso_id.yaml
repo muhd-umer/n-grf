@@ -1,0 +1,62 @@
+# configs/default_siso_id.yaml
+
+data:
+  path: null
+  train_ratio: 0.9
+  norm_eps: 1.0e-08
+  num_workers: 4
+
+initialization:
+  method: random
+  num_gaussians: 100
+  opacity_value: 0.19886536044676187
+  scale_value: 0.031618523694746395
+
+model:
+  latent_dim: 128
+  attribute_network:
+    hidden_dim: 192
+    num_layers: 5
+    pos_enc_freqs: 64
+    dropout_p: 0.2153260726674924
+  contribution_decoder:
+    hidden_dim: 96
+    num_layers: 5
+    dropout_p: 0.20860410878033964
+
+training:
+  iterations: 15000
+  batch_size: 16
+  stop_xyz_iter_ratio: 0.5703120901379556
+  rx_noise_std: 0.023094015373992787
+  lambda_activation_l1: 0.001027835072514373
+  optimizer:
+    eps: 4.1708306228491145e-09
+    weight_decay: 1.1720333015179491e-08
+  learning_rate:
+    position_init: 0.0008893833115605273
+    position_final: 1.0331497302724604e-05
+    position_delay_mult: 0.01297675524333455
+    rotation: 0.001493683628068819
+    scaling: 0.0022096923281445884
+    attribute_net: 0.0012146173607076082
+    decoder: 0.00025783398915881856
+  snr_eps: 1.0e-10
+
+experiment:
+  name: grf_run
+  seed: 42
+  device: cuda
+  log_dir: logs
+  log_freq: 30
+  eval_freq: 250
+  checkpoint_freq: 1000
+  tensorboard: false
+  log_grad_stats: false
+  use_custom_cuda: true
+
+evaluation:
+  batch_size: 1
+  num_samples: 3
+  snr_eps: 1.0e-10
+  unnormalize_samples: false

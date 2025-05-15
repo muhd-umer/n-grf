@@ -1,0 +1,62 @@
+# configs/default_mimo_od.yaml
+
+data:
+  path: null
+  train_ratio: 0.9
+  norm_eps: 1.0e-08
+  num_workers: 4
+
+initialization:
+  method: random
+  num_gaussians: 1200
+  opacity_value: 0.08290565177642037
+  scale_value: 0.1478421594100344
+
+model:
+  latent_dim: 32
+  attribute_network:
+    hidden_dim: 64
+    num_layers: 8
+    pos_enc_freqs: 84
+    dropout_p: 0.14651508945335504
+  contribution_decoder:
+    hidden_dim: 128
+    num_layers: 3
+    dropout_p: 0.22766411069474934
+
+training:
+  iterations: 15000
+  batch_size: 32
+  stop_xyz_iter_ratio: 0.46840533026053566
+  rx_noise_std: 0.005398274018175715
+  lambda_activation_l1: 0.01603005049928609
+  optimizer:
+    eps: 1.3209624572295576e-09
+    weight_decay: 3.146520107386117e-08
+  learning_rate:
+    position_init: 0.0002696363015043561
+    position_final: 5.953443116739323e-06
+    position_delay_mult: 0.01297675524333455
+    rotation: 0.0006292551064997657
+    scaling: 0.0011355962014815962
+    attribute_net: 0.00031728462884002734
+    decoder: 0.0005534331508483368
+  snr_eps: 1.0e-10
+
+experiment:
+  name: grf_run
+  seed: 42
+  device: cuda
+  log_dir: logs
+  log_freq: 30
+  eval_freq: 250
+  checkpoint_freq: 1000
+  tensorboard: false
+  log_grad_stats: false
+  use_custom_cuda: true
+
+evaluation:
+  batch_size: 1
+  num_samples: 3
+  snr_eps: 1.0e-10
+  unnormalize_samples: false
