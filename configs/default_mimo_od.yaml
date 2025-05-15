@@ -17,7 +17,7 @@ model:
   attribute_network:
     hidden_dim: 64
     num_layers: 8
-    pos_enc_freqs: 84
+    pos_enc_freqs: 16
     dropout_p: 0.14651508945335504
   contribution_decoder:
     hidden_dim: 128

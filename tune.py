@@ -155,7 +155,7 @@ def objective(
             "model.attr_net.num_layers", 3, 8
         )
         trial_cfg.model.attribute_network.pos_enc_freqs = trial.suggest_int(
-            "model.attr_net.pos_enc_freqs", 24, 96, step=4
+            "model.attr_net.pos_enc_freqs", 8, 32, step=4
         )
         trial_cfg.model.attribute_network.dropout_p = trial.suggest_float(
             "model.attr_net.dropout_p", 0.0, 0.3
