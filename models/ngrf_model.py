@@ -1,4 +1,4 @@
-# models/gaussian_model.py
+# models/ngrf_model.py
 
 import math
 import warnings
