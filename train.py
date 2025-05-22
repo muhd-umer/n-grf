@@ -123,7 +123,6 @@ def evaluate(
             )
 
             loss = criterion(channel_pred_batch, channel_gt_batch)
-            print(channel_pred_batch, channel_gt_batch)
             eval_snr_eps = cfg.get("evaluation.snr_eps", cfg.training.snr_eps)
             snr = get_snr_fmse(loss, channel_gt_batch, eps=eval_snr_eps)
 
