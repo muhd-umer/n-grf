@@ -26,7 +26,7 @@ from render._torch_impl import render_channel as torch_render_channel
 from render._wrapper import CUDA_AVAILABLE as _WRAPPER_CUDA_COMPILED_AND_AVAILABLE
 from render._wrapper import render_channel as cuda_render_channel
 from utils.general_utils import set_random_seed
-from utils.loss import calculate_snr
+from utils.loss import get_snr_fmse
 
 
 def eval_logger(log_dir: Path, checkpoint_name: str) -> Tuple[logging.Logger, Console]:
@@ -434,12 +434,10 @@ def evaluate(cfg: DictConfig):
                     channel_pred = channel_pred_batch[j].unsqueeze(0)
                     channel_gt = channel_gt_batch[j].unsqueeze(0)
 
-                    pred_mag = torch.abs(channel_pred)
-                    gt_mag = torch.abs(channel_gt)
-                    loss_tensor = criterion(pred_mag, gt_mag)
+                    loss_tensor = criterion(channel_pred, channel_gt)
                     loss = loss_tensor.item()
 
-                    snr_tensor = calculate_snr(loss_tensor, gt_mag, eps=snr_eps)
+                    snr_tensor = get_snr_fmse(loss_tensor, channel_gt, eps=snr_eps)
                     snr = snr_tensor.item()
 
                     if not np.isnan(loss) and not np.isinf(loss):

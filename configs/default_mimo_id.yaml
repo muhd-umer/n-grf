@@ -5,6 +5,7 @@ data:
   train_ratio: 0.9
   norm_eps: 1.0e-08
   num_workers: 4
+  normalize: true
 
 initialization:
   method: random

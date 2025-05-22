@@ -26,9 +26,7 @@ def mse(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
     return torch.mean(squared_diff)
 
 
-def nmse_loss(
-    pred: torch.Tensor, target: torch.Tensor, eps: float = 1e-10
-) -> torch.Tensor:
+def nmse(pred: torch.Tensor, target: torch.Tensor, eps: float = 1e-10) -> torch.Tensor:
     """Calculate NMSE loss for complex tensors.
 
     Args:

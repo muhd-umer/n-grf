@@ -31,7 +31,7 @@ from render._torch_impl import render_channel as torch_render_channel
 from render._wrapper import CUDA_AVAILABLE as _WRAPPER_CUDA_COMPILED_AND_AVAILABLE
 from render._wrapper import render_channel as cuda_render_channel
 from utils.general_utils import set_random_seed
-from utils.loss import calculate_snr
+from utils.loss import get_snr_fmse
 from utils.train_utils import compute_grad_stats, setup_logging
 
 
@@ -122,12 +122,10 @@ def evaluate(
                 eps=snr_eps,
             )
 
-            pred_mag = torch.abs(channel_pred_batch)
-            gt_mag = torch.abs(channel_gt_batch)
-            loss = criterion(pred_mag, gt_mag)
-
+            loss = criterion(channel_pred_batch, channel_gt_batch)
+            print(channel_pred_batch, channel_gt_batch)
             eval_snr_eps = cfg.get("evaluation.snr_eps", cfg.training.snr_eps)
-            snr = calculate_snr(loss, gt_mag, eps=eval_snr_eps)
+            snr = get_snr_fmse(loss, channel_gt_batch, eps=eval_snr_eps)
 
             total_loss += loss.item() * batch_size
             if not torch.isinf(snr) and not torch.isnan(snr):
@@ -373,8 +371,9 @@ def train(cfg: DictConfig):
         f"Total trainable parameters: {sum(p.numel() for p in model.parameters() if p.requires_grad):,}"
     )
 
-    criterion = nn.MSELoss().to(device)
-    logger.info("Using MSE Loss on magnitudes for training")
+    from utils.loss import mse
+
+    criterion = mse
 
     validation_results: List[Dict] = []
     max_val_disp = 4
@@ -432,7 +431,6 @@ def train(cfg: DictConfig):
                 batch = next(train_iter)
 
             rx_pos_batch = batch["rx_position"].to(device)
-
             channel_gt_batch = batch["channel"].to(device)
 
             if cfg.training.rx_noise_std > 0:
@@ -448,9 +446,7 @@ def train(cfg: DictConfig):
                 eps=cfg.training.snr_eps,
             )
 
-            pred_mag = torch.abs(channel_pred_batch)
-            gt_mag = torch.abs(channel_gt_batch)
-            mse_loss = criterion(pred_mag, gt_mag)
+            mse_loss = criterion(channel_pred_batch, channel_gt_batch)
 
             total_loss = mse_loss
             l1_activation_loss = torch.tensor(0.0, device=device)
@@ -502,7 +498,9 @@ def train(cfg: DictConfig):
                 else:
                     ema_loss = 0.95 * ema_loss + 0.05 * current_loss
 
-                snr = calculate_snr(mse_loss, gt_mag, eps=cfg.training.snr_eps).item()
+                snr = get_snr_fmse(
+                    mse_loss, channel_gt_batch, eps=cfg.training.snr_eps
+                ).item()
                 num_gaussians = model.get_xyz.shape[0]
 
                 progress.update(task, advance=1, loss=current_loss, snr=snr)
