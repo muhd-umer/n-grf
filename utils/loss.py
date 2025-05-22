@@ -58,11 +58,14 @@ def nmse(pred: torch.Tensor, target: torch.Tensor, eps: float = 1e-10) -> torch.
     return nmse
 
 
-def get_snr_fnmse(nmse: torch.Tensor, eps: float = 1e-10) -> torch.Tensor:
+def get_snr_fnmse(
+    nmse: torch.Tensor, target: torch.Tensor, eps: float = 1e-10
+) -> torch.Tensor:
     """Calculate SNR in dB from NMSE.
 
     Args:
         nmse: NMSE value (scalar tensor)
+        target: Target complex tensor (unused)
         eps: Small value to prevent log(0)
 
     Returns:

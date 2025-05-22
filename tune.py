@@ -23,7 +23,7 @@ from render._torch_impl import render_channel as torch_render_channel
 from render._wrapper import CUDA_AVAILABLE as _WRAPPER_CUDA_COMPILED_AND_AVAILABLE
 from render._wrapper import render_channel as cuda_render_channel
 from utils.general_utils import set_random_seed
-from utils.loss import get_snr_fmse
+from utils.loss import get_snr_fnmse, nmse
 
 TUNING_ITERATIONS = 15_000
 CKPT_FREQ = 1000
@@ -102,7 +102,7 @@ def evaluate_trial(
             )
 
             loss = criterion(channel_pred_batch, channel_gt_batch)
-            snr = get_snr_fmse(loss, channel_gt_batch, eps=snr_eps)
+            snr = get_snr_fnmse(loss, channel_gt_batch, eps=snr_eps)
 
             total_loss += loss.item() * batch_size
             if not torch.isinf(snr) and not torch.isnan(snr):
@@ -395,7 +395,7 @@ def objective(
         )
         return -float("inf")
 
-    criterion = nn.MSELoss().to(device)
+    criterion = nmse
     best_trial_val_snr = -float("inf")
     train_iter = iter(train_loader)
 
@@ -471,7 +471,7 @@ def objective(
             with torch.no_grad():
                 current_loss = mse_loss.item()
 
-                snr = get_snr_fmse(
+                snr = get_snr_fnmse(
                     mse_loss, channel_gt_batch, eps=trial_cfg.training.snr_eps
                 ).item()
                 iter_time = time.time() - iter_start_time

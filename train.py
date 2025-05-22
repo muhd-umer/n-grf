@@ -31,7 +31,7 @@ from render._torch_impl import render_channel as torch_render_channel
 from render._wrapper import CUDA_AVAILABLE as _WRAPPER_CUDA_COMPILED_AND_AVAILABLE
 from render._wrapper import render_channel as cuda_render_channel
 from utils.general_utils import set_random_seed
-from utils.loss import get_snr_fmse
+from utils.loss import get_snr_fnmse, nmse
 from utils.train_utils import compute_grad_stats, setup_logging
 
 
@@ -124,7 +124,7 @@ def evaluate(
 
             loss = criterion(channel_pred_batch, channel_gt_batch)
             eval_snr_eps = cfg.get("evaluation.snr_eps", cfg.training.snr_eps)
-            snr = get_snr_fmse(loss, channel_gt_batch, eps=eval_snr_eps)
+            snr = get_snr_fnmse(loss, channel_gt_batch, eps=eval_snr_eps)
 
             total_loss += loss.item() * batch_size
             if not torch.isinf(snr) and not torch.isnan(snr):
@@ -370,9 +370,7 @@ def train(cfg: DictConfig):
         f"Total trainable parameters: {sum(p.numel() for p in model.parameters() if p.requires_grad):,}"
     )
 
-    from utils.loss import mse
-
-    criterion = mse
+    criterion = nmse
 
     validation_results: List[Dict] = []
     max_val_disp = 4
@@ -497,7 +495,7 @@ def train(cfg: DictConfig):
                 else:
                     ema_loss = 0.95 * ema_loss + 0.05 * current_loss
 
-                snr = get_snr_fmse(
+                snr = get_snr_fnmse(
                     mse_loss, channel_gt_batch, eps=cfg.training.snr_eps
                 ).item()
                 num_gaussians = model.get_xyz.shape[0]

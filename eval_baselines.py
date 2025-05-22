@@ -27,7 +27,7 @@ from baselines.mlp import MLPBaseline
 from baselines.transformer import TransformerBaseline
 from datasets.dataloader import get_dataloaders
 from utils.general_utils import set_random_seed
-from utils.loss import get_snr_fmse
+from utils.loss import get_snr_fnmse, nmse
 
 
 def setup_logging(run_name, log_dir):
@@ -91,7 +91,7 @@ def evaluate_model(model, val_loader, criterion, device, snr_eps=1e-10):
             gt_mag = torch.abs(channel_gt)
 
             loss = criterion(channel_pred, channel_gt)
-            snr = get_snr_fmse(loss, channel_gt, eps=snr_eps)
+            snr = get_snr_fnmse(loss, channel_gt, eps=snr_eps)
 
             total_loss += loss.item() * batch_size
             if not torch.isinf(snr) and not torch.isnan(snr):
@@ -422,7 +422,7 @@ def main():
         logger.exception(f"Failed to create model: {e}")
         return
 
-    criterion = nn.MSELoss().to(device)
+    criterion = nmse
 
     logger.info("Starting training...")
     best_val_snr = float("-inf")

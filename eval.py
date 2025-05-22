@@ -26,7 +26,7 @@ from render._torch_impl import render_channel as torch_render_channel
 from render._wrapper import CUDA_AVAILABLE as _WRAPPER_CUDA_COMPILED_AND_AVAILABLE
 from render._wrapper import render_channel as cuda_render_channel
 from utils.general_utils import set_random_seed
-from utils.loss import get_snr_fmse
+from utils.loss import get_snr_fnmse, nmse
 
 
 def eval_logger(log_dir: Path, checkpoint_name: str) -> Tuple[logging.Logger, Console]:
@@ -398,7 +398,7 @@ def evaluate(cfg: DictConfig):
         logger.exception(f"[bold red]Failed to load data or metadata:[/bold red] {e}")
         return
 
-    criterion = nn.MSELoss().to(device)
+    criterion = nmse
     all_losses = []
     all_snrs = []
     sample_details: List[Dict] = []
@@ -437,7 +437,7 @@ def evaluate(cfg: DictConfig):
                     loss_tensor = criterion(channel_pred, channel_gt)
                     loss = loss_tensor.item()
 
-                    snr_tensor = get_snr_fmse(loss_tensor, channel_gt, eps=snr_eps)
+                    snr_tensor = get_snr_fnmse(loss_tensor, channel_gt, eps=snr_eps)
                     snr = snr_tensor.item()
 
                     if not np.isnan(loss) and not np.isinf(loss):
