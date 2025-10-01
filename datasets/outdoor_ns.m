@@ -115,9 +115,6 @@ for userIdx = 1:num_users
 end
 
 %% output directory setup
-output_base_dir = "outputs/outdoor_ns";
-mkdir(output_base_dir);
-
 % get base filename components
 [~, mapname] = fileparts(mapFileName);
 sc_str = '';
@@ -135,7 +132,7 @@ base_filename = sprintf('iab_%dx%d_%du_%.1fghz_%sRT%s', ...
     sc_str);
 
 % create folder for this dataset
-dataset_folder = fullfile(output_base_dir, base_filename);
+dataset_folder = fullfile("outputs", base_filename);
 mkdir(dataset_folder);
 
 %% RT simulation method setup
@@ -189,16 +186,20 @@ for update_idx = 0:max_updates
     fprintf('Valid users: %d/%d\n', num_valid_users, num_users);
 
     %% run raytracing for current positions
-    rays = raytrace(AP, Users_current, pm, "Map", mapFileName, "Type", "pathloss");
+    Users_in_bounds = Users_current(valid_users_mask);
+    rays = raytrace(AP, Users_in_bounds, pm, "Map", mapFileName, "Type", "pathloss");
 
     % filter to keep only users with valid rays
-    current_valid_mask = ~cellfun(@isempty, rays);
-    combined_valid_mask = valid_users_mask & current_valid_mask;
+    rays_valid_mask = ~cellfun(@isempty, rays);
 
-    Users_valid = Users_current(combined_valid_mask);
-    rays_valid = rays(combined_valid_mask);
-    num_valid_rays = sum(combined_valid_mask);
+    Users_valid = Users_in_bounds(rays_valid_mask);
+    rays_valid = rays(rays_valid_mask);
 
+    valid_indices = find(valid_users_mask);
+    users_to_invalidate = valid_indices(~rays_valid_mask);
+    valid_users_mask(users_to_invalidate) = false;
+
+    num_valid_rays = length(rays_valid);
     fprintf('Users with valid rays: %d/%d\n', num_valid_rays, num_valid_users);
 
     if num_valid_rays == 0
@@ -340,9 +341,8 @@ for update_idx = 0:max_updates
             % check if new position is within environment bounds (xy only, keep z the same)
             if new_pos(1) < env_dims(1, 1) || new_pos(1) > env_dims(1, 2) || ...
                     new_pos(2) < env_dims(2, 1) || new_pos(2) > env_dims(2, 2)
-                % user has left the environment, mark as invalid
-                valid_users_mask(userIdx) = false;
-                fprintf('User %d left environment bounds.\n', userIdx);
+                % user would leave environment, freeze at current position
+                % i.e., no update
             else
                 % update user position (keep z coordinate the same for ground-level users)
                 new_pos(3) = current_pos(3);
@@ -357,7 +357,7 @@ for update_idx = 0:max_updates
 
 end
 
-fprintf('\nMonte Carlo simulation complete!\n');
+fprintf('\nSimulation complete!\n');
 fprintf('Datasets saved to: %s\n', dataset_folder);
 
 %% helper function for truncating data
