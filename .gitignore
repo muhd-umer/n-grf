@@ -16,7 +16,7 @@ datasets/argos
 __pycache__/
 *.py[cod]
 *$py.class
-reference/
+misc/
 
 # C extensions
 *.so
