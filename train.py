@@ -122,7 +122,7 @@ def evaluate(
                 eps=snr_eps,
             )
 
-            loss = criterion(channel_pred_batch, channel_gt_batch)
+            loss = criterion(torch.abs(channel_pred_batch), torch.abs(channel_gt_batch))
             eval_snr_eps = cfg.get("evaluation.snr_eps", cfg.training.snr_eps)
             snr = get_snr_fnmse(loss, channel_gt_batch, eps=eval_snr_eps)
 
@@ -443,7 +443,9 @@ def train(cfg: DictConfig):
                 eps=cfg.training.snr_eps,
             )
 
-            mse_loss = criterion(channel_pred_batch, channel_gt_batch)
+            mse_loss = criterion(
+                torch.abs(channel_pred_batch), torch.abs(channel_gt_batch)
+            )
 
             total_loss = mse_loss
             l1_activation_loss = torch.tensor(0.0, device=device)

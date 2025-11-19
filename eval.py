@@ -434,7 +434,9 @@ def evaluate(cfg: DictConfig):
                     channel_pred = channel_pred_batch[j].unsqueeze(0)
                     channel_gt = channel_gt_batch[j].unsqueeze(0)
 
-                    loss_tensor = criterion(channel_pred, channel_gt)
+                    loss_tensor = criterion(
+                        torch.abs(channel_pred), torch.abs(channel_gt)
+                    )
                     loss = loss_tensor.item()
 
                     snr_tensor = get_snr_fnmse(loss_tensor, channel_gt, eps=snr_eps)

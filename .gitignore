@@ -6,6 +6,7 @@ eval_results/
 datasets/outputs
 datasets/quadriga_src
 datasets/argos
+datasets/dichasus
 
 # matlab
 *.mat
