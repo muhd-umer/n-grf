@@ -68,7 +68,7 @@ class ContributionDecoderNetwork(SimpleMLP):
             num_layers=num_layers,
             use_leaky_relu=True,
             dropout_p=dropout_p,
-            final_activation=nn.Sigmoid(),
+            final_activation=nn.Tanh(),
         )
 
 
